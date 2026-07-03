@@ -1,0 +1,285 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Hearth schema — SQLite (ARCHITECTURE §2).
+//
+// BINDING CONVENTIONS — DO NOT BREAK:
+//   • NO Prisma `enum` blocks and NO `Decimal` columns. SQLite supports
+//     neither. Every enum-like column is a `String` validated by the Zod
+//     enums in @hearth/shared (each column carries a comment naming its
+//     enum). A future Postgres migration introduces real enums.
+//   • ALL money is integer cents (`Int`, field suffix `Cents`).
+//   • All ids are cuid(). Every root entity carries `accountId`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Account {
+  id                String   @id @default(cuid())
+  name              String
+  email             String   @unique
+  timezone          String   @default("America/New_York")
+  taxRatePct        Int      @default(20)
+  taxYearStartMonth Int      @default(1)
+  graceDays         Int      @default(0)
+  createdAt         DateTime @default(now())
+
+  properties   Property[]
+  tenants      Tenant[]
+  categories   Category[]
+  transactions Transaction[]
+  reports      Report[]
+  insights     Insight[]
+  chatSessions ChatSession[]
+  integrations Integration[]
+  auditLogs    AuditLog[]
+}
+
+model Property {
+  id                   String    @id @default(cuid())
+  accountId            String
+  nickname             String?
+  addressLine1         String
+  city                 String
+  state                String
+  zip                  String
+  acquisitionDate      DateTime?
+  acquisitionCostCents Int?
+  notes                String?
+  createdAt            DateTime  @default(now())
+
+  account      Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  units        Unit[]
+  transactions Transaction[]
+  insights     Insight[]
+
+  @@index([accountId])
+}
+
+model Unit {
+  id              String  @id @default(cuid())
+  propertyId      String
+  label           String
+  bedrooms        Int?
+  bathrooms       Float?
+  marketRentCents Int?
+
+  property     Property      @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  leases       Lease[]
+  transactions Transaction[]
+
+  @@index([propertyId])
+}
+
+model Tenant {
+  id        String   @id @default(cuid())
+  accountId String
+  fullName  String
+  email     String?
+  phone     String?
+  notes     String?
+  createdAt DateTime @default(now())
+
+  account      Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  leaseTenants LeaseTenant[]
+  insights     Insight[]
+
+  @@index([accountId])
+}
+
+model Lease {
+  id              String   @id @default(cuid())
+  unitId          String
+  rentCents       Int
+  dueDay          Int      @default(1)
+  startDate       DateTime
+  endDate         DateTime
+  status          String // LeaseStatus (@hearth/shared): active | ended | pending_signature
+  esignEnvelopeId String?
+  esignStatus     String? // EsignStatus (@hearth/shared): sent | viewed | signed
+  createdAt       DateTime @default(now())
+
+  unit         Unit          @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  leaseTenants LeaseTenant[]
+  rentPayments RentPayment[]
+  insights     Insight[]
+
+  @@index([unitId])
+}
+
+model LeaseTenant {
+  leaseId   String
+  tenantId  String
+  isPrimary Boolean @default(true)
+
+  lease  Lease  @relation(fields: [leaseId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([leaseId, tenantId])
+}
+
+model Category {
+  id               String  @id @default(cuid())
+  accountId        String? // null = system-seeded
+  name             String
+  type             String // TransactionType (@hearth/shared): income | expense
+  irsScheduleELine String? // e.g. "Line 14 – Repairs"
+  isSystem         Boolean @default(false)
+
+  account      Account?      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+}
+
+model Transaction {
+  id                    String   @id @default(cuid())
+  accountId             String
+  propertyId            String?
+  unitId                String?
+  categoryId            String?
+  date                  DateTime
+  amountCents           Int // always positive; sign comes from `type`
+  type                  String // TransactionType (@hearth/shared): income | expense
+  description           String
+  vendor                String?
+  source                String // TransactionSource (@hearth/shared): manual | receipt | bank
+  status                String // TransactionStatus (@hearth/shared): pending_review | confirmed
+  aiSuggestedCategoryId String?
+  aiConfidence          Float?
+  receiptUrl            String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  account     Account      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  property    Property?    @relation(fields: [propertyId], references: [id], onDelete: SetNull)
+  unit        Unit?        @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  category    Category?    @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  rentPayment RentPayment?
+
+  @@index([accountId, date])
+  @@index([accountId, status])
+}
+
+model RentPayment {
+  id            String    @id @default(cuid())
+  leaseId       String
+  period        String // "YYYY-MM"
+  dueDate       DateTime // materialized with the month's expected rows; enables exact days-late
+  amountCents   Int
+  method        String? // RentPaymentMethod (@hearth/shared): online | manual — null until paid
+  status        String // RentPaymentStatus (@hearth/shared): due | processing | paid | failed
+  paidAt        DateTime?
+  externalRef   String? // mock Stripe id
+  transactionId String?   @unique // ledger Transaction created on payment
+  remindedAt    DateTime?
+
+  lease       Lease        @relation(fields: [leaseId], references: [id], onDelete: Cascade)
+  transaction Transaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+
+  @@unique([leaseId, period])
+  @@index([period])
+}
+
+model Report {
+  id          String   @id @default(cuid())
+  accountId   String
+  type        String // ReportType (@hearth/shared): balance_sheet | income_statement | pnl | ... | monthly_review
+  title       String
+  periodStart DateTime
+  periodEnd   DateTime
+  taxYear     Int?
+  propertyId  String? // null = portfolio
+  dataJson    String // snapshot — a filed year never silently changes
+  generatedAt DateTime @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, type])
+}
+
+model Insight {
+  id           String   @id @default(cuid())
+  accountId    String
+  scope        String // InsightScope (@hearth/shared): portfolio | property | tenant
+  type         String // rule id: late_rent | expense_spike | renewal_window | underperforming_property
+  severity     String // InsightSeverity (@hearth/shared): info | warning | positive
+  title        String
+  body         String
+  actionLabel  String?
+  actionTarget String? // frontend route or API action ref
+  propertyId   String?
+  tenantId     String?
+  leaseId      String?
+  dedupeKey    String // e.g. "late_rent:t-okafor:2026-07" — dismissal sticks until a new key appears
+  status       String // InsightStatus (@hearth/shared): active | dismissed | actioned
+  createdAt    DateTime @default(now())
+
+  account  Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  property Property? @relation(fields: [propertyId], references: [id], onDelete: SetNull)
+  tenant   Tenant?   @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  lease    Lease?    @relation(fields: [leaseId], references: [id], onDelete: SetNull)
+
+  @@unique([accountId, dedupeKey])
+  @@index([accountId, status])
+}
+
+model ChatSession {
+  id                String   @id @default(cuid())
+  accountId         String
+  title             String?
+  status            String // ChatSessionStatus (@hearth/shared): idle | running | awaiting_user
+  providerStateJson String? // serialized provider messages[] + pending tool_use_id while awaiting_user
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  account  Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  messages ChatMessage[]
+
+  @@index([accountId])
+}
+
+model ChatMessage {
+  id         String   @id @default(cuid())
+  sessionId  String
+  role       String // ChatRole (@hearth/shared): user | assistant
+  blocksJson String // ContentBlock[] (@hearth/shared chat-blocks)
+  createdAt  DateTime @default(now())
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+}
+
+model Integration {
+  id          String   @id @default(cuid())
+  accountId   String
+  type        String // IntegrationType (@hearth/shared): plaid | stripe | docusign | email | mcp_client
+  name        String
+  status      String // IntegrationStatus (@hearth/shared): connected | disconnected | mock
+  externalRef String?
+  scopesJson  String   @default("[]")
+  createdAt   DateTime @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  accountId  String
+  actor      String // "user" | "ai_suggested_user_confirmed" | "system"
+  action     String // e.g. "transaction.created", "rent.reminder_sent", "report.generated", "insight.dismissed"
+  entityType String
+  entityId   String
+  detailJson String?
+  createdAt  DateTime @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, createdAt])
+}
