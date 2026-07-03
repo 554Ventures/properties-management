@@ -1,0 +1,32 @@
+{
+  "name": "@hearth/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "mcp": "tsx src/mcp/index.ts",
+    "db:setup": "prisma db push --skip-generate && prisma generate && tsx prisma/seed.ts",
+    "db:seed": "tsx prisma/seed.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@fastify/cors": "^10.0.0",
+    "@fastify/multipart": "^9.0.0",
+    "@hearth/shared": "*",
+    "@modelcontextprotocol/sdk": "^1.11.0",
+    "@prisma/client": "^6.5.0",
+    "fastify": "^5.2.0",
+    "zod": "^3.23.0",
+    "zod-to-json-schema": "^3.23.0"
+  },
+  "devDependencies": {
+    "prisma": "^6.5.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
