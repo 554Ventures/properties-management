@@ -1,0 +1,57 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+  }
+
+  body {
+    @apply bg-app text-ink antialiased;
+  }
+
+  /* Visible focus indicator on every interactive element (WCAG 2.4.7) */
+  :focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+}
+
+@layer components {
+  /* Skip-to-content link — first element in the DOM, visible on focus */
+  .skip-link {
+    @apply sr-only;
+  }
+  .skip-link:focus {
+    position: fixed;
+    top: 0.75rem;
+    left: 0.75rem;
+    z-index: 100;
+    width: auto;
+    height: auto;
+    margin: 0;
+    clip: auto;
+    white-space: normal;
+    overflow: visible;
+    @apply rounded-md bg-brand px-4 py-2 text-sm font-semibold text-ink-on-brand shadow-overlay;
+  }
+}
+
+/* Subtle route-transition (150–250ms). The prefers-reduced-motion override in
+   tokens.css zeroes this out globally. */
+@keyframes page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.animate-page-enter {
+  animation: page-enter var(--motion-slow) var(--motion-ease) both;
+}

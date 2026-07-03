@@ -1,0 +1,141 @@
+/*
+ * Hearth design tokens (ARCHITECTURE §8) — the single source of truth for
+ * color, radius, type, and motion. Consumed by tailwind.config.ts; no ad hoc
+ * hex values in components.
+ *
+ * Contrast requirements: status/text colors ≥ 4.5:1 on --color-surface,
+ * chart series ≥ 3:1.
+ */
+:root {
+  /* Core surfaces & text — warm, calm neutrals */
+  --color-bg: #f8f5f0;
+  --color-surface: #ffffff;
+  --color-surface-raised: #fdfcfa;
+  --color-surface-sunken: #f1ece4;
+  --color-border: #e6dfd4;
+  --color-border-strong: #cbc0b1;
+  --color-text: #292421;
+  --color-text-muted: #6b6157;
+  --color-text-faint: #98908a; /* decorative only — not for essential text */
+  --color-text-on-brand: #ffffff;
+
+  /* Brand — warm terracotta / ember ("Hearth"). 5.2:1 with white text. */
+  --color-brand: #bc4514;
+  --color-brand-strong: #96350e;
+  --color-brand-soft: #f9e9df;
+
+  /* Status roles — ≥ 4.5:1 on surface; always paired with text/icon */
+  --color-positive: #15803d;
+  --color-positive-soft: #e5f4ea;
+  --color-warning: #a05a00;
+  --color-warning-soft: #fbf0dd;
+  --color-danger: #b91c1c;
+  --color-danger-soft: #fdeaea;
+  --color-neutral: #4e5a68;
+  --color-neutral-soft: #edf0f4;
+
+  /* AI-surface convention (PRD §6, mandatory): subtle violet tint. Every
+     AI-authored surface flows through the AiSurface component. */
+  --surface-ai: #f5f3ff;
+  --border-ai: #7c3aed;
+  --text-ai-label: #6027c4;
+
+  /* Chart palette — the colorRole → color mapping lives ONLY here (≥3:1) */
+  --chart-positive: #15803d;
+  --chart-warning: #c05a10;
+  --chart-neutral: #64748b;
+  --chart-ai: #7c3aed;
+  --chart-grid: #e6dfd4;
+
+  /* Focus ring — visible on both warm surfaces and brand fills */
+  --color-focus: #6027c4;
+
+  /* Radius scale */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+
+  /* Spacing scale (mirrors the Tailwind 4px grid used throughout) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Type */
+  --font-sans:
+    'Inter var', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
+    Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.375rem;
+  --text-2xl: 1.75rem;
+
+  /* Motion */
+  --motion-fast: 180ms;
+  --motion-slow: 240ms;
+  --motion-ease: cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* Dark mode — same hues, adjusted lightness; contrast maintained. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #191512;
+    --color-surface: #221e1a;
+    --color-surface-raised: #2a2521;
+    --color-surface-sunken: #141110;
+    --color-border: #3a332c;
+    --color-border-strong: #554b40;
+    --color-text: #f0eae3;
+    --color-text-muted: #b5aa9e;
+    --color-text-faint: #857b70;
+    --color-text-on-brand: #2a1208;
+
+    --color-brand: #e0663a;
+    --color-brand-strong: #ea825c;
+    --color-brand-soft: #38200f;
+
+    --color-positive: #55c184;
+    --color-positive-soft: #17301f;
+    --color-warning: #e5a13c;
+    --color-warning-soft: #33270f;
+    --color-danger: #f28080;
+    --color-danger-soft: #391717;
+    --color-neutral: #a3b0bf;
+    --color-neutral-soft: #242a31;
+
+    --surface-ai: #251f36;
+    --border-ai: #a78bfa;
+    --text-ai-label: #c7b6fc;
+
+    --chart-positive: #4ade80;
+    --chart-warning: #fbbf24;
+    --chart-neutral: #94a3b8;
+    --chart-ai: #a78bfa;
+    --chart-grid: #3a332c;
+
+    --color-focus: #c7b6fc;
+  }
+}
+
+/* Reduced motion — zero out transitions/animations globally (PRD §7.1). */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms;
+    --motion-slow: 0ms;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+}
