@@ -4,6 +4,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { registerAuth } from './plugins/auth';
 import { registerErrorHandler } from './plugins/error-handler';
 import { categoriesRoutes } from './routes/categories';
+import { chatRoutes } from './routes/chat';
 import { dashboardRoutes } from './routes/dashboard';
 import { insightsRoutes } from './routes/insights';
 import { leasesRoutes } from './routes/leases';
@@ -41,6 +42,7 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
       await api.register(insightsRoutes);
       await api.register(dashboardRoutes);
       await api.register(settingsRoutes);
+      await api.register(chatRoutes);
     },
     { prefix: '/api/v1' },
   );

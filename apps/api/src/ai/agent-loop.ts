@@ -1,0 +1,386 @@
+// Tool-use agent loop with ask_user_question pause/resume (ARCHITECTURE §6).
+// Drives an AiClient stream, forwards text as SSE deltas, executes service
+// tools via the registry, validates render tools against the shared block
+// schemas and persists the assistant turn as a ChatMessage.
+import { randomUUID } from 'node:crypto';
+import {
+  AskUserQuestionBlockSchema,
+  type AskUserQuestionAnswer,
+  type ContentBlock,
+  type SseEventName,
+} from '@hearth/shared';
+import type {
+  MessageParam,
+  TextBlockParam,
+  ToolResultBlockParam,
+  ToolUseBlockParam,
+} from '@anthropic-ai/sdk/resources/messages/messages';
+import type { ChatMessage as DbChatMessage, ChatSession as DbChatSession } from '@prisma/client';
+import { currentPeriod, startOfUtcDay } from '../lib/dates';
+import { BadRequestError, ConflictError } from '../lib/errors';
+import { prisma } from '../lib/prisma';
+import { createAiClient } from './client';
+import { buildSystemPrompt } from './prompts';
+import { ASK_USER_QUESTION_TOOL, anthropicToolDefs, findRenderTool, findServiceTool } from './tools';
+
+export type Emit = (event: SseEventName, data: unknown) => void;
+
+const MAX_ITERATIONS = 8;
+
+interface SessionContext {
+  screen: string;
+  entityId?: string;
+}
+
+/** Server-internal shape of ChatSession.providerStateJson. */
+interface ProviderState {
+  context?: SessionContext;
+  paused?: {
+    messages: MessageParam[];
+    pendingToolUseId: string;
+    questionId: string;
+    blockIndex: number;
+    assistantMessageId: string;
+    /** tool_results already produced for sibling tool_use blocks in the paused batch. */
+    completedToolResults: ToolResultBlockParam[];
+  };
+}
+
+export function parseProviderState(json: string | null): ProviderState {
+  if (!json) return {};
+  try {
+    return JSON.parse(json) as ProviderState;
+  } catch {
+    return {};
+  }
+}
+
+/** Rebuild provider history from persisted messages (text blocks only), merging
+ *  consecutive same-role turns so the transcript alternates. */
+function buildHistory(rows: DbChatMessage[]): MessageParam[] {
+  const out: MessageParam[] = [];
+  for (const row of rows) {
+    const blocks = JSON.parse(row.blocksJson) as ContentBlock[];
+    const text = blocks
+      .filter((b): b is Extract<ContentBlock, { type: 'text' }> => b.type === 'text')
+      .map((b) => b.text)
+      .join('\n\n');
+    if (!text) continue;
+    const role = row.role as 'user' | 'assistant';
+    const last = out[out.length - 1];
+    if (last && last.role === role && typeof last.content === 'string') {
+      last.content = `${last.content}\n\n${text}`;
+    } else if (out.length > 0 || role === 'user') {
+      out.push({ role, content: text });
+    }
+  }
+  return out;
+}
+
+interface LoopParams {
+  accountId: string;
+  sessionId: string;
+  assistantMessageId: string;
+  context: SessionContext | undefined;
+  messages: MessageParam[];
+  blocks: ContentBlock[];
+  emit: Emit;
+}
+
+async function finalize(params: LoopParams): Promise<void> {
+  await prisma.chatMessage.update({
+    where: { id: params.assistantMessageId },
+    data: { blocksJson: JSON.stringify(params.blocks) },
+  });
+  await prisma.chatSession.update({
+    where: { id: params.sessionId },
+    data: {
+      status: 'idle',
+      providerStateJson: params.context ? JSON.stringify({ context: params.context }) : null,
+    },
+  });
+}
+
+async function runLoop(params: LoopParams): Promise<void> {
+  const { accountId, sessionId, assistantMessageId, context, blocks, emit } = params;
+  let messages = params.messages;
+
+  const account = await prisma.account.findUniqueOrThrow({ where: { id: accountId } });
+  const [propertyCount, unitCount] = await Promise.all([
+    prisma.property.count({ where: { accountId } }),
+    prisma.unit.count({ where: { property: { accountId } } }),
+  ]);
+  const system = buildSystemPrompt({
+    accountName: account.name,
+    propertyCount,
+    unitCount,
+    todayIso: startOfUtcDay(new Date()).toISOString().slice(0, 10),
+    period: currentPeriod(),
+    ...(context ? { screen: context } : {}),
+  });
+  const tools = anthropicToolDefs();
+  const ai = createAiClient();
+
+  for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+    const assistantContent: Array<TextBlockParam | ToolUseBlockParam> = [];
+    const toolUses: Array<{ id: string; name: string; input: unknown }> = [];
+    let text = '';
+    let textIndex = -1;
+
+    const flushText = (): void => {
+      if (!text) return;
+      blocks.push({ type: 'text', text });
+      assistantContent.push({ type: 'text', text });
+      text = '';
+      textIndex = -1;
+    };
+
+    for await (const ev of ai.stream({ system, messages, tools })) {
+      if (ev.type === 'text_delta') {
+        if (text === '') {
+          textIndex = blocks.length;
+          emit('block_start', { index: textIndex, blockType: 'text' });
+        }
+        text += ev.text;
+        emit('text_delta', { index: textIndex, delta: ev.text });
+      } else if (ev.type === 'tool_use') {
+        flushText();
+        assistantContent.push({ type: 'tool_use', id: ev.id, name: ev.name, input: ev.input });
+        toolUses.push(ev);
+      }
+      // 'stop' carries no extra work: no tool_use in the batch means we are done.
+    }
+    flushText();
+
+    if (toolUses.length === 0) break;
+
+    messages = [...messages, { role: 'assistant', content: assistantContent }];
+    const toolResults: ToolResultBlockParam[] = [];
+
+    for (const tu of toolUses) {
+      if (tu.name === ASK_USER_QUESTION_TOOL) {
+        const input = AskUserQuestionBlockSchema.omit({
+          questionId: true,
+          allowFreeText: true,
+        }).parse(tu.input);
+        const block: ContentBlock = { ...input, questionId: randomUUID(), allowFreeText: true };
+        const index = blocks.length;
+        blocks.push(block);
+        emit('block_complete', { index, block });
+
+        const state: ProviderState = {
+          ...(context ? { context } : {}),
+          paused: {
+            messages,
+            pendingToolUseId: tu.id,
+            questionId: block.questionId,
+            blockIndex: index,
+            assistantMessageId,
+            completedToolResults: toolResults,
+          },
+        };
+        await prisma.chatMessage.update({
+          where: { id: assistantMessageId },
+          data: { blocksJson: JSON.stringify(blocks) },
+        });
+        await prisma.chatSession.update({
+          where: { id: sessionId },
+          data: { status: 'awaiting_user', providerStateJson: JSON.stringify(state) },
+        });
+        emit('awaiting_input', { messageId: assistantMessageId, questionIndex: index });
+        return; // end the stream without a tool_result for the question
+      }
+
+      const render = findRenderTool(tu.name);
+      if (render) {
+        const block = render.inputSchema.parse(tu.input) as ContentBlock;
+        const index = blocks.length;
+        blocks.push(block);
+        emit('block_complete', { index, block });
+        toolResults.push({ type: 'tool_result', tool_use_id: tu.id, content: 'rendered' });
+        continue;
+      }
+
+      const tool = findServiceTool(tu.name);
+      if (!tool) {
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: tu.id,
+          content: `Unknown tool: ${tu.name}`,
+          is_error: true,
+        });
+        continue;
+      }
+      emit('tool_activity', { name: tu.name, status: 'running' });
+      try {
+        const input = tool.inputSchema.parse(tu.input ?? {});
+        const result = await tool.execute(accountId, input);
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: tu.id,
+          content: JSON.stringify(result ?? null),
+        });
+      } catch (err) {
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: tu.id,
+          content: err instanceof Error ? err.message : 'tool execution failed',
+          is_error: true,
+        });
+      }
+      emit('tool_activity', { name: tu.name, status: 'done' });
+    }
+
+    messages = [...messages, { role: 'user', content: toolResults }];
+  }
+
+  await finalize({ ...params, messages });
+  emit('message_complete', { messageId: assistantMessageId });
+}
+
+/** Shared error path: persist whatever completed, set idle, surface the error. */
+async function guarded(params: LoopParams): Promise<void> {
+  try {
+    await runLoop(params);
+  } catch (err) {
+    await finalize(params).catch(() => undefined);
+    params.emit('error', {
+      message: err instanceof Error ? err.message : 'Something went wrong',
+    });
+  }
+}
+
+// ── entry points ──────────────────────────────────────────────────────────────
+
+export async function runUserTurn(opts: {
+  accountId: string;
+  session: DbChatSession;
+  text: string;
+  emit: Emit;
+}): Promise<void> {
+  const { accountId, session, text, emit } = opts;
+  const state = parseProviderState(session.providerStateJson);
+
+  await prisma.chatMessage.create({
+    data: {
+      sessionId: session.id,
+      role: 'user',
+      blocksJson: JSON.stringify([{ type: 'text', text }]),
+    },
+  });
+  const history = await prisma.chatMessage.findMany({
+    where: { sessionId: session.id },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+  });
+  const assistantMessage = await prisma.chatMessage.create({
+    data: { sessionId: session.id, role: 'assistant', blocksJson: '[]' },
+  });
+  await prisma.chatSession.update({
+    where: { id: session.id },
+    data: { status: 'running', ...(session.title ? {} : { title: text.slice(0, 80) }) },
+  });
+
+  emit('message_start', { messageId: assistantMessage.id });
+  await guarded({
+    accountId,
+    sessionId: session.id,
+    assistantMessageId: assistantMessage.id,
+    context: state.context,
+    messages: buildHistory(history),
+    blocks: [],
+    emit,
+  });
+}
+
+export interface PreparedResume {
+  context: SessionContext | undefined;
+  messages: MessageParam[];
+  blocks: ContentBlock[];
+  assistantMessageId: string;
+}
+
+/** Validate the answer against the paused state (throws 4xx before the SSE
+ *  stream starts) and build the resume transcript with the tool_result. */
+export async function prepareResume(
+  session: DbChatSession,
+  answer: AskUserQuestionAnswer,
+): Promise<PreparedResume> {
+  const state = parseProviderState(session.providerStateJson);
+  const paused = state.paused;
+  if (!paused) throw new ConflictError('session has no pending question');
+  if (answer.questionId !== paused.questionId) {
+    throw new BadRequestError('answer does not reference the pending question');
+  }
+
+  const assistantMessage = await prisma.chatMessage.findUniqueOrThrow({
+    where: { id: paused.assistantMessageId },
+  });
+  const blocks = JSON.parse(assistantMessage.blocksJson) as ContentBlock[];
+  const question = blocks[paused.blockIndex];
+  if (!question || question.type !== 'ask_user_question') {
+    throw new ConflictError('pending question block not found');
+  }
+  if (!question.multiSelect && answer.selectedOptionIds.length > 1) {
+    throw new BadRequestError('this question accepts a single selection');
+  }
+  if (answer.selectedOptionIds.length === 0 && !answer.freeText) {
+    throw new BadRequestError('select an option or provide freeText');
+  }
+  const labelById = new Map(question.options.map((o) => [o.id, o.label]));
+  const selected = answer.selectedOptionIds.map((id) => {
+    const label = labelById.get(id);
+    if (!label) throw new BadRequestError(`unknown option id: ${id}`);
+    return label;
+  });
+
+  // The answer lands as a tool_result — a hard constraint the model cannot
+  // ignore — alongside any sibling tool_results completed before the pause.
+  const messages: MessageParam[] = [
+    ...paused.messages,
+    {
+      role: 'user',
+      content: [
+        ...paused.completedToolResults,
+        {
+          type: 'tool_result',
+          tool_use_id: paused.pendingToolUseId,
+          content: JSON.stringify({ selected, freeText: answer.freeText ?? null }),
+        },
+      ],
+    },
+  ];
+  return {
+    context: state.context,
+    messages,
+    blocks,
+    assistantMessageId: paused.assistantMessageId,
+  };
+}
+
+/** Continue the SAME assistant turn on a fresh SSE stream. */
+export async function resumeTurn(opts: {
+  accountId: string;
+  session: DbChatSession;
+  prepared: PreparedResume;
+  emit: Emit;
+}): Promise<void> {
+  const { accountId, session, prepared, emit } = opts;
+  const state = parseProviderState(session.providerStateJson);
+  await prisma.chatSession.update({
+    where: { id: session.id },
+    data: {
+      status: 'running',
+      providerStateJson: state.context ? JSON.stringify({ context: state.context }) : null,
+    },
+  });
+  emit('message_start', { messageId: prepared.assistantMessageId });
+  await guarded({
+    accountId,
+    sessionId: session.id,
+    assistantMessageId: prepared.assistantMessageId,
+    context: prepared.context,
+    messages: prepared.messages,
+    blocks: prepared.blocks,
+    emit,
+  });
+}

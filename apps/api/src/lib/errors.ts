@@ -24,3 +24,10 @@ export class BadRequestError extends HttpError {
     this.name = 'BadRequestError';
   }
 }
+
+export class ConflictError extends HttpError {
+  constructor(message: string) {
+    super(409, 'conflict', message);
+    this.name = 'ConflictError';
+  }
+}
