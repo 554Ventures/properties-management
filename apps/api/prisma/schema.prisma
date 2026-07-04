@@ -1,13 +1,18 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Hearth schema — SQLite (ARCHITECTURE §2).
+// Hearth schema — PostgreSQL (ARCHITECTURE §2; deployment plan §4.2).
+// Local dev/tests run an npm-managed embedded Postgres (scripts/dev-postgres.ts,
+// no system install); production points DATABASE_URL at Supabase.
 //
 // BINDING CONVENTIONS — DO NOT BREAK:
-//   • NO Prisma `enum` blocks and NO `Decimal` columns. SQLite supports
-//     neither. Every enum-like column is a `String` validated by the Zod
-//     enums in @hearth/shared (each column carries a comment naming its
-//     enum). A future Postgres migration introduces real enums.
+//   • NO Prisma `enum` blocks and NO `Decimal` columns. Enum-like columns are
+//     `String` validated by the Zod enums in @hearth/shared (each column
+//     carries a comment naming its enum) — @hearth/shared stays the single
+//     source of truth; native Postgres enums are deliberately deferred
+//     (deployment plan §4.2). Money never uses Decimal:
 //   • ALL money is integer cents (`Int`, field suffix `Cents`).
 //   • All ids are cuid(). Every root entity carries `accountId`.
+//   • Schema changes ship as migrations (`prisma migrate dev --name ...`);
+//     `db push` is no longer part of any flow.
 // ─────────────────────────────────────────────────────────────────────────────
 
 generator client {
@@ -15,7 +20,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 

@@ -62,4 +62,4 @@ Complete inventory of what Hearth v1 does today (as of 2026-07-03). Companion to
 
 ## Explicitly NOT implemented (see WHATS_NEXT.md)
 
-Tenant portal · multi-user/roles (schema supports it; provisioning is 1:1) · real Plaid/Stripe/Docusign/email/OCR calls · real PDF rendering · real-model prompt tuning (only mock mode live-verified) · per-client MCP OAuth · Postgres · CI workflow · Playwright e2e.
+Tenant portal · multi-user/roles (schema supports it; provisioning is 1:1) · real Plaid/Stripe/Docusign/email/OCR calls · real PDF rendering · real-model prompt tuning (only mock mode live-verified) · per-client MCP OAuth · CI workflow · Playwright e2e.

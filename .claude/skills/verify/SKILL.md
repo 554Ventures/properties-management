@@ -40,7 +40,8 @@ Chat streams work offline (mock mode, no ANTHROPIC_API_KEY) and execute real too
 
 ## Gotchas
 
-- Supabase-mode requests **provision real rows** in `dev.db`. Use `@verify.example` emails / `sub-verify*` subs and delete them after:
+- The dev database is an embedded Postgres — start it with `npm run db:serve -w apps/api` (data in `apps/api/prisma/pgdata`) before booting the API.
+- Supabase-mode requests **provision real rows** in the dev database. Use `@verify.example` emails / `sub-verify*` subs and delete them after:
   ```bash
   node --input-type=module -e "
   import { PrismaClient } from '@prisma/client';

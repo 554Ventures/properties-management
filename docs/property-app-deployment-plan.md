@@ -61,7 +61,7 @@ On Containers, the migration is "Dockerfile + Postgres" instead of "rewrite the 
 
 These are code changes the app needs before any public deploy, in dependency order. §§5–13 assume they're done.
 
-### 4.1 Real authentication — **the launch blocker**
+### 4.1 Real authentication — **done (2026-07-04)** — was the launch blocker
 
 Current "auth" (`src/plugins/auth.ts`) attaches the seeded demo account to every request, optionally gated by one shared `DEV_BEARER_TOKEN`. Deployed as-is, anyone on the internet is the demo landlord with write access. Nothing ships publicly before this workstream.
 
@@ -70,18 +70,17 @@ Current "auth" (`src/plugins/auth.ts`) attaches the seeded demo account to every
 - Schema: a `User` (or `supabaseUserId` on `Account`) mapping table — designed for "collaborators later" (one account, many users) even if v1 is 1:1.
 - The service layer needs **no changes** — every function already takes `accountId` first. That contract is the tenancy model (see §11).
 
-### 4.2 SQLite → Postgres
+### 4.2 SQLite → Postgres — **done (2026-07-04)**
 
-- Flip the Prisma datasource provider to `postgresql`; the schema was written Postgres-forward (no SQLite-only types; String enums stay for now — native enums are a later, separate migration).
-- Generate the **baseline migration after the provider switch** (there is no `prisma/migrations/` directory today — the repo uses `prisma db push`). The baseline must be Postgres-shaped, not SQLite-shaped.
-- Replace the `db:setup` push flow with `prisma migrate dev` locally / `prisma migrate deploy` in CI.
-- **Test infra:** Prisma allows one provider per schema, so the vitest suite's throwaway SQLite file must become a throwaway local Postgres (docker-compose service locally, service container in CI — §6).
-- **Seeding:** the demo seed (`prisma/seed.ts`) becomes a dev/test-only tool. Production is **never** seeded with demo data; pinned-seed-number tests keep running against local/CI databases only.
-- Re-check SQLite-specific workarounds (e.g. the catch-P2002-and-re-read pattern in `rent.service.ts`) — they remain correct on Postgres, but the "no `createMany({skipDuplicates})`" rule can be relaxed later if wanted.
+- Provider flipped to `postgresql`; baseline migration generated Postgres-shaped in `prisma/migrations` (the old `db push` flow is retired everywhere — dev uses `prisma migrate dev`, CI/prod use `prisma migrate deploy`).
+- **Local dev/tests use an npm-managed embedded Postgres** (`embedded-postgres`, PG 17 to match Supabase's major) instead of docker-compose — no system install, `npm install` is still the only setup step. `npm run dev` boots db+api+web; `npm run db:setup` stays one-shot (boots the db itself if needed); the vitest global setup boots a throwaway cluster per run and applies the real migrations.
+- **CI simplification:** no Postgres service container needed in §6 — `npm test` is self-contained.
+- **Seeding:** the demo seed is dev/test-only. Production is **never** seeded with demo data; pinned-seed-number tests run against local/CI clusters only.
+- String-enum columns deliberately stay Strings (`@hearth/shared` Zod enums remain the single source of truth); native Postgres enums are a possible later migration, not a launch item.
 
-### 4.3 Scheduler multi-tenancy
+### 4.3 Scheduler multi-tenancy — **done (2026-07-04)**
 
-The daily job in `server.ts` calls `getDemoAccountId()` — single-account by construction. Rework it to iterate all accounts (idempotent per account — the dedupe keys and "skip if report exists" checks already point that way), and move the trigger to a Cron Trigger per §3.
+Daily jobs (`services/jobs.service.ts`) iterate all accounts with per-account error isolation, and `POST /api/v1/internal/run-daily-jobs` (guarded by `CRON_SECRET`) is ready for the Cloudflare Cron Trigger per §3. Known nit: a brand-new empty account gets a $0 monthly review on the first run — consider skipping accounts with no transactions.
 
 ### 4.4 Production build
 
@@ -140,7 +139,7 @@ Flow: `feature/*` → PR (CI + preview URL) → review → merge to `main` → d
 **Pipeline stages (on every PR):**
 1. Install + cache dependencies (npm workspaces)
 2. Typecheck (`npm run typecheck`) — all workspaces
-3. Tests — API suite needs a **Postgres service container** (§4.2); web suite (vitest + jsdom + axe) as-is
+3. Tests — self-contained: the API suite boots its own throwaway embedded Postgres (§4.2); web suite (vitest + jsdom + axe) as-is
 4. Build (web `vite build`, API compile + Docker image build to validate the Dockerfile)
 5. Deploy PR preview (Cloudflare Pages preview)
 6. Post preview URL as a PR comment

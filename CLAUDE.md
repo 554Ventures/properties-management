@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Hearth — AI-native property management app for independent landlords. npm-workspaces monorepo: `packages/shared` (Zod contract), `apps/api` (Fastify + Prisma/SQLite), `apps/web` (React + Vite + Tailwind).
+Hearth — AI-native property management app for independent landlords. npm-workspaces monorepo: `packages/shared` (Zod contract), `apps/api` (Fastify + Prisma/Postgres), `apps/web` (React + Vite + Tailwind). Local dev/tests run an npm-managed embedded Postgres (no Docker or system install); production points `DATABASE_URL` at Supabase.
 
 ## Docs that govern this repo
 
@@ -14,9 +14,10 @@ Hearth — AI-native property management app for independent landlords. npm-work
 ## Commands
 
 ```bash
-npm run db:setup                      # create + seed dev database (required before first run)
-npm run dev                           # api on :3001 + web on :5173 together
-npm run test --workspace apps/api    # backend suite (vitest; seeds a throwaway test.db)
+npm run db:setup                      # migrate + seed dev database (required before first run; boots embedded Postgres itself)
+npm run dev                           # db on :5433 + api on :3001 + web on :5173 together
+npm run db:serve --workspace apps/api # dev Postgres alone (data in apps/api/prisma/pgdata)
+npm run test --workspace apps/api    # backend suite (vitest; boots a throwaway embedded Postgres on :5434)
 npm run test --workspace apps/web    # frontend suite (vitest + jsdom, incl. axe a11y tests)
 npm run typecheck                     # all workspaces
 npm run mcp --workspace apps/api     # MCP server over stdio
@@ -44,7 +45,8 @@ Never duplicate a business rule in a route/tool/component — fix it once in the
 ## Binding conventions
 
 - **Money is integer cents** everywhere (`*Cents` fields); format only at the edge with `formatUsd`/`formatUsdWhole` from `@hearth/shared`.
-- **No Prisma `enum` or `Decimal`** — SQLite. Enums are String columns validated by the shared Zod enums (schema header comment explains).
+- **No Prisma `enum` or `Decimal`** — enums are String columns validated by the shared Zod enums so `@hearth/shared` stays the single source of truth (native Postgres enums deliberately deferred; schema header comment explains). Money never uses `Decimal` (integer cents only).
+- **Schema changes ship as migrations** (`prisma migrate dev --name ...` with the dev database running) — `db push` is no longer part of any flow; tests apply `prisma migrate deploy`, so an unmigrated schema change fails the suite.
 - **Seed numbers are pinned:** dashboard/report tests assert exact figures from `apps/api/prisma/seed-constants.ts`. Changing seed data without updating the constants (and knowing why) breaks tests by design.
 - **AI-authored content is always visually marked** in the web app via the single `AiSurface` wrapper; chart colors and all UI colors come only from `src/styles/tokens.css` design tokens — no ad hoc hex in components.
 - **A11y is merge-blocking:** axe tests run in the web suite; status is never conveyed by color alone; charts require `title` + `description` and provide a "view as table" alternative.
