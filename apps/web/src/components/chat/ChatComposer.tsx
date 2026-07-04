@@ -65,7 +65,7 @@ export function ChatComposer() {
         className="flex items-end gap-2"
       >
         <label htmlFor="chat-composer" className="sr-only">
-          Message the Hearth assistant
+          Message Roost
         </label>
         <textarea
           id="chat-composer"

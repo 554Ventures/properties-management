@@ -162,10 +162,10 @@ function emit(stream: StreamCall, ...events: SseEvent[]) {
 /** Opens the drawer, sends a message, and streams up to a paused question. */
 async function openAndStreamQuestion() {
   renderShell();
-  fireEvent.click(screen.getByRole('button', { name: 'Open Hearth assistant' }));
-  await screen.findByRole('dialog', { name: 'Hearth assistant' });
+  fireEvent.click(screen.getByRole('button', { name: 'Open Roost' }));
+  await screen.findByRole('dialog', { name: 'Roost' });
 
-  const input = screen.getByLabelText('Message the Hearth assistant');
+  const input = screen.getByLabelText('Message Roost');
   fireEvent.change(input, { target: { value: 'Help me get ready for taxes' } });
   fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
   await waitFor(() => expect(postSseMock).toHaveBeenCalledTimes(1));
@@ -182,10 +182,10 @@ async function openAndStreamQuestion() {
 /** Opens the drawer, sends a message, and streams every block type. */
 async function openAndStreamFullTurn() {
   renderShell();
-  fireEvent.click(screen.getByRole('button', { name: 'Open Hearth assistant' }));
-  await screen.findByRole('dialog', { name: 'Hearth assistant' });
+  fireEvent.click(screen.getByRole('button', { name: 'Open Roost' }));
+  await screen.findByRole('dialog', { name: 'Roost' });
 
-  const input = screen.getByLabelText('Message the Hearth assistant');
+  const input = screen.getByLabelText('Message Roost');
   fireEvent.change(input, { target: { value: 'Help me get ready for taxes' } });
   fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
   await waitFor(() => expect(postSseMock).toHaveBeenCalledTimes(1));
@@ -226,9 +226,9 @@ describe('ChatDrawer', () => {
     stubChatFetch();
     renderShell();
 
-    const launcher = screen.getByRole('button', { name: 'Open Hearth assistant' });
+    const launcher = screen.getByRole('button', { name: 'Open Roost' });
     fireEvent.click(launcher);
-    const dialog = await screen.findByRole('dialog', { name: 'Hearth assistant' });
+    const dialog = await screen.findByRole('dialog', { name: 'Roost' });
     expect(dialog).toBeInTheDocument();
     // The launcher hides (but stays mounted) while the drawer is open.
     expect(launcher).toHaveClass('hidden');
@@ -242,7 +242,7 @@ describe('ChatDrawer', () => {
     stubChatFetch();
     renderShell(['/?chat=open']);
     expect(
-      await screen.findByRole('dialog', { name: 'Hearth assistant' }),
+      await screen.findByRole('dialog', { name: 'Roost' }),
     ).toBeInTheDocument();
   });
 
@@ -250,10 +250,10 @@ describe('ChatDrawer', () => {
     const fetchCalls = stubChatFetch();
     renderShell();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open Hearth assistant' }));
-    await screen.findByRole('dialog', { name: 'Hearth assistant' });
+    fireEvent.click(screen.getByRole('button', { name: 'Open Roost' }));
+    await screen.findByRole('dialog', { name: 'Roost' });
 
-    const input = screen.getByLabelText('Message the Hearth assistant');
+    const input = screen.getByLabelText('Message Roost');
     fireEvent.change(input, { target: { value: 'How is my cash flow doing?' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
@@ -291,7 +291,7 @@ describe('ChatDrawer', () => {
     expect(screen.getByRole('button', { name: 'View as table' })).toBeInTheDocument();
     // aria-live announcement on block_complete (not per token)
     expect(
-      screen.getByText('The Hearth assistant added a chart: Income vs. expenses.'),
+      screen.getByText('Roost added a chart: Income vs. expenses.'),
     ).toBeInTheDocument();
 
     // ask_user_question pauses the turn: composer disabled with hint text.
@@ -336,7 +336,7 @@ describe('ChatDrawer', () => {
     expect(screen.getByRole('columnheader', { name: 'Property' })).toBeInTheDocument();
     expect(screen.getByText('$15,000.00')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Open the full Schedule E' })).toBeEnabled();
-    expect(screen.getByText('The Hearth assistant finished replying.')).toBeInTheDocument();
+    expect(screen.getByText('Roost finished replying.')).toBeInTheDocument();
 
     // Turn over — composer usable again.
     expect(input).toBeEnabled();
@@ -370,7 +370,7 @@ describe('ChatDrawer', () => {
       { event: 'message_complete', data: { messageId: 'm1' } },
     );
     expect(screen.getByText('Answered')).toBeInTheDocument();
-    expect(screen.getByLabelText('Message the Hearth assistant')).toBeEnabled();
+    expect(screen.getByLabelText('Message Roost')).toBeEnabled();
   });
 
   it('keeps an accepted answer frozen when the stream fails after the resume started', async () => {
@@ -403,10 +403,10 @@ describe('ChatDrawer', () => {
     };
     stubChatFetch([historyMessage]);
     renderShell();
-    fireEvent.click(screen.getByRole('button', { name: 'Open Hearth assistant' }));
-    await screen.findByRole('dialog', { name: 'Hearth assistant' });
+    fireEvent.click(screen.getByRole('button', { name: 'Open Roost' }));
+    await screen.findByRole('dialog', { name: 'Roost' });
 
-    const input = screen.getByLabelText('Message the Hearth assistant');
+    const input = screen.getByLabelText('Message Roost');
     fireEvent.change(input, { target: { value: 'Are we done yet?' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(postSseMock).toHaveBeenCalledTimes(1));
@@ -438,8 +438,8 @@ describe('ChatDrawer', () => {
   it('clears the conversation and starts a fresh session on the next send', async () => {
     const fetchCalls = stubChatFetch();
     renderShell();
-    fireEvent.click(screen.getByRole('button', { name: 'Open Hearth assistant' }));
-    await screen.findByRole('dialog', { name: 'Hearth assistant' });
+    fireEvent.click(screen.getByRole('button', { name: 'Open Roost' }));
+    await screen.findByRole('dialog', { name: 'Roost' });
 
     // Nothing to clear yet.
     expect(screen.getByRole('button', { name: 'Clear' })).toBeDisabled();
@@ -447,7 +447,7 @@ describe('ChatDrawer', () => {
     // A phrase that is not one of the composer's suggested prompts, so its only
     // occurrence is the transcript bubble.
     const userText = 'Summarize my parsnip ledger';
-    const input = screen.getByLabelText('Message the Hearth assistant');
+    const input = screen.getByLabelText('Message Roost');
     fireEvent.change(input, { target: { value: userText } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(postSseMock).toHaveBeenCalledTimes(1));
@@ -467,10 +467,10 @@ describe('ChatDrawer', () => {
     expect(screen.queryByText(userText)).not.toBeInTheDocument();
     expect(screen.queryByText(/cash flow is strong/i)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Clear' })).toBeDisabled();
-    expect(screen.getByLabelText('Message the Hearth assistant')).toBeEnabled();
+    expect(screen.getByLabelText('Message Roost')).toBeEnabled();
 
     // The next send creates a brand-new session (second POST /chat/sessions).
-    fireEvent.change(screen.getByLabelText('Message the Hearth assistant'), {
+    fireEvent.change(screen.getByLabelText('Message Roost'), {
       target: { value: 'And rent?' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
@@ -505,10 +505,10 @@ describe('ChatDrawer', () => {
     };
     stubChatFetch();
     renderShell();
-    fireEvent.click(screen.getByRole('button', { name: 'Open Hearth assistant' }));
-    await screen.findByRole('dialog', { name: 'Hearth assistant' });
+    fireEvent.click(screen.getByRole('button', { name: 'Open Roost' }));
+    await screen.findByRole('dialog', { name: 'Roost' });
 
-    const input = screen.getByLabelText('Message the Hearth assistant');
+    const input = screen.getByLabelText('Message Roost');
     fireEvent.change(input, { target: { value: 'Email my Schedule E' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(postSseMock).toHaveBeenCalledTimes(1));

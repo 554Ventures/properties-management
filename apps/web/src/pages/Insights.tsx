@@ -109,7 +109,7 @@ export function Insights() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="AI Insights"
-        description="Hearth reviews your portfolio each month and writes up what it noticed — no prompting required."
+        description="Roost reviews your portfolio each month and writes up what it noticed — no prompting required."
         breadcrumbs={[{ label: 'Dashboard', to: '/' }, { label: 'AI Insights' }]}
         actions={
           // Dev/demo trigger for the scheduled monthly job.

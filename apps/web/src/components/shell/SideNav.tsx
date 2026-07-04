@@ -60,14 +60,9 @@ export function SideNav() {
       aria-label="Main"
       className="fixed inset-y-0 left-0 z-30 hidden w-60 flex-col border-r border-border bg-surface md:flex"
     >
-      <div className="flex items-center gap-2.5 px-5 py-5">
-        <span
-          aria-hidden="true"
-          className="grid h-8 w-8 place-items-center rounded-md bg-brand text-base font-bold text-ink-on-brand"
-        >
-          H
-        </span>
-        <span className="text-lg font-semibold tracking-tight text-ink">Hearth</span>
+      <div className="flex items-center gap-2.5 px-5 py-6">
+        <img src="/logo.svg" alt="" aria-hidden="true" className="h-8 w-8 rounded-md" />
+        <span className="text-[15px] font-semibold tracking-tight text-ink">554 Properties</span>
       </div>
       <ul className="flex flex-1 flex-col gap-1 px-3">
         {items.map((item) => (

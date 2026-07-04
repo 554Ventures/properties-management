@@ -1,7 +1,7 @@
 // Supabase-identity → Account resolution (deployment plan §4.1). Called by
 // plugins/auth.ts on every request in Supabase mode. Unlike the rest of the
 // service layer this function *derives* the accountId rather than taking it —
-// it is the one place an external identity becomes a Hearth account.
+// it is the one place an external identity becomes a 554 Properties account.
 //
 // Provisioning rules for a first-seen identity (JWT `sub`):
 //   1. If an Account with the same (Supabase-verified) email exists and has no

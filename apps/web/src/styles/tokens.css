@@ -1,25 +1,30 @@
 /*
- * Hearth design tokens (ARCHITECTURE §8) — the single source of truth for
- * color, radius, type, and motion. Consumed by tailwind.config.ts; no ad hoc
- * hex values in components.
+ * 554 Properties design tokens (ARCHITECTURE §8) — the single source of truth
+ * for color, radius, type, and motion. Consumed by tailwind.config.ts; no ad
+ * hoc hex values in components.
+ *
+ * Visual language (Mercury-inspired): high-contrast near-black text on an
+ * almost-pure-white ground carries the hierarchy; thin 1px borders replace
+ * heavy shadows; generous whitespace; small, precise motion. The dark-orange
+ * brand accent is used sparingly, violet stays reserved for AI surfaces.
  *
  * Contrast requirements: status/text colors ≥ 4.5:1 on --color-surface,
  * chart series ≥ 3:1.
  */
 :root {
-  /* Core surfaces & text — warm, calm neutrals */
-  --color-bg: #f8f5f0;
+  /* Core surfaces & text — almost-pure-white ground, near-black ink */
+  --color-bg: #fafafa;
   --color-surface: #ffffff;
-  --color-surface-raised: #fdfcfa;
-  --color-surface-sunken: #f1ece4;
-  --color-border: #e6dfd4;
-  --color-border-strong: #cbc0b1;
-  --color-text: #292421;
-  --color-text-muted: #6b6157;
-  --color-text-faint: #98908a; /* decorative only — not for essential text */
+  --color-surface-raised: #ffffff;
+  --color-surface-sunken: #f4f4f3;
+  --color-border: #ebeae7; /* thin 1px hairlines do the structural work */
+  --color-border-strong: #d6d4cf;
+  --color-text: #1a1714; /* near-black — the primary hierarchy tool */
+  --color-text-muted: #675f57;
+  --color-text-faint: #97918a; /* decorative only — not for essential text */
   --color-text-on-brand: #ffffff;
 
-  /* Brand — warm terracotta / ember ("Hearth"). 5.2:1 with white text. */
+  /* Brand — warm terracotta / ember. 5.2:1 with white text. */
   --color-brand: #bc4514;
   --color-brand-strong: #96350e;
   --color-brand-soft: #f9e9df;
@@ -45,15 +50,15 @@
   --chart-warning: #c05a10;
   --chart-neutral: #64748b;
   --chart-ai: #7c3aed;
-  --chart-grid: #e6dfd4;
+  --chart-grid: #ededeb;
 
   /* Focus ring — visible on both warm surfaces and brand fills */
   --color-focus: #6027c4;
 
-  /* Radius scale */
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
+  /* Radius scale — tightened for a crisper, more precise feel */
+  --radius-sm: 5px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
 
   /* Spacing scale (mirrors the Tailwind 4px grid used throughout) */
   --space-1: 4px;
@@ -74,22 +79,22 @@
   --text-xl: 1.375rem;
   --text-2xl: 1.75rem;
 
-  /* Motion */
-  --motion-fast: 180ms;
-  --motion-slow: 240ms;
+  /* Motion — small and precise; nothing sweeping */
+  --motion-fast: 130ms;
+  --motion-slow: 190ms;
   --motion-ease: cubic-bezier(0.2, 0, 0, 1);
 }
 
 /* Dark mode — same hues, adjusted lightness; contrast maintained. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --color-bg: #191512;
-    --color-surface: #221e1a;
-    --color-surface-raised: #2a2521;
+    --color-bg: #16130f;
+    --color-surface: #201c18;
+    --color-surface-raised: #201c18;
     --color-surface-sunken: #141110;
-    --color-border: #3a332c;
+    --color-border: #352f28;
     --color-border-strong: #554b40;
-    --color-text: #f0eae3;
+    --color-text: #f4efe8;
     --color-text-muted: #b5aa9e;
     --color-text-faint: #857b70;
     --color-text-on-brand: #2a1208;
@@ -115,7 +120,7 @@
     --chart-warning: #fbbf24;
     --chart-neutral: #94a3b8;
     --chart-ai: #a78bfa;
-    --chart-grid: #3a332c;
+    --chart-grid: #352f28;
 
     --color-focus: #c7b6fc;
   }

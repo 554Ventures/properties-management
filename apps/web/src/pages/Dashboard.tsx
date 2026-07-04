@@ -190,7 +190,7 @@ export function Dashboard() {
               <Card>
                 <h2 className="text-sm font-semibold text-ink">No new insights</h2>
                 <p className="mt-1 text-sm text-ink-muted">
-                  Nothing needs your attention right now. New observations appear here as Hearth
+                  Nothing needs your attention right now. New observations appear here as Roost
                   notices them.
                 </p>
               </Card>

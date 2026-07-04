@@ -72,8 +72,8 @@ export function ReportViewer() {
       {isTaxReport && (
         <Card className="bg-surface-sunken">
           <p className="text-xs leading-relaxed text-ink-muted">
-            <strong className="font-semibold text-ink">Not tax advice.</strong> Hearth organizes
-            your records and computes estimates to help you prepare — it is not a certified tax
+            <strong className="font-semibold text-ink">Not tax advice.</strong> 554 Properties
+            organizes your records and computes estimates to help you prepare — it is not a certified tax
             preparation service. Confirm figures with a licensed tax professional before filing.
           </p>
         </Card>

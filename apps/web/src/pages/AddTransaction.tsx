@@ -145,7 +145,7 @@ export function AddTransaction() {
             <IconUpload size={24} />
           </span>
           <p className="text-sm text-ink-muted">
-            Drag a receipt photo here — Hearth reads the vendor, amount, and date and pre-fills the
+            Drag a receipt photo here — Roost reads the vendor, amount, and date and pre-fills the
             form. Nothing is saved until you hit Save.
           </p>
           <Button
@@ -236,7 +236,7 @@ export function AddTransaction() {
             <FormField
               label="Category"
               htmlFor="txn-category"
-              hint={!categoryId && !suggestion ? 'Leave blank and Hearth will suggest one for review.' : undefined}
+              hint={!categoryId && !suggestion ? 'Leave blank and Roost will suggest one for review.' : undefined}
             >
               <Select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
                 <option value="">No category yet</option>

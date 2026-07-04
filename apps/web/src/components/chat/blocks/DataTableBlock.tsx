@@ -19,7 +19,7 @@ export function DataTableBlock({ block }: { block: DataTableBlockData }) {
   return (
     <div className="rounded-md border border-border bg-surface">
       <Table
-        caption={block.title ?? 'Data from the Hearth assistant'}
+        caption={block.title ?? 'Data from Roost'}
         captionVisible={Boolean(block.title)}
         className={block.title ? '[&>caption]:px-4' : undefined}
       >

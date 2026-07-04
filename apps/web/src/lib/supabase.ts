@@ -2,7 +2,7 @@
 // VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are set at build time;
 // otherwise the app runs in demo mode — no login screen, optional
 // VITE_DEV_BEARER_TOKEN. The anon key is public by design: it only grants the
-// auth flow, and every data request still goes through the Hearth API.
+// auth flow, and every data request still goes through the 554 Properties API.
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 export const supabase: SupabaseClient | null = (() => {
