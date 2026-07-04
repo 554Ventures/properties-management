@@ -112,11 +112,13 @@ Models (field → type; `?` optional; relations noted):
 
 **Account** — `id`, `name String`, `email String @unique`, `timezone String @default("America/New_York")`, `taxRatePct Int @default(20)`, `taxYearStartMonth Int @default(1)`, `graceDays Int @default(0)`, `createdAt DateTime`. Relations: has many of everything below. (Future `Membership` table attaches here without reshaping.)
 
-**Property** — `id`, `accountId`, `nickname String?`, `addressLine1 String`, `city String`, `state String`, `zip String`, `acquisitionDate DateTime?`, `acquisitionCostCents Int?`, `notes String?`, `createdAt`. Relations: `units Unit[]`, `transactions Transaction[]`, `insights Insight[]`. (`unitCount`, occupancy, status are **derived** in the service, not stored.)
+**Property** — `id`, `accountId`, `nickname String?`, `addressLine1 String`, `city String`, `state String`, `zip String`, `acquisitionDate DateTime?`, `acquisitionCostCents Int?`, `notes String?`, `archivedAt DateTime?`, `createdAt`. Relations: `units Unit[]`, `transactions Transaction[]`, `insights Insight[]`. (`unitCount`, occupancy, status are **derived** in the service, not stored.)
 
-**Unit** — `id`, `propertyId`, `label String` (e.g. "Unit A", "Main"), `bedrooms Int?`, `bathrooms Float?`, `marketRentCents Int?`. Relations: `leases Lease[]`. Occupancy status derived: occupied iff an `active` lease exists.
+**Unit** — `id`, `propertyId`, `label String` (e.g. "Unit A", "Main"), `bedrooms Int?`, `bathrooms Float?`, `marketRentCents Int?`, `archivedAt DateTime?`. Relations: `leases Lease[]`. Occupancy status derived: occupied iff an `active` lease exists.
 
-**Tenant** — `id`, `accountId`, `fullName String`, `email String?`, `phone String?`, `notes String?`, `createdAt`. Relations: `leaseTenants LeaseTenant[]`. No login in v1.
+**Tenant** — `id`, `accountId`, `fullName String`, `email String?`, `phone String?`, `notes String?`, `archivedAt DateTime?`, `createdAt`. Relations: `leaseTenants LeaseTenant[]`. No login in v1.
+
+**Soft archive** (`archivedAt` on Property/Unit/Tenant) — DELETE stamps `archivedAt` instead of removing the row; archived entities are filtered from list/active-portfolio derivations but resolve via detail and are restorable. Blocked while an `active` lease exists. Leases have no `archivedAt` — terminating sets `status = ended`.
 
 **Lease** — `id`, `unitId`, `rentCents Int`, `dueDay Int @default(1)`, `startDate DateTime`, `endDate DateTime`, `status String` (LeaseStatus), `esignEnvelopeId String?`, `esignStatus String?` (EsignStatus), `createdAt`. Relations: `unit`, `leaseTenants LeaseTenant[]`, `rentPayments RentPayment[]`. ("Renew soon" is derived: `endDate` within 60 days.)
 
@@ -153,14 +155,15 @@ Base path `/api/v1`. All request/response Zod schemas live in `packages/shared/s
 | POST `/properties` | `CreatePropertyInput` (address fields + `units: CreateUnitInput[]`) → `Property` |
 | GET `/properties/:id` | — → `PropertyDetailResponse` (property, units w/ lease+tenant+status, `pnl: PnlSummary` MTD/YTD, `insights: Insight[]`) |
 | PATCH `/properties/:id` | `UpdatePropertyInput` → `Property` |
-| DELETE `/properties/:id` | — → 204 |
+| DELETE `/properties/:id` | — → 204 (soft-archive; 409 if a unit has an active lease) |
+| POST `/properties/:id/restore` | — → `Property` (un-archive) |
 | GET `/properties/:id/pnl?from&to` | → `PropertyPnlResponse` (income/expense by category + net) |
 
-**Units** — POST `/properties/:id/units` (`CreateUnitInput` → `Unit`), PATCH `/units/:id` (`UpdateUnitInput`), DELETE `/units/:id`.
+**Units** — POST `/properties/:id/units` (`CreateUnitInput` → `Unit`), PATCH `/units/:id` (`UpdateUnitInput`), DELETE `/units/:id` (soft-archive), POST `/units/:id/restore` → `Unit`.
 
-**Tenants** — GET `/tenants` → `TenantListResponse` (rows: tenant, unit/property, `rentCents`, `leaseEndDate`, `status: current|renew_soon|late`); POST `/tenants` (`CreateTenantInput`); GET `/tenants/:id` → `TenantDetailResponse` (contact, leases, `paymentHistory: RentPaymentRow[]`, documents); PATCH `/tenants/:id`; DELETE `/tenants/:id`.
+**Tenants** — GET `/tenants` → `TenantListResponse` (rows: tenant, unit/property, `rentCents`, `leaseEndDate`, `status: current|renew_soon|late`); POST `/tenants` (`CreateTenantInput`); GET `/tenants/:id` → `TenantDetailResponse` (contact, leases, `paymentHistory: RentPaymentRow[]`, documents); PATCH `/tenants/:id`; DELETE `/tenants/:id` (soft-archive); POST `/tenants/:id/restore` → `Tenant`.
 
-**Leases** — GET `/leases?status`; POST `/leases` (`CreateLeaseInput`: unitId, tenantIds, rentCents, dueDay, start/end); PATCH `/leases/:id`; POST `/leases/:id/renewal-draft` → `RenewalDraftResponse` (proposed terms incl. `suggestedRentCents` from market-rent heuristic); POST `/leases/:id/esign` → `EsignEnvelopeResponse` (mock Docusign envelope + status).
+**Leases** — GET `/leases?status`; GET `/leases/:id` → `LeaseDetailResponse` (`lease: LeaseWithContext` — unitLabel/propertyLabel/tenants — + `rentPayments`); POST `/leases` (`CreateLeaseInput`: unitId, tenantIds, rentCents, dueDay, start/end); PATCH `/leases/:id`; POST `/leases/:id/terminate` → `Lease` (status→ended); POST `/leases/:id/tenants` (`AddLeaseTenantInput`) and DELETE `/leases/:id/tenants/:tenantId` → `LeaseWithContext` (co-tenants; can't remove last, primary auto-promotes); POST `/leases/:id/renewal` (`AcceptRenewalInput`) → `Lease` (immediate switchover: new active lease, source ended); POST `/leases/:id/renewal-draft` → `RenewalDraftResponse` (proposed terms incl. `suggestedRentCents` from market-rent heuristic); POST `/leases/:id/esign` → `EsignEnvelopeResponse` (mock Docusign envelope + status). New management schemas live in `schemas/lease-management.ts`.
 
 **Transactions**
 | Method/Path | Request → Response |
@@ -206,10 +209,10 @@ Base path `/api/v1`. All request/response Zod schemas live in `packages/shared/s
 
 All functions: `(accountId: string, ...) => Promise<...>`, typed with `@hearth/shared` types. Exposure key: **R** = REST, **A** = chat agent tool, **M** = MCP.
 
-- **propertyService** — `list(accountId)` R A M · `getDetail(accountId, id)` R A M · `create/update/remove` R · `getPnl(accountId, id, range)` R A M
-- **unitService** — `create/update/remove` R
-- **tenantService** — `list(accountId)` R A M · `getDetail(accountId, id)` R A M · `create/update/remove` R
-- **leaseService** — `list(accountId, filter?)` R A · `create/update` R · `draftRenewal(accountId, leaseId)` R A (returns proposal; sending is separate) · `sendForEsign(accountId, leaseId)` R (mock Docusign)
+- **propertyService** — `list(accountId)` R A M · `getDetail(accountId, id)` R A M · `create/update` R · `remove` R (soft-archive, blocked on active lease) · `restore` R · `getPnl(accountId, id, range)` R A M. All writes audited; list/derivations filter `archivedAt: null`.
+- **unitService** — `create/update` R · `remove` R (soft-archive) · `restore` R. Audited.
+- **tenantService** — `list(accountId)` R A M · `getDetail(accountId, id)` R A M · `create/update` R · `remove` R (soft-archive) · `restore` R. Audited.
+- **leaseService** — `list(accountId, filter?)` R A (excludes archived unit/property) · `getDetail(accountId, id)` R A · `create/update` R · `terminate(accountId, id)` R · `addTenant/removeTenant(accountId, leaseId, …)` R (last-tenant guard, primary auto-promote) · `createRenewal(accountId, leaseId, input)` R (switchover: new active lease, source ended) · `draftRenewal(accountId, leaseId)` R A (returns proposal; sending is separate) · `sendForEsign(accountId, leaseId)` R (mock Docusign). All writes audited.
 - **transactionService** — `list(accountId, filter)` R A M · `create(accountId, input)` R A(write) M(write) · `update/remove` R · `getReviewQueue(accountId)` R A · `confirm(accountId, id, categoryId?)` R A(write) M(write, as `categorize_transaction`) · `suggestCategory(accountId, partialTxn)` internal (AiClient; mock = keyword table: "plumb|roof|repair"→Repairs, "electric|water|gas"→Utilities, "insur"→Insurance, else Supplies @ 0.62 confidence) · `scanReceipt(accountId, image)` R (mock returns fixture parse) · `importFromBank(accountId)` R (mock Plaid → pending_review rows)
 - **categoryService** — `list` R A M · `create` R
 - **rentService** — `getMonthStatus(accountId, period)` R A M (materializes missing expected RentPayment rows per active lease for `period`, `dueDate = periodStart + dueDay − 1`, then derives) · `recordPayment(accountId, input)` R A(write) M(write) · `createPaymentLink(accountId, rentPaymentId)` R (mock Stripe) · `sendReminders(accountId, rentPaymentIds)` R A(write) M(write) — sets `remindedAt`, mock email, audit log
@@ -309,7 +312,7 @@ Reuses the tool definitions/bindings in `ai/tools.ts` (single source, PRD §10).
 - `Table` — semantic `<table>/<caption>/<th scope>`; row actions keyboard-reachable.
 - `InsightCard` (inside `AiSurface`) — `surface-ai` background, `border-ai` left accent, `AiBadge` ("✦ AI"); primary action + Dismiss; new cards announced via `aria-live="polite"`.
 - `AiChip` — the suggested-category chip on the transaction form: `aria-describedby` "AI-suggested, 84% confidence — confirm or change"; never auto-applied.
-- `ChatDrawer` — `role="dialog" aria-label="Hearth assistant"`, focus trap, Esc closes and returns focus to the launcher; full-screen at `<md`. Transcript is `aria-live="polite"` (announce on `block_complete`/message end, not per token). Block renderers: `TextBlock`, `ChartBlock` (reuses `charts/*`), `DataTableBlock` (reuses `Table`), `ActionCardBlock` (buttons fire the embedded `api_call` via the shared api client, disabled+spinner while pending, result toast), `AskUserQuestionBlock` (single-select → `role="radiogroup"`, multiSelect → checkbox group; each option = label + description; "Other" free-text; Submit posts `/answer` and re-attaches the SSE reader; chips disabled after answering, selection stays visible in transcript).
+- `ChatDrawer` — `role="dialog" aria-label="Hearth assistant"`, Esc closes and returns focus to the launcher; **Clear** control resets the transcript + starts a fresh session on the next send. Modal below `xl` (backdrop, focus trap, body-scroll lock); at `xl` it's a **docked non-modal** panel — page shifts aside (`xl:pr`) and stays scrollable/keyboard-reachable, so no Tab-trap or scroll-lock. Full-screen at `<md`. Transcript is `aria-live="polite"` (announce on `block_complete`/message end, not per token). Block renderers: `TextBlock`, `ChartBlock` (reuses `charts/*`), `DataTableBlock` (reuses `Table`), `ActionCardBlock` (buttons fire the embedded `api_call` via the shared api client, disabled+spinner while pending, result toast), `AskUserQuestionBlock` (single-select → `role="radiogroup"`, multiSelect → checkbox group; each option = label + description; "Other" free-text; Submit posts `/answer` and re-attaches the SSE reader; chips disabled after answering, selection stays visible in transcript).
 - Forms (`FormField`) — visible `<label>`, errors via `aria-describedby`, no placeholder-as-label.
 
 **Design tokens** (`src/styles/tokens.css` as CSS custom properties, mapped into `tailwind.config.ts` — no ad hoc hex in components):
