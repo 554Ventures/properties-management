@@ -4,10 +4,22 @@ import { useState } from 'react';
 import { formatUsd } from '@hearth/shared';
 import type { RenewalDraftResponse, TenantLease } from '@hearth/shared';
 import { useParams } from 'react-router-dom';
-import { useDraftRenewal, useSendEsign, useTenantDetail } from '../api/queries';
+import {
+  useArchiveTenant,
+  useCreateRenewal,
+  useDraftRenewal,
+  useRestoreTenant,
+  useSendEsign,
+  useTenantDetail,
+  useTerminateLease,
+} from '../api/queries';
+import { LeaseFormModal } from '../components/forms/LeaseFormModal';
+import { LeaseTenantsModal } from '../components/forms/LeaseTenantsModal';
+import { TenantFormModal } from '../components/forms/TenantFormModal';
 import { PageHeader } from '../components/shell/PageHeader';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { ErrorNotice } from '../components/ui/ErrorNotice';
 import { Modal } from '../components/ui/Modal';
 import { Skeleton } from '../components/ui/Skeleton';
@@ -38,8 +50,17 @@ export function TenantDetail() {
   usePageTitle(title);
 
   const [draft, setDraft] = useState<RenewalDraftResponse | null>(null);
+  const [editTenant, setEditTenant] = useState(false);
+  const [confirmArchive, setConfirmArchive] = useState(false);
+  const [editingLease, setEditingLease] = useState<TenantLease | null>(null);
+  const [coTenantsLeaseId, setCoTenantsLeaseId] = useState<string | null>(null);
+  const [terminating, setTerminating] = useState<TenantLease | null>(null);
   const draftRenewal = useDraftRenewal();
   const sendEsign = useSendEsign();
+  const createRenewal = useCreateRenewal();
+  const archiveTenant = useArchiveTenant();
+  const restoreTenant = useRestoreTenant();
+  const terminateLease = useTerminateLease();
   const { toast } = useToast();
 
   if (detail.isPending) {
@@ -85,12 +106,86 @@ export function TenantDetail() {
     });
   };
 
+  const acceptRenewal = () => {
+    if (!draft) return;
+    createRenewal.mutate(
+      {
+        leaseId: draft.leaseId,
+        rentCents: draft.suggestedRentCents,
+        dueDay: draft.dueDay,
+        startDate: draft.proposedStartDate,
+        endDate: draft.proposedEndDate,
+      },
+      {
+        onSuccess: () => {
+          toast('Renewal accepted — the new lease is now active.', 'positive');
+          setDraft(null);
+        },
+        onError: (err) =>
+          toast(err instanceof Error ? err.message : 'Could not create the renewal.', 'danger'),
+      },
+    );
+  };
+
+  const doArchiveTenant = () => {
+    archiveTenant.mutate(tenant.id, {
+      onSuccess: () => {
+        toast(`${tenant.fullName} archived.`, 'positive');
+        setConfirmArchive(false);
+      },
+      onError: (err) =>
+        toast(err instanceof Error ? err.message : 'Could not archive the tenant.', 'danger'),
+    });
+  };
+
+  const doRestoreTenant = () => {
+    restoreTenant.mutate(tenant.id, {
+      onSuccess: () => toast(`${tenant.fullName} restored.`, 'positive'),
+      onError: (err) =>
+        toast(err instanceof Error ? err.message : 'Could not restore the tenant.', 'danger'),
+    });
+  };
+
+  const doTerminate = () => {
+    if (!terminating) return;
+    terminateLease.mutate(terminating.id, {
+      onSuccess: () => {
+        toast('Lease terminated.', 'positive');
+        setTerminating(null);
+      },
+      onError: (err) =>
+        toast(err instanceof Error ? err.message : 'Could not terminate the lease.', 'danger'),
+    });
+  };
+
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
         title={tenant.fullName}
         breadcrumbs={[{ label: 'Tenants & Leases', to: '/tenants' }, { label: tenant.fullName }]}
+        actions={
+          <div className="flex gap-2">
+            <Button variant="secondary" size="sm" onClick={() => setEditTenant(true)}>
+              Edit tenant
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setConfirmArchive(true)}>
+              Archive tenant
+            </Button>
+          </div>
+        }
       />
+
+      {tenant.archivedAt && (
+        <div
+          role="status"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-warning-soft px-4 py-3 text-sm text-ink"
+        >
+          <span>This tenant is archived and hidden from your lists.</span>
+          <Button variant="secondary" size="sm" busy={restoreTenant.isPending} onClick={doRestoreTenant}>
+            Restore tenant
+          </Button>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <Card>
@@ -158,14 +253,29 @@ export function TenantDetail() {
                       </div>
                     </div>
                     {lease.status === 'active' && (
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        busy={draftRenewal.isPending}
-                        onClick={() => startDraft(lease)}
-                      >
-                        Draft renewal
-                      </Button>
+                      <div className="flex flex-wrap justify-end gap-1">
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          busy={draftRenewal.isPending}
+                          onClick={() => startDraft(lease)}
+                        >
+                          Draft renewal
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => setEditingLease(lease)}>
+                          Edit terms
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setCoTenantsLeaseId(lease.id)}
+                        >
+                          Co-tenants
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => setTerminating(lease)}>
+                          Terminate
+                        </Button>
+                      </div>
                     )}
                   </div>
                 </Card>
@@ -272,20 +382,67 @@ export function TenantDetail() {
               </tbody>
             </Table>
             <p className="text-xs text-ink-muted">
-              Sending creates a Docusign envelope (mocked in this environment) — the tenant signs
-              electronically and the lease status updates here.
+              Send for e-signature creates a Docusign envelope (mocked here) — the tenant signs and
+              the lease status updates. Accept &amp; create renewal ends the current lease
+              immediately and activates the new one at the terms above.
             </p>
-            <div className="flex justify-end gap-2">
+            <div className="flex flex-wrap justify-end gap-2">
               <Button variant="ghost" onClick={() => setDraft(null)}>
                 Cancel
               </Button>
-              <Button busy={sendEsign.isPending} onClick={sendForSignature}>
+              <Button variant="secondary" busy={sendEsign.isPending} onClick={sendForSignature}>
                 Send for e-signature
+              </Button>
+              <Button busy={createRenewal.isPending} onClick={acceptRenewal}>
+                Accept &amp; create renewal
               </Button>
             </div>
           </div>
         )}
       </Modal>
+
+      <TenantFormModal
+        mode="edit"
+        open={editTenant}
+        tenant={tenant}
+        onClose={() => setEditTenant(false)}
+      />
+      <ConfirmDialog
+        open={confirmArchive}
+        onClose={() => setConfirmArchive(false)}
+        onConfirm={doArchiveTenant}
+        title="Archive tenant"
+        confirmLabel="Archive"
+        busy={archiveTenant.isPending}
+        body={
+          <>
+            Archiving hides <strong>{tenant.fullName}</strong> from your lists but keeps their
+            payment and lease history. You can restore them later.
+          </>
+        }
+      />
+      <LeaseFormModal
+        mode="edit"
+        open={editingLease !== null}
+        lease={editingLease ?? undefined}
+        onClose={() => setEditingLease(null)}
+      />
+      {coTenantsLeaseId && (
+        <LeaseTenantsModal
+          open
+          leaseId={coTenantsLeaseId}
+          onClose={() => setCoTenantsLeaseId(null)}
+        />
+      )}
+      <ConfirmDialog
+        open={terminating !== null}
+        onClose={() => setTerminating(null)}
+        onConfirm={doTerminate}
+        title="Terminate lease"
+        confirmLabel="Terminate"
+        busy={terminateLease.isPending}
+        body="This ends the active lease and marks the unit vacant. Payment history is retained."
+      />
     </div>
   );
 }

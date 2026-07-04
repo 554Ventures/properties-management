@@ -7,10 +7,10 @@ Complete inventory of what Hearth v1 does today (as of 2026-07-03). Companion to
 | Route | Feature | Notes |
 |---|---|---|
 | `/` | Dashboard (PRD §5.1) | Greeting + portfolio counts, 4 KPI tiles (net cash flow w/ trend, rent collected w/ progress bar, expenses, tax set-aside w/ "Estimate — not tax advice"), 6-month income-vs-expense bar chart, exactly one dismissible AI insight card, recent-activity feed. Zero-CLS skeletons. |
-| `/properties` | Properties list (§5.2) | Table w/ occupancy, rent/mo, status ("Full"/"N late" as text+icon); create-property modal. |
-| `/properties/:id` | Property detail (§5.2) | Units w/ lease+tenant+status, MTD/YTD P&L, property-scoped insight cards. |
-| `/tenants` | Tenants & leases list (§5.3) | Status per row (Current / Renew soon / "N days late"), portfolio renewal insight, per-row Remind for late tenants. |
-| `/tenants/:id` | Tenant detail (§5.3) | Contact, lease terms w/ e-sign status, payment history, renewal-draft modal (suggested rent) → mock Docusign send. |
+| `/properties` | Properties list (§5.2) | Table w/ occupancy, rent/mo, status ("Full"/"N late" as text+icon); create-property modal; per-row **Edit** (full fields incl. acquisition/notes) and **Archive** (soft, confirm dialog). |
+| `/properties/:id` | Property detail (§5.2) | Units w/ lease+tenant+status, MTD/YTD P&L, property-scoped insight cards. **Edit/Archive property**; **add/edit/archive units**; per unit: **create lease** (vacant) or **edit terms / terminate / manage co-tenants** (occupied). |
+| `/tenants` | Tenants & leases list (§5.3) | Status per row (Current / Renew soon / "N days late"), portfolio renewal insight, per-row Remind for late tenants; **Add tenant** modal. |
+| `/tenants/:id` | Tenant detail (§5.3) | Contact, lease terms w/ e-sign status, payment history; **Edit/Archive tenant**; per-lease **edit terms / terminate / co-tenants**; renewal-draft modal (suggested rent) → **Accept & create renewal** (immediate switchover) or mock Docusign send. |
 | `/money` | Transactions (§5.4) | Filterable ledger, review-queue count badge, mock bank import (Plaid adapter). |
 | `/money/review` | Review queue (§5.4) | Pending bank/receipt transactions w/ AI category suggestion chip (never auto-applied), confirm/override. |
 | `/money/new` | Add transaction (§5.4) | Manual form + snap-a-receipt dropzone → OCR endpoint pre-fills the form (mock parse; explicit save always required). |
@@ -23,7 +23,7 @@ Complete inventory of what Hearth v1 does today (as of 2026-07-03). Companion to
 
 ## AI assistant (PRD §9)
 
-- **Global chat drawer** on every screen (docked panel ≥xl, overlay below, full-screen <md); `?chat=open` deep link; context pre-loading from entry points (e.g. Reports).
+- **Global chat drawer** on every screen (docked panel ≥xl, overlay below, full-screen <md); `?chat=open` deep link; context pre-loading from entry points (e.g. Reports). **Clear-conversation** control resets the transcript and starts a fresh session on the next send. When docked (≥xl) the drawer is non-modal — the page beside it stays scrollable and keyboard-reachable; below xl it's a scroll-locking modal with a backdrop.
 - **Structured content blocks** rendered in-transcript: `text` (markdown-lite), `chart` (line/bar/donut/sparkline via the app's real chart components, semantic color roles, a11y description + table alternative), `data_table`, `action_card` (buttons executing allowlisted API calls with busy/done states, or in-app navigation), `ask_user_question`.
 - **askUserQuestion** (§9.4): model pauses mid-turn with 2–4 options (+ "Other" free text); radiogroup/checkbox UI, keyboard operable; answer resumes the same assistant message; failed answers roll back and allow retry; pause state survives server restart.
 - **Agent loop** (backend): Anthropic tool-use loop (max 8 iterations) over the service layer; 17 read + 7 write tools; render tools validated against the shared block schemas; tool activity indicator ("Checking your ledger…").
@@ -33,11 +33,12 @@ Complete inventory of what Hearth v1 does today (as of 2026-07-03). Companion to
 
 ## Backend (apps/api)
 
-- **REST API** `/api/v1/*`: properties, units, tenants, leases (incl. renewal draft + mock e-sign), transactions (CRUD, review queue, confirm, receipt scan, bank import), categories, rent (tracker, record payment, payment link, reminders), reports (library, generate, get, CSV/PDF export, email), insights (list, dismiss, monthly reviews), dashboard (KPIs, cashflow series, activity, insight), chat (sessions, SSE messages, SSE answer), settings/integrations, healthz. Every request/response validated by `@hearth/shared` Zod schemas.
+- **REST API** `/api/v1/*`: properties, units, tenants (full CRUD + soft-archive/restore), leases (create/edit/`GET :id`/terminate/co-tenant add+remove/renewal switchover/renewal draft + mock e-sign), transactions (CRUD, review queue, confirm, receipt scan, bank import), categories, rent (tracker, record payment, payment link, reminders), reports (library, generate, get, CSV/PDF export, email), insights (list, dismiss, monthly reviews), dashboard (KPIs, cashflow series, activity, insight), chat (sessions, SSE messages, SSE answer), settings/integrations, healthz. Every request/response validated by `@hearth/shared` Zod schemas.
 - **Data model**: Account, Property, Unit, Tenant, Lease(+LeaseTenant), Category (IRS Schedule E lines), Transaction (cents, source/status/AI-suggestion fields), RentPayment (period-materialized, due-date days-late), Report (snapshotted dataJson), Insight (dedupeKey), ChatSession/ChatMessage (blocksJson, providerStateJson), Integration, AuditLog.
 - **Derivation rules** (unit-tested against pinned seed constants): rent status/days-late, KPI trends vs same-day-of-month prior window, tax set-aside (current + quarterly target), tenant status precedence, insight rules.
 - **Reports**: real computed data for Schedule E, P&L, Net Cashflow, Rent Roll, General Ledger, Tenant Ledger; structurally-correct simplified output for the other 7 (maturity-flagged).
-- **Audit log** on every money/tenant write with actor attribution: `user`, `ai_suggested_user_confirmed`, `system` (model/MCP/scheduler).
+- **Audit log** on every money/tenant write with actor attribution: `user`, `ai_suggested_user_confirmed`, `system` (model/MCP/scheduler). Now covers property/unit/tenant/lease create/update/archive/restore/terminate/renew/add_tenant/remove_tenant (REST = `user`).
+- **Soft archive**: deleting a property/unit/tenant stamps `archivedAt` (never a hard delete); archived entities are hidden from lists + active-portfolio derivations (occupancy, rent tracker, dashboard money KPIs/activity) but remain resolvable via detail and are restorable. Archiving is blocked (409) while an active lease exists. **Financial/tax reports (Schedule E, P&L, GL) retain an archived property's transactions** for accounting accuracy — only the active-portfolio dashboard drops them.
 - **Seeded demo portfolio**: 9 properties / 14 units / $13,695 rent roll; 12 paid + 2 late (Okafor 6d, Park 3d); 6 months of history; KPIs land exactly on the wireframe figures ($8,450 net MTD, 86%, $1,690/$2,700 set-aside). Idempotent reseed refreshes the demo clock.
 - **Integration adapters** (interfaces + mocks): Plaid (bank import → review queue), Stripe (payment links), Docusign (envelopes), email (console). Real implementations are 1:1 swaps.
 - **Auth**: single seeded demo account; optional `DEV_BEARER_TOKEN` bearer auth (web client sends it via `VITE_DEV_BEARER_TOKEN`); binds 127.0.0.1 by default.
@@ -56,7 +57,7 @@ Complete inventory of what Hearth v1 does today (as of 2026-07-03). Companion to
 - **Accessibility (WCAG 2.2 AA target, §7.1)**: skip link, landmarks, `aria-current` nav, focus traps with Esc-returns-focus, radiogroup keyboard navigation, polite live regions (announce on completion, not per token), charts with text alternatives + table views, status never color-only, visible labels + described errors on forms — enforced by axe tests in the web suite.
 - **Design tokens** (§6): terracotta brand, status roles ≥4.5:1, the violet AI-surface convention via a single `AiSurface` wrapper, chart palette by semantic role, motion tokens with global reduced-motion override, dark mode.
 - **Security posture**: zod validation on every route, strict localhost CORS, size-capped receipt upload, action-card API allowlist (email/settings/mutating-verb paths refused with visible notice), MCP write gating, no secrets in code.
-- **Tests**: 42 backend (incl. SSE protocol, pause/resume across restart, MCP in-process client, audit attribution) + 38 frontend (incl. axe smoke over all block types, allowlist, answer-failure recovery) — all green; `npm run build` clean.
+- **Tests**: 53 backend (incl. SSE protocol, pause/resume across restart, MCP in-process client, audit attribution, full-CRUD archive/lifecycle + archived-money treatment) + 66 frontend (incl. axe smoke over all block types + all CRUD modals, allowlist, answer-failure recovery, date-input UTC round-trip) — all green; `npm run build` clean.
 
 ## Explicitly NOT implemented (see WHATS_NEXT.md)
 

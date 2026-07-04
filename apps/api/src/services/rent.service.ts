@@ -76,7 +76,7 @@ export async function getMonthStatus(
   const activeLeases = await prisma.lease.findMany({
     where: {
       status: 'active',
-      unit: { property: { accountId } },
+      unit: { archivedAt: null, property: { accountId, archivedAt: null } },
       startDate: { lt: periodEnd },
       endDate: { gte: periodStart },
     },
@@ -117,7 +117,10 @@ export async function getMonthStatus(
   }
 
   const payments = await prisma.rentPayment.findMany({
-    where: { period, lease: { unit: { property: { accountId } } } },
+    where: {
+      period,
+      lease: { unit: { archivedAt: null, property: { accountId, archivedAt: null } } },
+    },
     include: {
       lease: {
         include: {

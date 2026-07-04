@@ -4,6 +4,7 @@
 // above. Below xl it overlays with a backdrop; at xl the page content shifts
 // aside instead (AppShell adds right padding), so nothing is covered.
 import { useRef } from 'react';
+import { useMediaQuery } from '../../lib/useMediaQuery';
 import { useChat } from '../../state/chat';
 import { IconAlertCircle, IconX } from '../ui/icons';
 import { useFocusTrap } from '../ui/useFocusTrap';
@@ -12,20 +13,27 @@ import { ChatTranscript } from './ChatTranscript';
 import { ToolActivityIndicator } from './ToolActivityIndicator';
 
 export function ChatDrawer() {
-  const { open, close, status, errorMessage } = useChat();
+  const { open, close, clear, status, errorMessage, messages } = useChat();
   const panelRef = useRef<HTMLDivElement>(null);
-  useFocusTrap(open, panelRef, close);
+  // At xl the drawer is docked and the page shifts aside (AppShell adds right
+  // padding), so it's a non-modal panel: don't lock page scroll or trap Tab, and
+  // don't claim aria-modal. Below xl it overlays with a backdrop — a real modal.
+  const docked = useMediaQuery('(min-width: 1280px)');
+  const modal = !docked;
+  useFocusTrap(open, panelRef, close, { lockScroll: modal, trapTab: modal });
 
   if (!open) return null;
 
   return (
     <aside aria-label="Hearth assistant panel">
-      <div className="fixed inset-0 z-40 bg-black/40 xl:hidden" onClick={close} aria-hidden="true" />
+      {modal && (
+        <div className="fixed inset-0 z-40 bg-black/40" onClick={close} aria-hidden="true" />
+      )}
       {/* role="dialog" lives on an inner div — ARIA does not allow it on <aside>. */}
       <div
         ref={panelRef}
         role="dialog"
-        aria-modal="true"
+        aria-modal={modal}
         aria-label="Hearth assistant"
         tabIndex={-1}
         className="fixed inset-y-0 right-0 z-40 flex w-full flex-col border-l border-border bg-surface shadow-overlay animate-drawer-enter md:w-[420px]"
@@ -37,14 +45,24 @@ export function ChatDrawer() {
             </span>
             Hearth assistant
           </h2>
-          <button
-            type="button"
-            onClick={close}
-            aria-label="Close assistant"
-            className="rounded-md p-1.5 text-ink-muted transition-colors duration-fast hover:bg-surface-sunken hover:text-ink"
-          >
-            <IconX />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={clear}
+              disabled={messages.length === 0}
+              className="rounded-md px-2 py-1 text-xs font-medium text-ink-muted transition-colors duration-fast hover:bg-surface-sunken hover:text-ink disabled:pointer-events-none disabled:opacity-40"
+            >
+              Clear
+            </button>
+            <button
+              type="button"
+              onClick={close}
+              aria-label="Close assistant"
+              className="rounded-md p-1.5 text-ink-muted transition-colors duration-fast hover:bg-surface-sunken hover:text-ink"
+            >
+              <IconX />
+            </button>
+          </div>
         </header>
         <ChatTranscript />
         <ToolActivityIndicator />

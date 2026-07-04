@@ -43,6 +43,26 @@ export function formatMonthLong(period: string): string {
   });
 }
 
+/**
+ * ISO datetime → "YYYY-MM-DD" for <input type="date"> (empty string if null).
+ * Reads the UTC calendar day so it round-trips with `fromDateInputValue` and
+ * matches how the API stores dates (UTC midnight). Using local components here
+ * would shift the day for any user west of UTC on a UTC-midnight timestamp.
+ */
+export function toDateInputValue(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(
+    date.getUTCDate(),
+  ).padStart(2, '0')}`;
+}
+
+/** "YYYY-MM-DD" from a date input → ISO datetime at UTC midnight (no TZ drift). */
+export function fromDateInputValue(value: string): string {
+  return new Date(`${value}T00:00:00.000Z`).toISOString();
+}
+
 /** Current period as "YYYY-MM". */
 export function currentPeriod(): string {
   const now = new Date();

@@ -68,6 +68,7 @@ type ChatAction =
   | { type: 'send_failed'; message: string }
   | { type: 'send_conflict'; messageId: string }
   | { type: 'session_resynced'; messages: ChatMessage[] }
+  | { type: 'session_cleared' }
   | { type: 'sse_event'; event: SseEvent };
 
 /** Sets blocks[index], padding any gap with empty text blocks (never holes). */
@@ -256,6 +257,10 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
       if (lastQuestion) delete answers[lastQuestion.questionId];
       return { ...state, status: 'awaiting_input', errorMessage: null, messages, answers };
     }
+    case 'session_cleared':
+      // Start a fresh conversation: the provider also nulls the session refs so
+      // the next send lazily creates a new server-side session.
+      return initialState;
     case 'sse_event':
       return applySseEvent(state, action.event);
   }
@@ -274,6 +279,8 @@ export interface ChatContextValue {
   /** Deep-link entry (e.g. Reports): opens the drawer with explicit context. */
   openWithContext: (context: ScreenContext) => void;
   close: () => void;
+  /** Ends the current conversation and starts a fresh session on the next send. */
+  clear: () => void;
   messages: ChatMessage[];
   status: ChatStatus;
   toolActivity: SseToolActivity | null;
@@ -342,6 +349,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     },
     [openDrawer],
   );
+
+  /** Abandon the current conversation and reset for a fresh session. */
+  const clear = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    sessionIdRef.current = null;
+    sessionPromiseRef.current = null;
+    pendingContextRef.current = null;
+    dispatch({ type: 'session_cleared' });
+  }, []);
 
   /** Lazily creates the session (once) with the current screen context. */
   const ensureSession = useCallback((): Promise<string> => {
@@ -455,6 +472,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       openDrawer,
       openWithContext,
       close,
+      clear,
       messages: state.messages,
       status: state.status,
       toolActivity: state.toolActivity,
@@ -464,7 +482,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       send,
       answer,
     }),
-    [open, openDrawer, openWithContext, close, state, send, answer],
+    [open, openDrawer, openWithContext, close, clear, state, send, answer],
   );
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;

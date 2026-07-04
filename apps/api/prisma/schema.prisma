@@ -52,6 +52,7 @@ model Property {
   acquisitionCostCents Int?
   notes                String?
   createdAt            DateTime  @default(now())
+  archivedAt           DateTime?
 
   account      Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
   units        Unit[]
@@ -59,6 +60,7 @@ model Property {
   insights     Insight[]
 
   @@index([accountId])
+  @@index([accountId, archivedAt])
 }
 
 model Unit {
@@ -68,6 +70,7 @@ model Unit {
   bedrooms        Int?
   bathrooms       Float?
   marketRentCents Int?
+  archivedAt      DateTime?
 
   property     Property      @relation(fields: [propertyId], references: [id], onDelete: Cascade)
   leases       Lease[]
@@ -84,12 +87,14 @@ model Tenant {
   phone     String?
   notes     String?
   createdAt DateTime @default(now())
+  archivedAt DateTime?
 
   account      Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
   leaseTenants LeaseTenant[]
   insights     Insight[]
 
   @@index([accountId])
+  @@index([accountId, archivedAt])
 }
 
 model Lease {

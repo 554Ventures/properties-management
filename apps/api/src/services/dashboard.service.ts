@@ -22,7 +22,15 @@ async function sumByType(
 ): Promise<{ incomeCents: number; expenseCents: number; netCents: number }> {
   const grouped = await prisma.transaction.groupBy({
     by: ['type'],
-    where: { accountId, status: 'confirmed', date: { gte: range.from, lt: range.to } },
+    where: {
+      accountId,
+      status: 'confirmed',
+      date: { gte: range.from, lt: range.to },
+      // Dashboard KPIs/series show the active portfolio: drop transactions of an
+      // archived property, but keep account-level (unassigned) transactions.
+      // Financial/tax reports intentionally retain archived-property history.
+      OR: [{ propertyId: null }, { property: { archivedAt: null } }],
+    },
     _sum: { amountCents: true },
   });
   const incomeCents = grouped.find((g) => g.type === 'income')?._sum.amountCents ?? 0;
@@ -67,7 +75,10 @@ export async function getKpis(accountId: string): Promise<DashboardKpisResponse>
     tracker.totalUnits === 0 ? 0 : Math.round((tracker.paidUnits / tracker.totalUnits) * 100);
   const prevPeriod = addMonthsToPeriod(period, -1);
   const prevPayments = await prisma.rentPayment.findMany({
-    where: { period: prevPeriod, lease: { unit: { property: { accountId } } } },
+    where: {
+      period: prevPeriod,
+      lease: { unit: { archivedAt: null, property: { accountId, archivedAt: null } } },
+    },
     select: { status: true, paidAt: true },
   });
   const prevPaid = prevPayments.filter(
@@ -117,7 +128,10 @@ export async function getActivity(accountId: string, limit: number): Promise<Act
   const items: ActivityItem[] = [];
 
   const rentPaid = await prisma.rentPayment.findMany({
-    where: { status: 'paid', lease: { unit: { property: { accountId } } } },
+    where: {
+      status: 'paid',
+      lease: { unit: { archivedAt: null, property: { accountId, archivedAt: null } } },
+    },
     include: { lease: { include: { leaseTenants: { include: { tenant: true }, orderBy: { isPrimary: 'desc' } } } } },
     orderBy: { paidAt: 'desc' },
     take: limit,
@@ -142,7 +156,10 @@ export async function getActivity(accountId: string, limit: number): Promise<Act
   }
 
   const reminders = await prisma.rentPayment.findMany({
-    where: { remindedAt: { not: null }, lease: { unit: { property: { accountId } } } },
+    where: {
+      remindedAt: { not: null },
+      lease: { unit: { archivedAt: null, property: { accountId, archivedAt: null } } },
+    },
     include: { lease: { include: { leaseTenants: { include: { tenant: true }, orderBy: { isPrimary: 'desc' } } } } },
     orderBy: { remindedAt: 'desc' },
     take: limit,
@@ -158,7 +175,12 @@ export async function getActivity(accountId: string, limit: number): Promise<Act
   }
 
   const txns = await prisma.transaction.findMany({
-    where: { accountId, id: { notIn: [...rentTxnIds] } },
+    where: {
+      accountId,
+      id: { notIn: [...rentTxnIds] },
+      // Match the KPIs: the activity feed reflects the active portfolio.
+      OR: [{ propertyId: null }, { property: { archivedAt: null } }],
+    },
     orderBy: { createdAt: 'desc' },
     take: limit,
   });
@@ -210,7 +232,8 @@ export async function getPortfolioSummary(
   accountId: string,
 ): Promise<{ summary: string; kpis: DashboardKpisResponse }> {
   const kpis = await getKpis(accountId);
-  const propertyCount = await prisma.property.count({ where: { accountId } });
+  // Match kpis.totalUnits, which excludes archived properties/units.
+  const propertyCount = await prisma.property.count({ where: { accountId, archivedAt: null } });
   const today = startOfUtcDay(new Date()).toISOString().slice(0, 10);
   const summary =
     `As of ${today}: ${propertyCount} properties, ${kpis.totalUnits} units. ` +

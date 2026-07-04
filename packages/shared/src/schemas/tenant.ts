@@ -10,6 +10,7 @@ export const TenantSchema = z.object({
   phone: z.string().nullable(),
   notes: z.string().nullable(),
   createdAt: z.string().datetime(),
+  archivedAt: z.string().datetime().nullable(),
 });
 
 // Derived per ARCHITECTURE §4: late if any unpaid rent past due; else

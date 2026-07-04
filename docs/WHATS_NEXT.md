@@ -16,7 +16,7 @@ The demo is safe as-is; these matter once the model (not the deterministic mock)
 - [ ] **Postgres migration**: swap the SQLite provider; convert the String-enum columns to real Prisma enums and cents `Int`s stay as-is (schema header comment documents the plan).
 - [ ] **Atomic session-state transitions**: the chat 409 guards are read-then-act (`chat.service.ts`) — use conditional `updateMany` transitions so concurrent sends/answers can't both enter the loop. Same pattern review for any remaining check-then-create paths (rent tracker materialization already retries on unique-constraint; `recordPayment` is transactional).
 - [ ] **MCP per-client OAuth** (PRD §10): replace the single `HEARTH_MCP_ENABLE_WRITE` env gate with per-client authorization + scopes, revocable from Settings; the `Integration` model (`type: mcp_client`, `scopesJson`) is the intended home.
-- [ ] **Audit coverage completion**: property/unit/tenant/lease CRUD is unaudited (transactions, payments, reminders, reports, insights are covered).
+- [x] **Audit coverage completion**: property/unit/tenant/lease CRUD is now audited (create/update/archive/restore/terminate/renew/add_tenant/remove_tenant) alongside transactions, payments, reminders, reports, insights.
 - [ ] **Transaction-delete / RentPayment desync**: deleting a rent-linked ledger Transaction leaves the RentPayment `paid` (SetNull; noted in `schema.prisma`). Block deletion of rent-linked transactions or cascade a status recompute.
 - [ ] **Session hygiene**: sessions left `awaiting_user` are never expired server-side; add a TTL sweep.
 
@@ -47,6 +47,8 @@ Interfaces in `apps/api/src/integrations/types.ts`; each swap is one adapter imp
 - [ ] **Transaction list pagination**: API supports cursor pagination; the UI fetches `limit=100` with no load-more.
 - [ ] **"Already reminded" state**: `RentTrackerRow` lacks `remindedAt`, so repeat reminders are only surfaced via the send-result toast; add the field to the shared schema + row.
 - [ ] **Session context persistence**: chat session `context` lives inside server-internal `providerStateJson`; give it a real column if session lists ever need to show it.
+- [ ] **Clear an optional field on edit**: the property/unit edit modals send `undefined` (omit) for a blanked nickname/notes/market-rent, so the PATCH can't clear a previously-set value — it's silently retained. Needs the `Update*InputSchema` fields to accept `null` and the services to treat `null` as "clear" vs `undefined` as "leave". (QA finding, low; contract change deferred out of the CRUD pass.)
+- [ ] **Archived-entity browser**: soft-archive + restore exist end-to-end, but there's no UI to *see* archived properties/tenants/units (restore is only wired via the hook); add an "Archived" filter/section if users need to find and restore them.
 
 ## 6. Open product decisions (from PRD §13, unchanged)
 

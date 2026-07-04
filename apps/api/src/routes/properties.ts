@@ -33,6 +33,10 @@ export async function propertiesRoutes(app: FastifyInstance): Promise<void> {
     return reply.code(204).send();
   });
 
+  app.post<{ Params: { id: string } }>('/properties/:id/restore', async (req) =>
+    propertyService.restore(req.accountId, req.params.id),
+  );
+
   app.get<{ Params: { id: string } }>('/properties/:id/pnl', async (req) => {
     const q = parseQuery(PnlQuerySchema, req.query);
     const currentYear = yearRange(new Date().getUTCFullYear());

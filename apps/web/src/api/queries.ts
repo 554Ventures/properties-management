@@ -2,12 +2,17 @@
 // consumes. All shapes come from @hearth/shared; nothing is redeclared here.
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
+  AcceptRenewalInput,
   AccountSettings,
   ActivityItem,
+  AddLeaseTenantInput,
   Category,
   ConfirmTransactionInput,
+  CreateLeaseInput,
   CreatePropertyInput,
+  CreateTenantInput,
   CreateTransactionInput,
+  CreateUnitInput,
   DashboardInsightResponse,
   DashboardKpisResponse,
   EsignEnvelopeResponse,
@@ -19,6 +24,9 @@ import type {
   InsightStatus,
   Integration,
   IntegrationType,
+  Lease,
+  LeaseDetailResponse,
+  LeaseWithContext,
   Property,
   PropertyDetailResponse,
   PropertyWithStats,
@@ -34,13 +42,19 @@ import type {
   ReviewQueueResponse,
   SendRemindersInput,
   SendRemindersResponse,
+  Tenant,
   TenantDetailResponse,
   TenantListRow,
   Transaction,
   TransactionListResponse,
   TransactionStatus,
   TransactionType,
+  Unit,
   UpdateAccountSettingsInput,
+  UpdateLeaseInput,
+  UpdatePropertyInput,
+  UpdateTenantInput,
+  UpdateUnitInput,
 } from '@hearth/shared';
 import { api, toQuery } from './client';
 
@@ -101,14 +115,79 @@ export function usePropertyDetail(id: string | undefined) {
   });
 }
 
+function invalidateProperty(qc: ReturnType<typeof useQueryClient>, id?: string) {
+  void qc.invalidateQueries({ queryKey: ['properties'] });
+  if (id) void qc.invalidateQueries({ queryKey: ['properties', id] });
+  void qc.invalidateQueries({ queryKey: ['dashboard'] });
+}
+
 export function useCreateProperty() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: CreatePropertyInput) => api.post<Property>('/properties', input),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['properties'] });
-      void qc.invalidateQueries({ queryKey: ['dashboard'] });
-    },
+    onSuccess: () => invalidateProperty(qc),
+  });
+}
+
+export function useUpdateProperty() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...input }: UpdatePropertyInput & { id: string }) =>
+      api.patch<Property>(`/properties/${id}`, input),
+    onSuccess: (_data, { id }) => invalidateProperty(qc, id),
+  });
+}
+
+export function useArchiveProperty() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete(`/properties/${id}`),
+    onSuccess: (_data, id) => invalidateProperty(qc, id),
+  });
+}
+
+export function useRestoreProperty() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post<Property>(`/properties/${id}/restore`),
+    onSuccess: (_data, id) => invalidateProperty(qc, id),
+  });
+}
+
+// -------------------------------------------------------------------- units
+
+export function useCreateUnit() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ propertyId, ...input }: CreateUnitInput & { propertyId: string }) =>
+      api.post<Unit>(`/properties/${propertyId}/units`, input),
+    onSuccess: (_data, { propertyId }) => invalidateProperty(qc, propertyId),
+  });
+}
+
+export function useUpdateUnit() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, propertyId: _propertyId, ...input }: UpdateUnitInput & { id: string; propertyId: string }) =>
+      api.patch<Unit>(`/units/${id}`, input),
+    onSuccess: (_data, { propertyId }) => invalidateProperty(qc, propertyId),
+  });
+}
+
+export function useArchiveUnit() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id }: { id: string; propertyId: string }) => api.delete(`/units/${id}`),
+    onSuccess: (_data, { propertyId }) => invalidateProperty(qc, propertyId),
+  });
+}
+
+export function useRestoreUnit() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id }: { id: string; propertyId: string }) =>
+      api.post<Unit>(`/units/${id}/restore`),
+    onSuccess: (_data, { propertyId }) => invalidateProperty(qc, propertyId),
   });
 }
 
@@ -131,7 +210,116 @@ export function useTenantDetail(id: string | undefined) {
   });
 }
 
+function invalidateTenant(qc: ReturnType<typeof useQueryClient>, id?: string) {
+  void qc.invalidateQueries({ queryKey: ['tenants'] });
+  if (id) void qc.invalidateQueries({ queryKey: ['tenants', id] });
+}
+
+export function useCreateTenant() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateTenantInput) => api.post<Tenant>('/tenants', input),
+    onSuccess: () => invalidateTenant(qc),
+  });
+}
+
+export function useUpdateTenant() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...input }: UpdateTenantInput & { id: string }) =>
+      api.patch<Tenant>(`/tenants/${id}`, input),
+    onSuccess: (_data, { id }) => invalidateTenant(qc, id),
+  });
+}
+
+export function useArchiveTenant() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete(`/tenants/${id}`),
+    onSuccess: (_data, id) => invalidateTenant(qc, id),
+  });
+}
+
+export function useRestoreTenant() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post<Tenant>(`/tenants/${id}/restore`),
+    onSuccess: (_data, id) => invalidateTenant(qc, id),
+  });
+}
+
 // ------------------------------------------------------------------- leases
+
+export function useLeaseDetail(id: string | undefined) {
+  return useQuery({
+    queryKey: ['leases', id],
+    queryFn: () => api.get<LeaseDetailResponse>(`/leases/${id}`),
+    enabled: Boolean(id),
+    staleTime: STALE_SHORT,
+  });
+}
+
+// Lease writes ripple through occupancy (properties), tenant status (tenants),
+// the rent schedule (rent), and the dashboard KPIs.
+function invalidateLease(qc: ReturnType<typeof useQueryClient>, leaseId?: string) {
+  void qc.invalidateQueries({ queryKey: ['properties'] });
+  void qc.invalidateQueries({ queryKey: ['tenants'] });
+  void qc.invalidateQueries({ queryKey: ['rent'] });
+  void qc.invalidateQueries({ queryKey: ['dashboard'] });
+  if (leaseId) void qc.invalidateQueries({ queryKey: ['leases', leaseId] });
+}
+
+export function useCreateLease() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateLeaseInput) => api.post<Lease>('/leases', input),
+    onSuccess: () => invalidateLease(qc),
+  });
+}
+
+export function useUpdateLease() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...input }: UpdateLeaseInput & { id: string }) =>
+      api.patch<Lease>(`/leases/${id}`, input),
+    onSuccess: (_data, { id }) => invalidateLease(qc, id),
+  });
+}
+
+export function useTerminateLease() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post<Lease>(`/leases/${id}/terminate`),
+    onSuccess: (_data, id) => invalidateLease(qc, id),
+  });
+}
+
+export function useAddLeaseTenant() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ leaseId, ...input }: AddLeaseTenantInput & { leaseId: string }) =>
+      api.post<LeaseWithContext>(`/leases/${leaseId}/tenants`, input),
+    onSuccess: (_data, { leaseId }) => invalidateLease(qc, leaseId),
+  });
+}
+
+export function useRemoveLeaseTenant() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ leaseId, tenantId }: { leaseId: string; tenantId: string }) =>
+      api.delete(`/leases/${leaseId}/tenants/${tenantId}`),
+    onSuccess: (_data, { leaseId }) => invalidateLease(qc, leaseId),
+  });
+}
+
+export function useCreateRenewal() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ leaseId, ...input }: AcceptRenewalInput & { leaseId: string }) =>
+      api.post<Lease>(`/leases/${leaseId}/renewal`, input),
+    onSuccess: (_data, { leaseId }) => invalidateLease(qc, leaseId),
+  });
+}
 
 export function useDraftRenewal() {
   return useMutation({

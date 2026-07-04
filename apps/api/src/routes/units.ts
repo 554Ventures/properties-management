@@ -19,4 +19,8 @@ export async function unitsRoutes(app: FastifyInstance): Promise<void> {
     await unitService.remove(req.accountId, req.params.id);
     return reply.code(204).send();
   });
+
+  app.post<{ Params: { id: string } }>('/units/:id/restore', async (req) =>
+    unitService.restore(req.accountId, req.params.id),
+  );
 }

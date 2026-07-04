@@ -50,6 +50,12 @@ export type UpdateLeaseInput = z.infer<typeof s.UpdateLeaseInputSchema>;
 export type RenewalDraftResponse = z.infer<typeof s.RenewalDraftResponseSchema>;
 export type EsignEnvelopeResponse = z.infer<typeof s.EsignEnvelopeResponseSchema>;
 
+// Lease management composites
+export type LeaseWithContext = z.infer<typeof s.LeaseWithContextSchema>;
+export type LeaseDetailResponse = z.infer<typeof s.LeaseDetailResponseSchema>;
+export type AddLeaseTenantInput = z.infer<typeof s.AddLeaseTenantInputSchema>;
+export type AcceptRenewalInput = z.infer<typeof s.AcceptRenewalInputSchema>;
+
 // Transactions
 export type Transaction = z.infer<typeof s.TransactionSchema>;
 export type CreateTransactionInput = z.infer<typeof s.CreateTransactionInputSchema>;

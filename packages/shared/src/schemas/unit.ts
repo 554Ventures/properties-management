@@ -7,6 +7,7 @@ export const UnitSchema = z.object({
   bedrooms: z.number().int().nullable(),
   bathrooms: z.number().nullable(),
   marketRentCents: z.number().int().nullable(),
+  archivedAt: z.string().datetime().nullable(),
 });
 
 // POST /properties/:id/units (also nested inside CreatePropertyInput)

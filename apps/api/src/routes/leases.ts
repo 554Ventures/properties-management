@@ -1,4 +1,10 @@
-import { CreateLeaseInputSchema, LeaseStatusSchema, UpdateLeaseInputSchema } from '@hearth/shared';
+import {
+  AcceptRenewalInputSchema,
+  AddLeaseTenantInputSchema,
+  CreateLeaseInputSchema,
+  LeaseStatusSchema,
+  UpdateLeaseInputSchema,
+} from '@hearth/shared';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { parseBody, parseQuery } from '../plugins/zod-validation';
@@ -18,9 +24,33 @@ export async function leasesRoutes(app: FastifyInstance): Promise<void> {
     return reply.code(201).send(lease);
   });
 
+  app.get<{ Params: { id: string } }>('/leases/:id', async (req) =>
+    leaseService.getDetail(req.accountId, req.params.id),
+  );
+
   app.patch<{ Params: { id: string } }>('/leases/:id', async (req) => {
     const input = parseBody(UpdateLeaseInputSchema, req.body);
     return leaseService.update(req.accountId, req.params.id, input);
+  });
+
+  app.post<{ Params: { id: string } }>('/leases/:id/terminate', async (req) =>
+    leaseService.terminate(req.accountId, req.params.id),
+  );
+
+  app.post<{ Params: { id: string } }>('/leases/:id/tenants', async (req) => {
+    const input = parseBody(AddLeaseTenantInputSchema, req.body);
+    return leaseService.addTenant(req.accountId, req.params.id, input);
+  });
+
+  app.delete<{ Params: { id: string; tenantId: string } }>(
+    '/leases/:id/tenants/:tenantId',
+    async (req) => leaseService.removeTenant(req.accountId, req.params.id, req.params.tenantId),
+  );
+
+  app.post<{ Params: { id: string } }>('/leases/:id/renewal', async (req, reply) => {
+    const input = parseBody(AcceptRenewalInputSchema, req.body);
+    const lease = await leaseService.createRenewal(req.accountId, req.params.id, input);
+    return reply.code(201).send(lease);
   });
 
   app.post<{ Params: { id: string } }>('/leases/:id/renewal-draft', async (req) =>

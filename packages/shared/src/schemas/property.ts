@@ -17,6 +17,7 @@ export const PropertySchema = z.object({
   acquisitionCostCents: z.number().int().nullable(),
   notes: z.string().nullable(),
   createdAt: z.string().datetime(),
+  archivedAt: z.string().datetime().nullable(),
 });
 
 // POST /properties

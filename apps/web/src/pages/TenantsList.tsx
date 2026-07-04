@@ -1,9 +1,11 @@
 // Tenants & Leases list (PRD §5.3): portfolio renewal insight, per-tenant
 // status (Current / Renew soon / N days late), and Remind for late tenants.
+import { useState } from 'react';
 import { formatUsd } from '@hearth/shared';
 import type { TenantListRow } from '@hearth/shared';
 import { Link } from 'react-router-dom';
 import { useInsights, useRentTracker, useSendReminders, useTenants } from '../api/queries';
+import { TenantFormModal } from '../components/forms/TenantFormModal';
 import { InsightCard } from '../components/ai/InsightCard';
 import { PageHeader } from '../components/shell/PageHeader';
 import { Button } from '../components/ui/Button';
@@ -15,13 +17,14 @@ import { Skeleton } from '../components/ui/Skeleton';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { Table, Td, Th, Tr } from '../components/ui/Table';
 import { useToast } from '../components/ui/Toast';
-import { IconBell, IconUsers } from '../components/ui/icons';
+import { IconBell, IconPlus, IconUsers } from '../components/ui/icons';
 import { currentPeriod, formatDate } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
 
 export function TenantsList() {
   usePageTitle('Tenants & Leases');
   const tenants = useTenants();
+  const [createOpen, setCreateOpen] = useState(false);
   const insights = useInsights({ scope: 'portfolio', status: 'active' });
   // Rent tracker for the current period maps late tenants → rentPaymentIds so
   // "Remind" can send from this screen (contract has no per-tenant reminder).
@@ -61,6 +64,12 @@ export function TenantsList() {
       <PageHeader
         title="Tenants & Leases"
         breadcrumbs={[{ label: 'Dashboard', to: '/' }, { label: 'Tenants & Leases' }]}
+        actions={
+          <Button onClick={() => setCreateOpen(true)}>
+            <IconPlus size={16} />
+            Add tenant
+          </Button>
+        }
       />
 
       <LiveRegion>{renewalInsight && <InsightCard insight={renewalInsight} />}</LiveRegion>
@@ -76,7 +85,13 @@ export function TenantsList() {
           <EmptyState
             icon={<IconUsers size={28} />}
             title="No tenants yet"
-            body="Tenants appear here once you add properties and leases."
+            body="Add a tenant, then create a lease from a vacant unit on a property."
+            action={
+              <Button onClick={() => setCreateOpen(true)}>
+                <IconPlus size={16} />
+                Add tenant
+              </Button>
+            }
           />
         </Card>
       ) : (
@@ -152,6 +167,8 @@ export function TenantsList() {
           </Table>
         </Card>
       )}
+
+      <TenantFormModal mode="create" open={createOpen} onClose={() => setCreateOpen(false)} />
     </div>
   );
 }

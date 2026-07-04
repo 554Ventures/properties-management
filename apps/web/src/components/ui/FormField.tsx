@@ -1,6 +1,11 @@
 // Form field wrapper: visible <label>, hint/error wired via aria-describedby.
 // Placeholder text is never the only label (PRD §7.1).
-import { cloneElement, type InputHTMLAttributes, type ReactElement } from 'react';
+import {
+  cloneElement,
+  type InputHTMLAttributes,
+  type ReactElement,
+  type TextareaHTMLAttributes,
+} from 'react';
 import { cx } from '../../lib/cx';
 
 export interface FormFieldProps {
@@ -64,4 +69,8 @@ export const inputClasses =
 
 export function Input({ className, ...rest }: InputHTMLAttributes<HTMLInputElement>) {
   return <input className={cx(inputClasses, className)} {...rest} />;
+}
+
+export function Textarea({ className, ...rest }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return <textarea className={cx(inputClasses, 'min-h-[4.5rem] resize-y', className)} {...rest} />;
 }

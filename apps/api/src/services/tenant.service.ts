@@ -8,8 +8,9 @@ import type {
 } from '@hearth/shared';
 import type { Tenant as DbTenant } from '@prisma/client';
 import { addDays, iso, isoOrNull } from '../lib/dates';
-import { NotFoundError } from '../lib/errors';
+import { ConflictError, NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
+import { writeAudit, type AuditActor } from './audit.service';
 import { toApiLease } from './lease.service';
 import { deriveRentStatus } from './rent.service';
 
@@ -22,6 +23,7 @@ export function toApiTenant(t: DbTenant): Tenant {
     phone: t.phone,
     notes: t.notes,
     createdAt: iso(t.createdAt),
+    archivedAt: isoOrNull(t.archivedAt),
   };
 }
 
@@ -49,7 +51,7 @@ export async function list(accountId: string): Promise<TenantListResponse> {
   const account = await prisma.account.findUniqueOrThrow({ where: { id: accountId } });
   const today = new Date();
   const tenants = await prisma.tenant.findMany({
-    where: { accountId },
+    where: { accountId, archivedAt: null },
     include: {
       leaseTenants: {
         include: {
@@ -142,7 +144,11 @@ export async function getDetail(accountId: string, id: string): Promise<TenantDe
   };
 }
 
-export async function create(accountId: string, input: CreateTenantInput): Promise<Tenant> {
+export async function create(
+  accountId: string,
+  input: CreateTenantInput,
+  actor: AuditActor = 'user',
+): Promise<Tenant> {
   const row = await prisma.tenant.create({
     data: {
       accountId,
@@ -152,6 +158,13 @@ export async function create(accountId: string, input: CreateTenantInput): Promi
       notes: input.notes ?? null,
     },
   });
+  await writeAudit(accountId, {
+    actor,
+    action: 'create',
+    entityType: 'tenant',
+    entityId: row.id,
+    detail: { fullName: row.fullName },
+  });
   return toApiTenant(row);
 }
 
@@ -159,6 +172,7 @@ export async function update(
   accountId: string,
   id: string,
   input: UpdateTenantInput,
+  actor: AuditActor = 'user',
 ): Promise<Tenant> {
   const existing = await prisma.tenant.findFirst({ where: { id, accountId } });
   if (!existing) throw new NotFoundError('tenant', id);
@@ -171,11 +185,42 @@ export async function update(
       ...(input.notes !== undefined ? { notes: input.notes } : {}),
     },
   });
+  await writeAudit(accountId, {
+    actor,
+    action: 'update',
+    entityType: 'tenant',
+    entityId: id,
+    detail: { fullName: row.fullName },
+  });
   return toApiTenant(row);
 }
 
-export async function remove(accountId: string, id: string): Promise<void> {
+/** Soft-archive; blocked while the tenant is on an active lease. */
+export async function remove(
+  accountId: string,
+  id: string,
+  actor: AuditActor = 'user',
+): Promise<void> {
   const existing = await prisma.tenant.findFirst({ where: { id, accountId } });
   if (!existing) throw new NotFoundError('tenant', id);
-  await prisma.tenant.delete({ where: { id } });
+  const activeLease = await prisma.lease.findFirst({
+    where: { status: 'active', leaseTenants: { some: { tenantId: id } } },
+  });
+  if (activeLease) {
+    throw new ConflictError('Terminate the active lease before archiving this tenant.');
+  }
+  await prisma.tenant.update({ where: { id }, data: { archivedAt: new Date() } });
+  await writeAudit(accountId, { actor, action: 'archive', entityType: 'tenant', entityId: id });
+}
+
+export async function restore(
+  accountId: string,
+  id: string,
+  actor: AuditActor = 'user',
+): Promise<Tenant> {
+  const existing = await prisma.tenant.findFirst({ where: { id, accountId } });
+  if (!existing) throw new NotFoundError('tenant', id);
+  const row = await prisma.tenant.update({ where: { id }, data: { archivedAt: null } });
+  await writeAudit(accountId, { actor, action: 'restore', entityType: 'tenant', entityId: id });
+  return toApiTenant(row);
 }

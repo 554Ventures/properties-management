@@ -435,6 +435,49 @@ describe('ChatDrawer', () => {
     expect(postSseMock.mock.calls[1]?.[0]).toBe('/chat/sessions/s1/answer');
   });
 
+  it('clears the conversation and starts a fresh session on the next send', async () => {
+    const fetchCalls = stubChatFetch();
+    renderShell();
+    fireEvent.click(screen.getByRole('button', { name: 'Open Hearth assistant' }));
+    await screen.findByRole('dialog', { name: 'Hearth assistant' });
+
+    // Nothing to clear yet.
+    expect(screen.getByRole('button', { name: 'Clear' })).toBeDisabled();
+
+    // A phrase that is not one of the composer's suggested prompts, so its only
+    // occurrence is the transcript bubble.
+    const userText = 'Summarize my parsnip ledger';
+    const input = screen.getByLabelText('Message the Hearth assistant');
+    fireEvent.change(input, { target: { value: userText } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(postSseMock).toHaveBeenCalledTimes(1));
+    emit(
+      streams[0]!,
+      { event: 'message_start', data: { messageId: 'm1' } },
+      { event: 'block_start', data: { index: 0, blockType: 'text' } },
+      { event: 'text_delta', data: { index: 0, delta: 'Cash flow is strong.' } },
+      { event: 'message_complete', data: { messageId: 'm1' } },
+    );
+    expect(screen.getByText(userText)).toBeInTheDocument();
+    expect(screen.getByText(/cash flow is strong/i)).toBeInTheDocument();
+    expect(fetchCalls.filter((c) => c.url === '/api/v1/chat/sessions').length).toBe(1);
+
+    // Clear empties the transcript and disables itself again.
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    expect(screen.queryByText(userText)).not.toBeInTheDocument();
+    expect(screen.queryByText(/cash flow is strong/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Clear' })).toBeDisabled();
+    expect(screen.getByLabelText('Message the Hearth assistant')).toBeEnabled();
+
+    // The next send creates a brand-new session (second POST /chat/sessions).
+    fireEvent.change(screen.getByLabelText('Message the Hearth assistant'), {
+      target: { value: 'And rent?' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(postSseMock).toHaveBeenCalledTimes(2));
+    expect(fetchCalls.filter((c) => c.url === '/api/v1/chat/sessions').length).toBe(2);
+  });
+
   it('refuses api_call actions outside the allowlist with a disabled button and a note', async () => {
     const exfilCard: ActionCardBlock = {
       type: 'action_card',

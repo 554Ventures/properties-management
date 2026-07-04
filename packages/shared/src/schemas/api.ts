@@ -26,6 +26,9 @@ export * from './tenant';
 // Leases (incl. renewal draft + e-sign)
 export * from './lease';
 
+// Lease management composites (detail, tenant add, renewal accept)
+export * from './lease-management';
+
 // Transactions (incl. review queue, receipt scan, bank import)
 export * from './transaction';
 

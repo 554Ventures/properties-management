@@ -1,15 +1,17 @@
-// Properties list (PRD §5.2) with a simple create-property modal.
-import { useState, type FormEvent } from 'react';
+// Properties list (PRD §5.2): create/edit/archive properties with per-row
+// actions. The property form modal is shared with PropertyDetail.
+import { useState } from 'react';
+import type { PropertyWithStats } from '@hearth/shared';
 import { formatUsdWhole } from '@hearth/shared';
-import { Link, useNavigate } from 'react-router-dom';
-import { useCreateProperty, useProperties } from '../api/queries';
+import { Link } from 'react-router-dom';
+import { useArchiveProperty, useProperties } from '../api/queries';
+import { PropertyFormModal } from '../components/forms/PropertyFormModal';
 import { PageHeader } from '../components/shell/PageHeader';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorNotice } from '../components/ui/ErrorNotice';
-import { FormField, Input } from '../components/ui/FormField';
-import { Modal } from '../components/ui/Modal';
 import { Skeleton } from '../components/ui/Skeleton';
 import { StatusBadge, type BadgeTone } from '../components/ui/StatusBadge';
 import { Table, Td, Th, Tr } from '../components/ui/Table';
@@ -28,7 +30,23 @@ function statusTone(label: string): BadgeTone {
 export function PropertiesList() {
   usePageTitle('Properties');
   const properties = useProperties();
+  const archive = useArchiveProperty();
+  const { toast } = useToast();
   const [createOpen, setCreateOpen] = useState(false);
+  const [editing, setEditing] = useState<PropertyWithStats | null>(null);
+  const [archiving, setArchiving] = useState<PropertyWithStats | null>(null);
+
+  const confirmArchive = () => {
+    if (!archiving) return;
+    archive.mutate(archiving.id, {
+      onSuccess: () => {
+        toast(`${archiving.nickname ?? archiving.addressLine1} archived.`, 'positive');
+        setArchiving(null);
+      },
+      onError: (err) =>
+        toast(err instanceof Error ? err.message : 'Could not archive the property.', 'danger'),
+    });
+  };
 
   return (
     <div className="flex flex-col gap-6">
@@ -73,6 +91,9 @@ export function PropertiesList() {
                 <Th>Occupancy</Th>
                 <Th align="right">Rent / mo</Th>
                 <Th>Status</Th>
+                <Th align="right">
+                  <span className="sr-only">Actions</span>
+                </Th>
               </tr>
             </thead>
             <tbody>
@@ -100,6 +121,16 @@ export function PropertiesList() {
                       {property.statusLabel}
                     </StatusBadge>
                   </Td>
+                  <Td align="right">
+                    <div className="flex justify-end gap-1">
+                      <Button variant="ghost" size="sm" onClick={() => setEditing(property)}>
+                        Edit
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => setArchiving(property)}>
+                        Archive
+                      </Button>
+                    </div>
+                  </Td>
                 </Tr>
               ))}
             </tbody>
@@ -107,89 +138,27 @@ export function PropertiesList() {
         </Card>
       )}
 
-      <CreatePropertyModal open={createOpen} onClose={() => setCreateOpen(false)} />
+      <PropertyFormModal mode="create" open={createOpen} onClose={() => setCreateOpen(false)} />
+      <PropertyFormModal
+        mode="edit"
+        open={editing !== null}
+        property={editing ?? undefined}
+        onClose={() => setEditing(null)}
+      />
+      <ConfirmDialog
+        open={archiving !== null}
+        onClose={() => setArchiving(null)}
+        onConfirm={confirmArchive}
+        title="Archive property"
+        confirmLabel="Archive"
+        busy={archive.isPending}
+        body={
+          <>
+            Archiving hides <strong>{archiving?.nickname ?? archiving?.addressLine1}</strong> from
+            your lists but keeps its history. You can restore it later.
+          </>
+        }
+      />
     </div>
-  );
-}
-
-function CreatePropertyModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const create = useCreateProperty();
-  const { toast } = useToast();
-  const navigate = useNavigate();
-  const [form, setForm] = useState({
-    nickname: '',
-    addressLine1: '',
-    city: '',
-    state: '',
-    zip: '',
-    unitCount: '1',
-  });
-
-  const set = (key: keyof typeof form) => (event: FormEvent<HTMLInputElement>) =>
-    setForm((prev) => ({ ...prev, [key]: (event.target as HTMLInputElement).value }));
-
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    const count = Math.max(1, Number(form.unitCount) || 1);
-    create.mutate(
-      {
-        nickname: form.nickname || undefined,
-        addressLine1: form.addressLine1,
-        city: form.city,
-        state: form.state,
-        zip: form.zip,
-        units: Array.from({ length: count }, (_, i) => ({
-          label: count === 1 ? 'Main' : `Unit ${i + 1}`,
-        })),
-      },
-      {
-        onSuccess: (property) => {
-          toast('Property added.', 'positive');
-          onClose();
-          navigate(`/properties/${property.id}`);
-        },
-        onError: () => toast('Could not add the property. Check the fields and try again.', 'danger'),
-      },
-    );
-  };
-
-  return (
-    <Modal open={open} onClose={onClose} title="Add property">
-      <form onSubmit={submit} className="flex flex-col gap-4">
-        <FormField label="Nickname" htmlFor="prop-nickname" hint="Optional — e.g. “Maple duplex”.">
-          <Input value={form.nickname} onInput={set('nickname')} />
-        </FormField>
-        <FormField label="Street address" htmlFor="prop-address" required>
-          <Input value={form.addressLine1} onInput={set('addressLine1')} autoComplete="address-line1" />
-        </FormField>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <FormField label="City" htmlFor="prop-city" required>
-            <Input value={form.city} onInput={set('city')} autoComplete="address-level2" />
-          </FormField>
-          <FormField label="State" htmlFor="prop-state" required>
-            <Input value={form.state} onInput={set('state')} autoComplete="address-level1" />
-          </FormField>
-          <FormField label="ZIP" htmlFor="prop-zip" required>
-            <Input value={form.zip} onInput={set('zip')} autoComplete="postal-code" inputMode="numeric" />
-          </FormField>
-        </div>
-        <FormField
-          label="Number of units"
-          htmlFor="prop-units"
-          hint="Unit labels can be edited later."
-          required
-        >
-          <Input type="number" min={1} max={50} value={form.unitCount} onInput={set('unitCount')} />
-        </FormField>
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button type="submit" busy={create.isPending}>
-            Add property
-          </Button>
-        </div>
-      </form>
-    </Modal>
   );
 }

@@ -10,8 +10,9 @@ import type {
 } from '@hearth/shared';
 import type { Property as DbProperty } from '@prisma/client';
 import { currentPeriod, iso, isoOrNull, monthEndExclusive, monthStart } from '../lib/dates';
-import { NotFoundError } from '../lib/errors';
+import { ConflictError, NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
+import { writeAudit, type AuditActor } from './audit.service';
 import { toApiInsight } from './insight.service';
 import { toApiLease } from './lease.service';
 import { deriveRentStatus } from './rent.service';
@@ -30,6 +31,7 @@ export function toApiProperty(p: DbProperty): Property {
     acquisitionCostCents: p.acquisitionCostCents,
     notes: p.notes,
     createdAt: iso(p.createdAt),
+    archivedAt: isoOrNull(p.archivedAt),
   };
 }
 
@@ -44,7 +46,7 @@ async function lateUnitIds(accountId: string, graceDays: number): Promise<Set<st
     where: {
       period,
       status: { notIn: ['paid'] },
-      lease: { unit: { property: { accountId } } },
+      lease: { unit: { archivedAt: null, property: { accountId, archivedAt: null } } },
     },
     select: { status: true, dueDate: true, lease: { select: { unitId: true } } },
   });
@@ -58,8 +60,13 @@ async function lateUnitIds(accountId: string, graceDays: number): Promise<Set<st
 export async function list(accountId: string): Promise<PropertyListResponse> {
   const account = await prisma.account.findUniqueOrThrow({ where: { id: accountId } });
   const properties = await prisma.property.findMany({
-    where: { accountId },
-    include: { units: { include: { leases: { where: { status: 'active' } } } } },
+    where: { accountId, archivedAt: null },
+    include: {
+      units: {
+        where: { archivedAt: null },
+        include: { leases: { where: { status: 'active' } } },
+      },
+    },
     orderBy: { createdAt: 'asc' },
   });
   const late = await lateUnitIds(accountId, account.graceDays);
@@ -157,6 +164,7 @@ export async function getDetail(accountId: string, id: string): Promise<Property
         bedrooms: u.bedrooms,
         bathrooms: u.bathrooms,
         marketRentCents: u.marketRentCents,
+        archivedAt: isoOrNull(u.archivedAt),
         status: lease ? ('occupied' as const) : ('vacant' as const),
         currentLease: lease
           ? { ...toApiLease(lease), tenants: lease.leaseTenants.map((lt) => toApiTenant(lt.tenant)) }
@@ -168,7 +176,11 @@ export async function getDetail(accountId: string, id: string): Promise<Property
   };
 }
 
-export async function create(accountId: string, input: CreatePropertyInput): Promise<Property> {
+export async function create(
+  accountId: string,
+  input: CreatePropertyInput,
+  actor: AuditActor = 'user',
+): Promise<Property> {
   const row = await prisma.property.create({
     data: {
       accountId,
@@ -190,6 +202,13 @@ export async function create(accountId: string, input: CreatePropertyInput): Pro
       },
     },
   });
+  await writeAudit(accountId, {
+    actor,
+    action: 'create',
+    entityType: 'property',
+    entityId: row.id,
+    detail: { addressLine1: row.addressLine1, unitCount: input.units.length },
+  });
   return toApiProperty(row);
 }
 
@@ -197,6 +216,7 @@ export async function update(
   accountId: string,
   id: string,
   input: UpdatePropertyInput,
+  actor: AuditActor = 'user',
 ): Promise<Property> {
   await getOwned(accountId, id);
   const row = await prisma.property.update({
@@ -216,12 +236,45 @@ export async function update(
       ...(input.notes !== undefined ? { notes: input.notes } : {}),
     },
   });
+  await writeAudit(accountId, {
+    actor,
+    action: 'update',
+    entityType: 'property',
+    entityId: id,
+    detail: { nickname: row.nickname, addressLine1: row.addressLine1 },
+  });
   return toApiProperty(row);
 }
 
-export async function remove(accountId: string, id: string): Promise<void> {
+/**
+ * Soft-archive. Blocked while any unit still has an active lease; the property's
+ * units/leases are hidden via query filters (not stamped), so restore is trivial.
+ */
+export async function remove(
+  accountId: string,
+  id: string,
+  actor: AuditActor = 'user',
+): Promise<void> {
   await getOwned(accountId, id);
-  await prisma.property.delete({ where: { id } });
+  const activeLease = await prisma.lease.findFirst({
+    where: { status: 'active', unit: { propertyId: id } },
+  });
+  if (activeLease) {
+    throw new ConflictError('Terminate the active lease before archiving this property.');
+  }
+  await prisma.property.update({ where: { id }, data: { archivedAt: new Date() } });
+  await writeAudit(accountId, { actor, action: 'archive', entityType: 'property', entityId: id });
+}
+
+export async function restore(
+  accountId: string,
+  id: string,
+  actor: AuditActor = 'user',
+): Promise<Property> {
+  await getOwned(accountId, id);
+  const row = await prisma.property.update({ where: { id }, data: { archivedAt: null } });
+  await writeAudit(accountId, { actor, action: 'restore', entityType: 'property', entityId: id });
+  return toApiProperty(row);
 }
 
 export async function getPnl(

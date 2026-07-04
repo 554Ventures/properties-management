@@ -25,4 +25,8 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
     await tenantService.remove(req.accountId, req.params.id);
     return reply.code(204).send();
   });
+
+  app.post<{ Params: { id: string } }>('/tenants/:id/restore', async (req) =>
+    tenantService.restore(req.accountId, req.params.id),
+  );
 }

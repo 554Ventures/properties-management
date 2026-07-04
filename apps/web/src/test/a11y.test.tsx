@@ -7,12 +7,20 @@ import type {
   Insight,
   PropertyWithStats,
 } from '@hearth/shared';
+import type { LeaseDetailResponse } from '@hearth/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen } from '@testing-library/react';
 import axe from 'axe-core';
+import type { ReactNode } from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { LeaseFormModal } from '../components/forms/LeaseFormModal';
+import { LeaseTenantsModal } from '../components/forms/LeaseTenantsModal';
+import { PropertyFormModal } from '../components/forms/PropertyFormModal';
+import { TenantFormModal } from '../components/forms/TenantFormModal';
+import { UnitFormModal } from '../components/forms/UnitFormModal';
 import { AppShell } from '../components/shell/AppShell';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { ToastProvider } from '../components/ui/Toast';
 import { Dashboard } from '../pages/Dashboard';
 
@@ -85,6 +93,7 @@ const properties: PropertyWithStats[] = [
     acquisitionCostCents: null,
     notes: null,
     createdAt: '2020-01-01T00:00:00.000Z',
+    archivedAt: null,
     unitCount: 1,
     occupiedCount: 1,
     monthlyRentCents: 125000,
@@ -162,4 +171,144 @@ describe('accessibility smoke test', () => {
       results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`),
     ).toEqual([]);
   }, 20_000);
+});
+
+// --- CRUD modals -----------------------------------------------------------
+
+const leaseDetailFixture: LeaseDetailResponse = {
+  lease: {
+    id: 'l1',
+    unitId: 'u1',
+    rentCents: 125000,
+    dueDay: 1,
+    startDate: '2025-08-01T12:00:00.000Z',
+    endDate: '2026-07-31T12:00:00.000Z',
+    status: 'active',
+    esignEnvelopeId: null,
+    esignStatus: null,
+    createdAt: '2025-08-01T12:00:00.000Z',
+    unitLabel: 'Unit A',
+    propertyId: 'p1',
+    propertyLabel: '12 Maple St',
+    tenants: [
+      {
+        id: 't1',
+        accountId: 'acc1',
+        fullName: 'Alex Primary',
+        email: null,
+        phone: null,
+        notes: null,
+        createdAt: '2025-01-01T00:00:00.000Z',
+        archivedAt: null,
+      },
+    ],
+  },
+  rentPayments: [],
+};
+
+const modalFixtures: Record<string, unknown> = {
+  '/api/v1/tenants': [],
+  '/api/v1/leases/l1': leaseDetailFixture,
+};
+
+function modalFetch(input: RequestInfo | URL): Promise<Response> {
+  const path = String(input).replace(/^https?:\/\/[^/]+/, '').split('?')[0] ?? '';
+  const body = modalFixtures[path] ?? {};
+  return Promise.resolve(
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }),
+  );
+}
+
+function Providers({ children }: { children: ReactNode }) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return (
+    <QueryClientProvider client={queryClient}>
+      <ToastProvider>
+        <MemoryRouter>{children}</MemoryRouter>
+      </ToastProvider>
+    </QueryClientProvider>
+  );
+}
+
+async function expectNoModalViolations() {
+  const dialog = await screen.findByRole('dialog');
+  const results = await axe.run(dialog, {
+    rules: { 'color-contrast': { enabled: false } },
+  });
+  expect(
+    results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`),
+  ).toEqual([]);
+}
+
+describe('CRUD modal accessibility', () => {
+  it('PropertyFormModal (create) has no axe violations', async () => {
+    vi.stubGlobal('fetch', vi.fn(modalFetch));
+    render(
+      <Providers>
+        <PropertyFormModal mode="create" open onClose={() => {}} />
+      </Providers>,
+    );
+    await expectNoModalViolations();
+  });
+
+  it('UnitFormModal (create) has no axe violations', async () => {
+    vi.stubGlobal('fetch', vi.fn(modalFetch));
+    render(
+      <Providers>
+        <UnitFormModal mode="create" open propertyId="p1" onClose={() => {}} />
+      </Providers>,
+    );
+    await expectNoModalViolations();
+  });
+
+  it('TenantFormModal (create) has no axe violations', async () => {
+    vi.stubGlobal('fetch', vi.fn(modalFetch));
+    render(
+      <Providers>
+        <TenantFormModal mode="create" open onClose={() => {}} />
+      </Providers>,
+    );
+    await expectNoModalViolations();
+  });
+
+  it('LeaseFormModal (create) has no axe violations', async () => {
+    vi.stubGlobal('fetch', vi.fn(modalFetch));
+    render(
+      <Providers>
+        <LeaseFormModal mode="create" open unitId="u1" unitLabel="Unit A" onClose={() => {}} />
+      </Providers>,
+    );
+    await expectNoModalViolations();
+  });
+
+  it('LeaseTenantsModal has no axe violations', async () => {
+    vi.stubGlobal('fetch', vi.fn(modalFetch));
+    render(
+      <Providers>
+        <LeaseTenantsModal open leaseId="l1" onClose={() => {}} />
+      </Providers>,
+    );
+    // Wait for the tenant roster to load before auditing.
+    await screen.findByText('Alex Primary');
+    await expectNoModalViolations();
+  });
+
+  it('ConfirmDialog has no axe violations', async () => {
+    render(
+      <Providers>
+        <ConfirmDialog
+          open
+          onClose={() => {}}
+          onConfirm={() => {}}
+          title="Archive property"
+          confirmLabel="Archive"
+          body="Archiving hides this property but keeps its history."
+        />
+      </Providers>,
+    );
+    await expectNoModalViolations();
+  });
 });
