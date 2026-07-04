@@ -22,10 +22,27 @@ The AI assistant runs in deterministic **mock mode** unless `ANTHROPIC_API_KEY` 
 
 ## MCP server
 
-The same service layer is exposed as an MCP server:
+The same service layer is exposed as an MCP server (server name `hearth`):
 
 ```bash
 npm run mcp --workspace apps/api    # stdio transport
 ```
 
-Write tools (send reminder, categorize transaction, generate report) are disabled unless `MCP_ALLOW_WRITES=true`.
+Read tools (portfolio summary, KPIs, properties, tenants, rent status, transactions, insights, reports) and resources (`hearth://portfolio/summary`, `hearth://properties[/{id}]`, `hearth://rent/{period}`, `hearth://reports[/{id}]`, `hearth://insights/active`) are always available. Write tools (create/confirm transaction, record rent payment, send reminders, generate/email report, dismiss insight) are registered only when `HEARTH_MCP_ENABLE_WRITE=true`; every write is audit-logged.
+
+### Connect from Claude Desktop / Claude Code
+
+```json
+{
+  "mcpServers": {
+    "hearth": {
+      "command": "npm",
+      "args": ["run", "mcp", "-w", "apps/api"],
+      "cwd": "/absolute/path/to/PropertiesAI",
+      "env": { "HEARTH_MCP_ENABLE_WRITE": "false" }
+    }
+  }
+}
+```
+
+Run `npm run db:setup` first — the server resolves the seeded demo account at startup.
