@@ -3,12 +3,8 @@
 // tools via the registry, validates render tools against the shared block
 // schemas and persists the assistant turn as a ChatMessage.
 import { randomUUID } from 'node:crypto';
-import {
-  AskUserQuestionBlockSchema,
-  type AskUserQuestionAnswer,
-  type ContentBlock,
-  type SseEventName,
-} from '@hearth/shared';
+import { type AskUserQuestionAnswer, type ContentBlock, type SseEventName } from '@hearth/shared';
+import { ZodError } from 'zod';
 import type {
   MessageParam,
   TextBlockParam,
@@ -21,7 +17,13 @@ import { BadRequestError, ConflictError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { createAiClient } from './client';
 import { buildSystemPrompt } from './prompts';
-import { ASK_USER_QUESTION_TOOL, anthropicToolDefs, findRenderTool, findServiceTool } from './tools';
+import {
+  ASK_USER_QUESTION_TOOL,
+  AskUserQuestionInputSchema,
+  anthropicToolDefs,
+  findRenderTool,
+  findServiceTool,
+} from './tools';
 
 export type Emit = (event: SseEventName, data: unknown) => void;
 
@@ -185,11 +187,13 @@ async function runLoop(params: LoopParams): Promise<void> {
 
     for (const tu of toolUses) {
       if (tu.name === ASK_USER_QUESTION_TOOL) {
-        const input = AskUserQuestionBlockSchema.omit({
-          questionId: true,
+        const input = AskUserQuestionInputSchema.parse(tu.input);
+        const block: ContentBlock = {
+          ...input,
+          type: 'ask_user_question',
+          questionId: randomUUID(),
           allowFreeText: true,
-        }).parse(tu.input);
-        const block: ContentBlock = { ...input, questionId: randomUUID(), allowFreeText: true };
+        };
         const index = blocks.length;
         blocks.push(block);
         emit('block_complete', { index, block });
@@ -219,11 +223,21 @@ async function runLoop(params: LoopParams): Promise<void> {
 
       const render = findRenderTool(tu.name);
       if (render) {
-        const block = render.inputSchema.parse(tu.input) as ContentBlock;
-        const index = blocks.length;
-        blocks.push(block);
-        emit('block_complete', { index, block });
-        toolResults.push({ type: 'tool_result', tool_use_id: tu.id, content: 'rendered' });
+        try {
+          const input = render.inputSchema.parse(tu.input) as Omit<ContentBlock, 'type'>;
+          const block = { ...input, type: render.blockType } as ContentBlock;
+          const index = blocks.length;
+          blocks.push(block);
+          emit('block_complete', { index, block });
+          toolResults.push({ type: 'tool_result', tool_use_id: tu.id, content: 'rendered' });
+        } catch (err) {
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: tu.id,
+            content: err instanceof ZodError ? JSON.stringify(err.issues) : 'invalid tool input',
+            is_error: true,
+          });
+        }
         continue;
       }
 

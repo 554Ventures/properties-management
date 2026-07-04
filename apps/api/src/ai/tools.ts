@@ -18,7 +18,7 @@ import {
   SendRemindersInputSchema,
   TransactionListQuerySchema,
 } from '@hearth/shared';
-import type { InsightScope, LeaseStatus } from '@hearth/shared';
+import type { ContentBlock, InsightScope, LeaseStatus } from '@hearth/shared';
 import type { Tool } from '@anthropic-ai/sdk/resources/messages/messages';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
@@ -44,11 +44,15 @@ export interface ServiceToolDef {
   execute: (accountId: string, input: unknown, actor: AuditActor) => Promise<unknown>;
 }
 
-/** Tools whose input IS a shared content-block schema; the loop validates and
- *  emits them as blocks instead of executing anything. */
+/** Tools whose input renders a shared content-block schema; the loop validates
+ *  the model's args and injects `blockType` as the block's `type` itself —
+ *  the model is never asked to echo back that literal discriminant (it's
+ *  redundant with which tool it called, and unlike JSON-schema `const`
+ *  fields, Anthropic tool-use generation doesn't reliably reproduce it). */
 export interface RenderToolDef {
   name: string;
   description: string;
+  blockType: ContentBlock['type'];
   inputSchema: z.ZodTypeAny;
 }
 
@@ -299,9 +303,11 @@ export const serviceTools: ServiceToolDef[] = [
 
 export const ASK_USER_QUESTION_TOOL = 'ask_user_question';
 
-/** ask_user_question input = the block minus questionId (assigned by the loop)
- *  and minus allowFreeText (always true). */
+/** ask_user_question input = the block minus type (injected by the loop from
+ *  `blockType`), questionId (assigned by the loop) and allowFreeText (always
+ *  true). */
 export const AskUserQuestionInputSchema = AskUserQuestionBlockSchema.omit({
+  type: true,
   questionId: true,
   allowFreeText: true,
 });
@@ -311,24 +317,28 @@ export const renderTools: RenderToolDef[] = [
     name: 'render_chart',
     description:
       'Render a chart in the chat transcript. Use for any numeric comparison or trend. y values are integer cents when yUnit is "usd". description is required alt text.',
-    inputSchema: ChartBlockSchema,
+    blockType: 'chart',
+    inputSchema: ChartBlockSchema.omit({ type: true }),
   },
   {
     name: 'render_table',
     description:
       'Render a data table in the chat transcript. Use for lists of records or per-entity breakdowns. Column format "usd" expects integer cents in the rows.',
-    inputSchema: DataTableBlockSchema,
+    blockType: 'data_table',
+    inputSchema: DataTableBlockSchema.omit({ type: true }),
   },
   {
     name: 'propose_action',
     description:
       'Show an action card with buttons the USER can click to perform a change (api_call against the normal REST API, or navigate). Use this for anything that changes data instead of doing it yourself.',
-    inputSchema: ActionCardBlockSchema,
+    blockType: 'action_card',
+    inputSchema: ActionCardBlockSchema.omit({ type: true }),
   },
   {
     name: ASK_USER_QUESTION_TOOL,
     description:
       'Pause and ask the user a clarifying preference question with 2-4 mutually exclusive options (e.g. which tax year). Only for genuine user-preference ambiguity — never for things a tool can answer.',
+    blockType: 'ask_user_question',
     inputSchema: AskUserQuestionInputSchema,
   },
 ];
