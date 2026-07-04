@@ -7,7 +7,7 @@ import { useFocusTrap } from './useFocusTrap';
 export interface DrawerProps {
   open: boolean;
   onClose: () => void;
-  /** Accessible name for the dialog (e.g. "Hearth assistant"). */
+  /** Accessible name for the dialog (e.g. "Roost"). */
   label: string;
   children: ReactNode;
   /** Optional visible header title; omit for custom headers. */

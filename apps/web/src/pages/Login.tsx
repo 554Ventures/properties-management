@@ -1,6 +1,6 @@
 // Sign-in / sign-up screen, rendered by AuthGate only in auth mode
 // (deployment plan §4.1). Email/password via supabase-js; the API provisions
-// the Hearth account on the first authenticated request, so there is no
+// the 554 Properties account on the first authenticated request, so there is no
 // separate signup call to our backend.
 import { useState, type FormEvent } from 'react';
 import { Button } from '../components/ui/Button';
@@ -48,14 +48,9 @@ export function Login() {
   return (
     <div className="grid min-h-screen place-items-center bg-app px-4">
       <div className="w-full max-w-sm">
-        <div className="mb-6 flex items-center justify-center gap-2.5">
-          <span
-            aria-hidden="true"
-            className="grid h-10 w-10 place-items-center rounded-md bg-brand text-lg font-bold text-ink-on-brand"
-          >
-            H
-          </span>
-          <span className="text-2xl font-semibold tracking-tight text-ink">Hearth</span>
+        <div className="mb-8 flex items-center justify-center gap-3">
+          <img src="/logo.svg" alt="" aria-hidden="true" className="h-11 w-11 rounded-lg" />
+          <span className="text-2xl font-semibold tracking-tight text-ink">554 Properties</span>
         </div>
         <form
           onSubmit={submit}
@@ -112,7 +107,7 @@ export function Login() {
             }}
           >
             {mode === 'sign_in'
-              ? 'New to Hearth? Create an account'
+              ? 'New to 554 Properties? Create an account'
               : 'Already have an account? Sign in'}
           </button>
         </form>

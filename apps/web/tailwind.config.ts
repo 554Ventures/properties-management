@@ -73,8 +73,11 @@ export default {
         ease: 'var(--motion-ease)',
       },
       boxShadow: {
-        card: '0 1px 2px rgb(28 25 23 / 0.05)',
-        overlay: '0 20px 40px -12px rgb(28 25 23 / 0.25)',
+        // Elevation comes from thin borders, not heavy shadows (Mercury look).
+        // `card` is a barely-there hairline lift; `overlay` is reserved for
+        // true floating layers (drawers, modals).
+        card: '0 1px 1px rgb(27 23 20 / 0.03)',
+        overlay: '0 16px 36px -16px rgb(27 23 20 / 0.18)',
       },
     },
   },

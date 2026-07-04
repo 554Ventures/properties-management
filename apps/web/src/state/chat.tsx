@@ -106,15 +106,15 @@ function describeBlock(block: ContentBlock): string | null {
     case 'text':
       return null; // covered by the message_complete announcement
     case 'chart':
-      return `The Hearth assistant added a chart: ${block.title}.`;
+      return `Roost added a chart: ${block.title}.`;
     case 'data_table':
       return block.title
-        ? `The Hearth assistant added a table: ${block.title}.`
-        : 'The Hearth assistant added a table.';
+        ? `Roost added a table: ${block.title}.`
+        : 'Roost added a table.';
     case 'action_card':
-      return `The Hearth assistant suggested an action: ${block.title}.`;
+      return `Roost suggested an action: ${block.title}.`;
     case 'ask_user_question':
-      return `The Hearth assistant asked: ${block.question}`;
+      return `Roost asked: ${block.question}`;
   }
 }
 
@@ -172,7 +172,7 @@ function applySseEvent(state: ChatState, event: SseEvent): ChatState {
         status: 'idle',
         toolActivity: null,
         streamingMessageId: null,
-        announcement: 'The Hearth assistant finished replying.',
+        announcement: 'Roost finished replying.',
       };
     case 'error':
       return {
@@ -433,7 +433,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         .catch(() => {
           dispatch({
             type: 'send_failed',
-            message: 'Could not reach the Hearth assistant. Check your connection and try again.',
+            message: 'Could not reach Roost. Check your connection and try again.',
           });
         });
     },

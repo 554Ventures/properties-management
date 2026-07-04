@@ -826,7 +826,7 @@ export async function emailToAccountant(
   const report = await getById(accountId, id);
   await mockEmail.send({
     to,
-    subject: `Hearth report: ${report.title}`,
+    subject: `554 Properties report: ${report.title}`,
     body: `Your report "${report.title}" is attached (mock email — no attachment actually sent).`,
   });
   await writeAudit(accountId, {

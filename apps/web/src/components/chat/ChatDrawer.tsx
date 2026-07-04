@@ -1,5 +1,5 @@
 // The global assistant drawer (ARCHITECTURE §8, binding a11y notes):
-// role="dialog" aria-label="Hearth assistant", focus trap, Esc closes and
+// role="dialog" aria-label="Roost", focus trap, Esc closes and
 // returns focus to the launcher. Full-screen below md; a ~420px right panel
 // above. Below xl it overlays with a backdrop; at xl the page content shifts
 // aside instead (AppShell adds right padding), so nothing is covered.
@@ -25,7 +25,7 @@ export function ChatDrawer() {
   if (!open) return null;
 
   return (
-    <aside aria-label="Hearth assistant panel">
+    <aside aria-label="Roost panel">
       {modal && (
         <div className="fixed inset-0 z-40 bg-black/40" onClick={close} aria-hidden="true" />
       )}
@@ -34,7 +34,7 @@ export function ChatDrawer() {
         ref={panelRef}
         role="dialog"
         aria-modal={modal}
-        aria-label="Hearth assistant"
+        aria-label="Roost"
         tabIndex={-1}
         className="fixed inset-y-0 right-0 z-40 flex w-full flex-col border-l border-border bg-surface shadow-overlay animate-drawer-enter md:w-[420px]"
       >
@@ -43,7 +43,7 @@ export function ChatDrawer() {
             <span aria-hidden="true" className="text-ink-ai">
               ✦
             </span>
-            Hearth assistant
+            Roost
           </h2>
           <div className="flex items-center gap-1">
             <button

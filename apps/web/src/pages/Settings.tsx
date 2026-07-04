@@ -85,7 +85,7 @@ export function Settings() {
                 External AI access (MCP)
               </h2>
               <p className="text-sm leading-relaxed text-ink-muted">
-                Hearth exposes your portfolio to AI tools you run yourself — Claude Desktop, Claude
+                554 Properties exposes your portfolio to AI tools you run yourself — Claude Desktop, Claude
                 Code, or any MCP-aware client — through a built-in Model Context Protocol server.
                 Access is <strong className="font-medium text-ink">read-only by default</strong>:
                 external tools can view your portfolio summary, properties, rent status,

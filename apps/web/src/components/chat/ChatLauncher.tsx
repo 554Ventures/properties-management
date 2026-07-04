@@ -21,7 +21,7 @@ export function ChatLauncher() {
       ref={buttonRef}
       type="button"
       onClick={openDrawer}
-      aria-label="Open Hearth assistant"
+      aria-label="Open Roost"
       className={cx(
         'fixed bottom-20 right-4 z-40 grid h-12 w-12 place-items-center rounded-full border border-border-ai bg-surface-ai text-ink-ai shadow-overlay transition-colors duration-fast hover:bg-surface md:bottom-6 md:right-6',
         open && 'hidden',

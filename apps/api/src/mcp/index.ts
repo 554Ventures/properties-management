@@ -1,4 +1,4 @@
-// Hearth MCP server entrypoint (ARCHITECTURE §7) — stdio transport.
+// 554 Properties MCP server entrypoint (ARCHITECTURE §7) — stdio transport.
 // Run: `npm run mcp -w apps/api`. Same demo account and service layer as the
 // REST API; write tools are gated behind HEARTH_MCP_ENABLE_WRITE=true.
 import { readFileSync } from 'node:fs';

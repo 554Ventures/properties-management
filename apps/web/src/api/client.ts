@@ -38,7 +38,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new ApiClientError(
       0,
       'network_error',
-      'Could not reach the Hearth API. Check your connection and try again.',
+      'Could not reach the 554 Properties API. Check your connection and try again.',
     );
   }
 

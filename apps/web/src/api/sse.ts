@@ -149,6 +149,6 @@ async function readStream(
     if (!sawTerminal) fail('The assistant connection ended unexpectedly. Try again.');
   } catch {
     if (controller.signal.aborted) return; // caller cancelled — stay silent
-    fail('Could not reach the Hearth assistant. Check your connection and try again.');
+    fail('Could not reach Roost. Check your connection and try again.');
   }
 }

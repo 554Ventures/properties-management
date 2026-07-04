@@ -117,7 +117,7 @@ export function ChatTranscript() {
               ✦
             </span>
             <p className="text-sm font-semibold text-ink">
-              Ask Hearth anything about your rentals
+              Ask Roost anything about your rentals
             </p>
             <p className="text-sm text-ink-muted">
               Cash flow, late rent, tax prep — or add & edit properties, tenants, and transactions. Every answer comes straight from your ledger.
