@@ -19,7 +19,7 @@ import {
 import { NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { slugify } from '../lib/strings';
-import { writeAudit } from './audit.service';
+import { writeAudit, type AuditActor } from './audit.service';
 import * as rentService from './rent.service';
 import { generateMonthlyReviewReport } from './report.service';
 
@@ -62,11 +62,16 @@ export async function listActive(accountId: string, scope?: InsightScope): Promi
   return list(accountId, { status: 'active', ...(scope ? { scope } : {}) });
 }
 
-export async function dismiss(accountId: string, id: string): Promise<Insight> {
+export async function dismiss(
+  accountId: string,
+  id: string,
+  actor: AuditActor = 'user',
+): Promise<Insight> {
   const existing = await prisma.insight.findFirst({ where: { id, accountId } });
   if (!existing) throw new NotFoundError('insight', id);
   const row = await prisma.insight.update({ where: { id }, data: { status: 'dismissed' } });
   await writeAudit(accountId, {
+    actor,
     action: 'insight.dismissed',
     entityType: 'insight',
     entityId: id,

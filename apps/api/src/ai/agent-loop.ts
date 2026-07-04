@@ -135,22 +135,27 @@ async function runLoop(params: LoopParams): Promise<void> {
       textIndex = -1;
     };
 
-    for await (const ev of ai.stream({ system, messages, tools })) {
-      if (ev.type === 'text_delta') {
-        if (text === '') {
-          textIndex = blocks.length;
-          emit('block_start', { index: textIndex, blockType: 'text' });
+    try {
+      for await (const ev of ai.stream({ system, messages, tools })) {
+        if (ev.type === 'text_delta') {
+          if (text === '') {
+            textIndex = blocks.length;
+            emit('block_start', { index: textIndex, blockType: 'text' });
+          }
+          text += ev.text;
+          emit('text_delta', { index: textIndex, delta: ev.text });
+        } else if (ev.type === 'tool_use') {
+          flushText();
+          assistantContent.push({ type: 'tool_use', id: ev.id, name: ev.name, input: ev.input });
+          toolUses.push(ev);
         }
-        text += ev.text;
-        emit('text_delta', { index: textIndex, delta: ev.text });
-      } else if (ev.type === 'tool_use') {
-        flushText();
-        assistantContent.push({ type: 'tool_use', id: ev.id, name: ev.name, input: ev.input });
-        toolUses.push(ev);
+        // 'stop' carries no extra work: no tool_use in the batch means we are done.
       }
-      // 'stop' carries no extra work: no tool_use in the batch means we are done.
+    } finally {
+      // Also runs on a mid-stream provider error, so text accumulated since the
+      // last flush lands in `blocks` and survives the guarded finalize().
+      flushText();
     }
-    flushText();
 
     if (toolUses.length === 0) break;
 
@@ -214,7 +219,9 @@ async function runLoop(params: LoopParams): Promise<void> {
       emit('tool_activity', { name: tu.name, status: 'running' });
       try {
         const input = tool.inputSchema.parse(tu.input ?? {});
-        const result = await tool.execute(accountId, input);
+        // The model invoked this write itself → audit actor 'system'. When the
+        // user clicks an action_card instead, that goes through REST as 'user'.
+        const result = await tool.execute(accountId, input, 'system');
         toolResults.push({
           type: 'tool_result',
           tool_use_id: tu.id,

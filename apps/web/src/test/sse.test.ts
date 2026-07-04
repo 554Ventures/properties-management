@@ -44,6 +44,7 @@ function collectEvents(response: Response): Promise<SseEvent[]> {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe('postSse', () => {
@@ -145,5 +146,53 @@ describe('postSse', () => {
     expect(init.method).toBe('POST');
     expect(init.body).toBe(JSON.stringify({ text: 'hi' }));
     expect(new Headers(init.headers).get('Accept')).toBe('text/event-stream');
+    expect(new Headers(init.headers).get('Authorization')).toBeNull();
+  });
+
+  it('attaches Authorization when VITE_DEV_BEARER_TOKEN is set', async () => {
+    vi.stubEnv('VITE_DEV_BEARER_TOKEN', 'dev-token');
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      streamResponse(['event: message_complete\ndata: {"messageId":"m1"}\n\n']),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    await new Promise<void>((resolve) => {
+      postSse('/chat/sessions/s1/messages', { text: 'hi' }, {
+        onEvent: (event) => {
+          if (event.event === 'message_complete') resolve();
+        },
+      });
+    });
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(init.headers).get('Authorization')).toBe('Bearer dev-token');
+  });
+
+  it('routes a non-2xx response to onHttpError and suppresses the error event when handled', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ error: { code: 'conflict', message: 'awaiting answer' } }), {
+            status: 409,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+      ),
+    );
+
+    const events: SseEvent[] = [];
+    const httpErrors: Array<[number, string, string]> = [];
+    await new Promise<void>((resolve) => {
+      postSse('/chat/sessions/s1/messages', { text: 'hi' }, {
+        onEvent: (event) => events.push(event),
+        onHttpError: (status, code, message) => {
+          httpErrors.push([status, code, message]);
+          // Give the reader a beat so a (buggy) synthetic error would land.
+          setTimeout(resolve, 10);
+          return true;
+        },
+      });
+    });
+
+    expect(httpErrors).toEqual([[409, 'conflict', 'awaiting answer']]);
+    expect(events).toEqual([]);
   });
 });

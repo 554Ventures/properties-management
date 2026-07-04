@@ -89,3 +89,58 @@ describe('POST /rent/reminders', () => {
     expect(audit).not.toBeNull();
   });
 });
+
+describe('rentService.recordPayment double-pay guard', () => {
+  it('records once, creates exactly one ledger transaction and rejects a repeat', async () => {
+    const accountId = await getDemoAccountId();
+    const period = currentPeriod();
+    const tracker = await rentService.getMonthStatus(accountId, period);
+    const park = tracker.rows.find((r) => r.tenantName === PARK_NAME)!;
+
+    const paid = await rentService.recordPayment(accountId, {
+      leaseId: park.leaseId,
+      period,
+      amountCents: park.amountCents,
+      method: 'manual',
+    });
+    expect(paid.status).toBe('paid');
+    expect(paid.transactionId).not.toBeNull();
+
+    await expect(
+      rentService.recordPayment(accountId, {
+        leaseId: park.leaseId,
+        period,
+        amountCents: park.amountCents,
+        method: 'manual',
+      }),
+    ).rejects.toThrow(/already recorded as paid/);
+
+    // Exactly one ledger transaction came out of the two attempts.
+    const ledger = await prisma.transaction.findMany({
+      where: { accountId, description: `Rent payment — ${PARK_NAME} — ${period}` },
+    });
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]!.id).toBe(paid.transactionId);
+
+    // Restore the seeded state (Park stays late for other test files).
+    await prisma.rentPayment.update({
+      where: { id: paid.id },
+      data: {
+        status: 'due',
+        method: null,
+        paidAt: null,
+        externalRef: null,
+        transactionId: null,
+        amountCents: park.amountCents,
+      },
+    });
+    await prisma.transaction.delete({ where: { id: paid.transactionId! } });
+    await prisma.auditLog.deleteMany({
+      where: {
+        accountId,
+        action: { in: ['transaction.created', 'rent_payment.recorded'] },
+        entityId: { in: [paid.id, paid.transactionId!] },
+      },
+    });
+  });
+});

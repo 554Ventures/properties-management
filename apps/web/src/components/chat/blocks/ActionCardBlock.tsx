@@ -1,7 +1,9 @@
 // action_card block — buttons are dumb (§9.3): api_call actions execute the
 // embedded §3 REST route through the shared api client (normal auth /
-// validation / audit path), never through the assistant itself. navigate
-// actions use react-router and close the drawer on mobile.
+// validation / audit path), never through the assistant itself, and only if
+// the route is on the explicit allowlist (actionAllowlist.ts) — anything else
+// renders disabled with a visible note. navigate actions use react-router
+// (in-app paths only) and close the drawer on mobile.
 import { useState } from 'react';
 import type { ActionCardAction, ActionCardBlock as ActionCardBlockData } from '@hearth/shared';
 import { useQueryClient } from '@tanstack/react-query';
@@ -11,6 +13,13 @@ import { useChat } from '../../../state/chat';
 import { Button } from '../../ui/Button';
 import { IconCheck } from '../../ui/icons';
 import { useToast } from '../../ui/Toast';
+import { isAllowedApiCall, isAllowedNavigate } from '../actionAllowlist';
+
+function isActionAllowed(item: ActionCardAction): boolean {
+  return item.action.kind === 'navigate'
+    ? isAllowedNavigate(item.action.to)
+    : isAllowedApiCall(item.action.method, item.action.path);
+}
 
 export function ActionCardBlock({ block }: { block: ActionCardBlockData }) {
   const { toast } = useToast();
@@ -21,6 +30,7 @@ export function ActionCardBlock({ block }: { block: ActionCardBlockData }) {
   const [doneIds, setDoneIds] = useState<Record<string, true>>({});
 
   const run = async (item: ActionCardAction) => {
+    if (!isActionAllowed(item)) return; // defense in depth — button is disabled
     if (item.action.kind === 'navigate') {
       navigate(item.action.to);
       // Full-screen drawer below md would hide the destination page.
@@ -54,7 +64,12 @@ export function ActionCardBlock({ block }: { block: ActionCardBlockData }) {
       {block.body && <p className="mt-1 text-sm leading-relaxed text-ink-muted">{block.body}</p>}
       <div className="mt-3 flex flex-wrap items-center gap-2">
         {block.actions.map((item) =>
-          doneIds[item.id] ? (
+          !isActionAllowed(item) ? (
+            // Refused, not hidden — the user should see what the AI proposed.
+            <Button key={item.id} variant="secondary" size="sm" disabled>
+              {item.label}
+            </Button>
+          ) : doneIds[item.id] ? (
             <Button key={item.id} variant="secondary" size="sm" disabled>
               <span className="text-positive">
                 <IconCheck size={14} />
@@ -75,6 +90,9 @@ export function ActionCardBlock({ block }: { block: ActionCardBlockData }) {
           ),
         )}
       </div>
+      {block.actions.some((item) => !isActionAllowed(item)) && (
+        <p className="mt-2 text-xs text-ink-muted">This action isn't available from chat.</p>
+      )}
     </div>
   );
 }

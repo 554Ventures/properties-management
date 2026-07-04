@@ -14,6 +14,13 @@ export function useFocusTrap(
 ): void {
   const restoreRef = useRef<HTMLElement | null>(null);
 
+  // Track the latest onClose without re-running the trap effect: callers'
+  // onClose often closes over navigation state (setSearchParams) and changes
+  // identity on every URL change — re-running mid-open would yank focus back
+  // to the container's first focusable after e.g. an action-card navigate.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
   useEffect(() => {
     if (!active) return;
     const container = containerRef.current;
@@ -26,7 +33,7 @@ export function useFocusTrap(
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.stopPropagation();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (event.key !== 'Tab') return;
@@ -60,5 +67,5 @@ export function useFocusTrap(
       document.body.style.overflow = previousOverflow;
       restoreRef.current?.focus();
     };
-  }, [active, containerRef, onClose]);
+  }, [active, containerRef]);
 }

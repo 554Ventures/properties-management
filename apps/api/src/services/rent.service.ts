@@ -10,7 +10,7 @@ import type {
   SendRemindersInput,
   SendRemindersResponse,
 } from '@hearth/shared';
-import type { RentPayment as DbRentPayment } from '@prisma/client';
+import { Prisma, type RentPayment as DbRentPayment } from '@prisma/client';
 import {
   addDays,
   calendarDaysBetween,
@@ -23,8 +23,11 @@ import { NotFoundError, BadRequestError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { mockEmail } from '../integrations/mock/mock-email';
 import { mockStripe } from '../integrations/mock/mock-stripe';
-import { writeAudit } from './audit.service';
-import * as transactionService from './transaction.service';
+import { writeAudit, type AuditActor } from './audit.service';
+
+function isUniqueConstraintError(err: unknown): boolean {
+  return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
+}
 
 export function toApiRentPayment(p: DbRentPayment): RentPayment {
   return {
@@ -86,15 +89,31 @@ export async function getMonthStatus(
   const haveRows = new Set(existing.map((e) => e.leaseId));
   const missing = activeLeases.filter((l) => !haveRows.has(l.id));
   if (missing.length > 0) {
-    await prisma.rentPayment.createMany({
-      data: missing.map((l) => ({
-        leaseId: l.id,
-        period,
-        dueDate: addDays(periodStart, l.dueDay - 1),
-        amountCents: l.rentCents,
-        status: 'due',
-      })),
-    });
+    const data = missing.map((l) => ({
+      leaseId: l.id,
+      period,
+      dueDate: addDays(periodStart, l.dueDay - 1),
+      amountCents: l.rentCents,
+      status: 'due',
+    }));
+    try {
+      await prisma.rentPayment.createMany({ data });
+    } catch (err) {
+      // Concurrent materialization of the same period trips @@unique([leaseId,
+      // period]) — SQLite has no skipDuplicates, so re-read once and insert
+      // only the rows that are still missing.
+      if (!isUniqueConstraintError(err)) throw err;
+      const nowHave = new Set(
+        (
+          await prisma.rentPayment.findMany({
+            where: { period, leaseId: { in: missing.map((l) => l.id) } },
+            select: { leaseId: true },
+          })
+        ).map((e) => e.leaseId),
+      );
+      const stillMissing = data.filter((d) => !nowHave.has(d.leaseId));
+      if (stillMissing.length > 0) await prisma.rentPayment.createMany({ data: stillMissing });
+    }
   }
 
   const payments = await prisma.rentPayment.findMany({
@@ -148,6 +167,7 @@ export async function getMonthStatus(
 export async function recordPayment(
   accountId: string,
   input: RecordRentPaymentInput,
+  actor: AuditActor = 'user',
 ): Promise<RentPayment> {
   const lease = await prisma.lease.findFirst({
     where: { id: input.leaseId, unit: { property: { accountId } } },
@@ -162,15 +182,24 @@ export async function recordPayment(
     where: { leaseId_period: { leaseId: input.leaseId, period: input.period } },
   });
   if (!payment) {
-    payment = await prisma.rentPayment.create({
-      data: {
-        leaseId: input.leaseId,
-        period: input.period,
-        dueDate: addDays(monthStart(input.period), lease.dueDay - 1),
-        amountCents: lease.rentCents,
-        status: 'due',
-      },
-    });
+    try {
+      payment = await prisma.rentPayment.create({
+        data: {
+          leaseId: input.leaseId,
+          period: input.period,
+          dueDate: addDays(monthStart(input.period), lease.dueDay - 1),
+          amountCents: lease.rentCents,
+          status: 'due',
+        },
+      });
+    } catch (err) {
+      // Lost the check-then-create race on @@unique([leaseId, period]) — use
+      // the row the concurrent request created.
+      if (!isUniqueConstraintError(err)) throw err;
+      payment = await prisma.rentPayment.findUniqueOrThrow({
+        where: { leaseId_period: { leaseId: input.leaseId, period: input.period } },
+      });
+    }
   }
   if (payment.status === 'paid') {
     throw new BadRequestError(`rent for ${input.period} is already recorded as paid`);
@@ -184,34 +213,56 @@ export async function recordPayment(
   }
 
   const tenantName = lease.leaseTenants[0]?.tenant.fullName ?? 'tenant';
-  const ledgerTxn = await transactionService.create(
-    accountId,
-    {
-      date: iso(paidAt),
-      amountCents: input.amountCents,
-      type: 'income',
-      description: `Rent payment — ${tenantName} — ${input.period}`,
-      propertyId: lease.unit.propertyId,
-      unitId: lease.unitId,
-      categoryId:
-        (await prisma.category.findFirst({ where: { name: 'Rent', type: 'income' } }))?.id ??
-        undefined,
-    },
-    { source: 'manual', status: 'confirmed' },
-  );
+  const rentCategory = await prisma.category.findFirst({
+    where: { name: 'Rent', type: 'income' },
+  });
 
-  const updated = await prisma.rentPayment.update({
-    where: { id: payment.id },
-    data: {
-      status: 'paid',
-      method: input.method,
-      paidAt,
-      amountCents: input.amountCents,
-      externalRef,
-      transactionId: ledgerTxn.id,
-    },
+  // Ledger transaction + RentPayment update commit or roll back together; the
+  // status re-check inside the transaction makes the double-pay guard hold
+  // under concurrent requests.
+  const paymentId = payment.id;
+  const { ledgerTxn, updated } = await prisma.$transaction(async (tx) => {
+    const fresh = await tx.rentPayment.findUniqueOrThrow({ where: { id: paymentId } });
+    if (fresh.status === 'paid') {
+      throw new BadRequestError(`rent for ${input.period} is already recorded as paid`);
+    }
+    const createdTxn = await tx.transaction.create({
+      data: {
+        accountId,
+        propertyId: lease.unit.propertyId,
+        unitId: lease.unitId,
+        categoryId: rentCategory?.id ?? null,
+        date: paidAt,
+        amountCents: input.amountCents,
+        type: 'income',
+        description: `Rent payment — ${tenantName} — ${input.period}`,
+        source: 'manual',
+        status: 'confirmed',
+      },
+    });
+    const updatedPayment = await tx.rentPayment.update({
+      where: { id: paymentId },
+      data: {
+        status: 'paid',
+        method: input.method,
+        paidAt,
+        amountCents: input.amountCents,
+        externalRef,
+        transactionId: createdTxn.id,
+      },
+    });
+    return { ledgerTxn: createdTxn, updated: updatedPayment };
+  });
+
+  await writeAudit(accountId, {
+    actor,
+    action: 'transaction.created',
+    entityType: 'transaction',
+    entityId: ledgerTxn.id,
+    detail: { amountCents: ledgerTxn.amountCents, type: ledgerTxn.type, source: ledgerTxn.source },
   });
   await writeAudit(accountId, {
+    actor,
     action: 'rent_payment.recorded',
     entityType: 'rent_payment',
     entityId: updated.id,
@@ -235,6 +286,7 @@ export async function createPaymentLink(
 export async function sendReminders(
   accountId: string,
   input: SendRemindersInput,
+  actor: AuditActor = 'user',
 ): Promise<SendRemindersResponse> {
   const results: SendRemindersResponse['results'] = [];
   for (const rentPaymentId of input.rentPaymentIds) {
@@ -269,6 +321,7 @@ export async function sendReminders(
       data: { remindedAt: new Date() },
     });
     await writeAudit(accountId, {
+      actor,
       action: 'rent.reminder_sent',
       entityType: 'rent_payment',
       entityId: payment.id,

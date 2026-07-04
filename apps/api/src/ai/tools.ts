@@ -32,13 +32,16 @@ import * as rentService from '../services/rent.service';
 import * as reportService from '../services/report.service';
 import * as tenantService from '../services/tenant.service';
 import * as transactionService from '../services/transaction.service';
+import type { AuditActor } from '../services/audit.service';
 
 export interface ServiceToolDef {
   name: string;
   description: string;
   inputSchema: z.ZodTypeAny;
   write: boolean;
-  execute: (accountId: string, input: unknown) => Promise<unknown>;
+  /** `actor` is the audit attribution for write tools ('system' when the model
+   *  or an MCP client invoked the tool itself); read tools ignore it. */
+  execute: (accountId: string, input: unknown, actor: AuditActor) => Promise<unknown>;
 }
 
 /** Tools whose input IS a shared content-block schema; the loop validates and
@@ -218,8 +221,10 @@ export const serviceTools: ServiceToolDef[] = [
       'WRITES to the ledger: creates a new income or expense transaction (amount in cents, always positive). This permanently records money movement and affects every report and KPI.',
     inputSchema: CreateTransactionInputSchema,
     write: true,
-    execute: (accountId, input) =>
-      transactionService.create(accountId, input as z.infer<typeof CreateTransactionInputSchema>),
+    execute: (accountId, input, actor) =>
+      transactionService.create(accountId, input as z.infer<typeof CreateTransactionInputSchema>, {
+        actor,
+      }),
   },
   {
     name: 'confirm_transaction',
@@ -227,9 +232,14 @@ export const serviceTools: ServiceToolDef[] = [
       'WRITES: confirms (categorizes) a pending-review transaction, moving it into the ledger. Pass categoryId to override the AI suggestion; omit it to accept the suggestion.',
     inputSchema: z.object({ transactionId: z.string(), categoryId: z.string().optional() }),
     write: true,
-    execute: (accountId, input) => {
+    execute: (accountId, input, actor) => {
       const { transactionId, categoryId } = input as { transactionId: string; categoryId?: string };
-      return transactionService.confirm(accountId, transactionId, categoryId ? { categoryId } : {});
+      return transactionService.confirm(
+        accountId,
+        transactionId,
+        categoryId ? { categoryId } : {},
+        actor,
+      );
     },
   },
   {
@@ -238,8 +248,12 @@ export const serviceTools: ServiceToolDef[] = [
       'WRITES: records a rent payment for a lease/period as paid and creates the matching income transaction in the ledger. Cannot be undone from chat.',
     inputSchema: RecordRentPaymentInputSchema,
     write: true,
-    execute: (accountId, input) =>
-      rentService.recordPayment(accountId, input as z.infer<typeof RecordRentPaymentInputSchema>),
+    execute: (accountId, input, actor) =>
+      rentService.recordPayment(
+        accountId,
+        input as z.infer<typeof RecordRentPaymentInputSchema>,
+        actor,
+      ),
   },
   {
     name: 'send_rent_reminders',
@@ -247,8 +261,8 @@ export const serviceTools: ServiceToolDef[] = [
       'WRITES + SENDS EMAIL: sends a rent reminder email to the tenant behind each given rentPaymentId — irreversible. Already-paid rows are skipped.',
     inputSchema: SendRemindersInputSchema,
     write: true,
-    execute: (accountId, input) =>
-      rentService.sendReminders(accountId, input as z.infer<typeof SendRemindersInputSchema>),
+    execute: (accountId, input, actor) =>
+      rentService.sendReminders(accountId, input as z.infer<typeof SendRemindersInputSchema>, actor),
   },
   {
     name: 'generate_report',
@@ -256,8 +270,8 @@ export const serviceTools: ServiceToolDef[] = [
       'WRITES: generates and archives a report snapshot (type + taxYear or from/to, optional propertyId). Returns the report metadata; fetch data with get_report.',
     inputSchema: GenerateReportInputSchema,
     write: true,
-    execute: (accountId, input) =>
-      reportService.generate(accountId, input as z.infer<typeof GenerateReportInputSchema>),
+    execute: (accountId, input, actor) =>
+      reportService.generate(accountId, input as z.infer<typeof GenerateReportInputSchema>, actor),
   },
   {
     name: 'email_report',
@@ -265,9 +279,9 @@ export const serviceTools: ServiceToolDef[] = [
       'SENDS EMAIL: emails a generated report to the given address (e.g. an accountant) — irreversible.',
     inputSchema: z.object({ reportId: z.string(), to: z.string().email() }),
     write: true,
-    execute: async (accountId, input) => {
+    execute: async (accountId, input, actor) => {
       const { reportId, to } = input as { reportId: string; to: string };
-      await reportService.emailToAccountant(accountId, reportId, to);
+      await reportService.emailToAccountant(accountId, reportId, to, actor);
       return { sent: true, to };
     },
   },
@@ -276,8 +290,8 @@ export const serviceTools: ServiceToolDef[] = [
     description: 'WRITES: dismisses an insight — it stays hidden until a materially new one is generated.',
     inputSchema: z.object({ insightId: z.string() }),
     write: true,
-    execute: (accountId, input) =>
-      insightService.dismiss(accountId, (input as { insightId: string }).insightId),
+    execute: (accountId, input, actor) =>
+      insightService.dismiss(accountId, (input as { insightId: string }).insightId, actor),
   },
 ];
 

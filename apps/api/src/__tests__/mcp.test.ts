@@ -122,15 +122,17 @@ describe('MCP server', () => {
     const dismissed = await callToolJson(client, 'dismiss_insight', { insightId: insight.id });
     expect(dismissed.status).toBe('dismissed');
 
-    // The service already audits (insight.dismissed) — the MCP layer must not double-log.
+    // The service already audits (insight.dismissed) — the MCP layer must not
+    // double-log — and an MCP-invoked write is attributed to 'system'.
     const rows = await prisma.auditLog.findMany({
       where: { accountId, entityType: 'insight', entityId: insight.id },
     });
     expect(rows).toHaveLength(1);
     expect(rows[0]!.action).toBe('insight.dismissed');
+    expect(rows[0]!.actor).toBe('system');
   });
 
-  it('email_report gets the MCP-level audit row (service does not audit it)', async () => {
+  it('email_report writes exactly one report.emailed audit row as system', async () => {
     const accountId = await getDemoAccountId();
     const report = await prisma.report.findFirstOrThrow({ where: { accountId } });
 
@@ -142,9 +144,10 @@ describe('MCP server', () => {
     expect(sent).toEqual({ sent: true, to: 'accountant@example.com' });
 
     const rows = await prisma.auditLog.findMany({
-      where: { accountId, action: 'mcp:email_report', entityId: report.id },
+      where: { accountId, action: 'report.emailed', entityId: report.id },
     });
     expect(rows).toHaveLength(1);
     expect(rows[0]!.actor).toBe('system');
+    expect(JSON.parse(rows[0]!.detailJson!)).toEqual({ to: 'accountant@example.com' });
   });
 });

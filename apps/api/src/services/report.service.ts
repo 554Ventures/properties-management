@@ -23,7 +23,7 @@ import { BadRequestError, NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { renderPdfPlaceholder } from '../lib/pdf';
 import { mockEmail } from '../integrations/mock/mock-email';
-import { writeAudit } from './audit.service';
+import { writeAudit, type AuditActor } from './audit.service';
 import { deriveRentStatus } from './rent.service';
 
 // ── library ──────────────────────────────────────────────────────────────────
@@ -706,10 +706,14 @@ async function buildData(
 }
 
 /** Generates and snapshots a report (dataJson never silently changes later). */
-export async function generate(accountId: string, input: GenerateReportInput): Promise<Report> {
+export async function generate(
+  accountId: string,
+  input: GenerateReportInput,
+  actor: AuditActor = 'user',
+): Promise<Report> {
   if (input.type === 'monthly_review') {
     const period = input.from ? periodOf(new Date(input.from)) : addMonthsToPeriod(currentPeriod(), -1);
-    return generateMonthlyReviewReport(accountId, period);
+    return generateMonthlyReviewReport(accountId, period, actor);
   }
   const info = typeInfo(input.type);
   const { from, to, taxYear, label } = resolveRange(input);
@@ -727,6 +731,7 @@ export async function generate(accountId: string, input: GenerateReportInput): P
     },
   });
   await writeAudit(accountId, {
+    actor,
     action: 'report.generated',
     entityType: 'report',
     entityId: row.id,
@@ -735,9 +740,12 @@ export async function generate(accountId: string, input: GenerateReportInput): P
   return toApiReport(row);
 }
 
+// Defaults to 'system' — the daily scheduler is the canonical caller;
+// generate() passes the surface's actor through.
 export async function generateMonthlyReviewReport(
   accountId: string,
   period: string,
+  actor: AuditActor = 'system',
 ): Promise<Report> {
   const data = await buildMonthlyReview(accountId, period);
   const row = await prisma.report.create({
@@ -753,7 +761,7 @@ export async function generateMonthlyReviewReport(
     },
   });
   await writeAudit(accountId, {
-    actor: 'system',
+    actor,
     action: 'report.generated',
     entityType: 'report',
     entityId: row.id,
@@ -809,11 +817,23 @@ export async function exportPdf(
   };
 }
 
-export async function emailToAccountant(accountId: string, id: string, to: string): Promise<void> {
+export async function emailToAccountant(
+  accountId: string,
+  id: string,
+  to: string,
+  actor: AuditActor = 'user',
+): Promise<void> {
   const report = await getById(accountId, id);
   await mockEmail.send({
     to,
     subject: `Hearth report: ${report.title}`,
     body: `Your report "${report.title}" is attached (mock email — no attachment actually sent).`,
+  });
+  await writeAudit(accountId, {
+    actor,
+    action: 'report.emailed',
+    entityType: 'report',
+    entityId: id,
+    detail: { to },
   });
 }

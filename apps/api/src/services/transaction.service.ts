@@ -170,8 +170,9 @@ export async function update(
   accountId: string,
   id: string,
   input: UpdateTransactionInput,
+  actor: AuditActor = 'user',
 ): Promise<Transaction> {
-  await getOwned(accountId, id);
+  const prior = await getOwned(accountId, id);
   const row = await prisma.transaction.update({
     where: { id },
     data: {
@@ -186,12 +187,35 @@ export async function update(
       ...(input.receiptUrl !== undefined ? { receiptUrl: input.receiptUrl } : {}),
     },
   });
+  await writeAudit(accountId, {
+    actor,
+    action: 'transaction.updated',
+    entityType: 'transaction',
+    entityId: id,
+    detail: {
+      priorAmountCents: prior.amountCents,
+      priorCategoryId: prior.categoryId,
+      amountCents: row.amountCents,
+      categoryId: row.categoryId,
+    },
+  });
   return toApiTransaction(row);
 }
 
-export async function remove(accountId: string, id: string): Promise<void> {
-  await getOwned(accountId, id);
+export async function remove(
+  accountId: string,
+  id: string,
+  actor: AuditActor = 'user',
+): Promise<void> {
+  const prior = await getOwned(accountId, id);
   await prisma.transaction.delete({ where: { id } });
+  await writeAudit(accountId, {
+    actor,
+    action: 'transaction.deleted',
+    entityType: 'transaction',
+    entityId: id,
+    detail: { amountCents: prior.amountCents, categoryId: prior.categoryId, type: prior.type },
+  });
 }
 
 // ── review queue / confirm ───────────────────────────────────────────────────
@@ -217,6 +241,7 @@ export async function confirm(
   accountId: string,
   id: string,
   input: ConfirmTransactionInput = {},
+  actor: AuditActor = 'user',
 ): Promise<Transaction> {
   const existing = await getOwned(accountId, id);
   const usedSuggestion = !input.categoryId && !!existing.aiSuggestedCategoryId;
@@ -226,7 +251,9 @@ export async function confirm(
     data: { status: 'confirmed', categoryId },
   });
   await writeAudit(accountId, {
-    actor: usedSuggestion ? 'ai_suggested_user_confirmed' : 'user',
+    // A human confirm that accepts the AI suggestion is the one case that
+    // upgrades to 'ai_suggested_user_confirmed'; non-user actors pass through.
+    actor: actor === 'user' && usedSuggestion ? 'ai_suggested_user_confirmed' : actor,
     action: 'transaction.confirmed',
     entityType: 'transaction',
     entityId: id,

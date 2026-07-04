@@ -12,6 +12,12 @@ const BASE_URL = '/api/v1';
 export interface SseHandlers {
   /** Every parsed wire event, including server-sent `error` events. */
   onEvent: (event: SseEvent) => void;
+  /**
+   * Optional hook for non-2xx HTTP responses (no stream ever started), with
+   * the API error envelope's code/message. Return true to take over the
+   * failure and suppress the synthetic `error` event.
+   */
+  onHttpError?: (status: number, code: string, message: string) => boolean | void;
 }
 
 /** Events after which the server may legitimately close the stream (§5). */
@@ -78,25 +84,32 @@ async function readStream(
   };
 
   try {
+    // Dev-only auth: VITE_DEV_BEARER_TOKEN (e.g. in apps/web/.env.local)
+    // attaches `Authorization: Bearer <token>`, matching api/client.ts.
+    const token = import.meta.env.VITE_DEV_BEARER_TOKEN as string | undefined;
     const res = await fetch(`${BASE_URL}${path}`, {
       method: 'POST',
       headers: {
         Accept: 'text/event-stream',
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: controller.signal,
     });
 
     if (!res.ok) {
-      // Non-stream failure — the API's `{ error: { message } }` envelope.
+      // Non-stream failure — the API's `{ error: { code, message } }` envelope.
+      let code = 'unknown_error';
       let message = `The assistant request failed (${res.status}).`;
       try {
-        const parsed = (await res.json()) as { error?: { message?: string } };
+        const parsed = (await res.json()) as { error?: { code?: string; message?: string } };
+        code = parsed.error?.code ?? code;
         message = parsed.error?.message ?? message;
       } catch {
         // Non-JSON error body — keep the generic message.
       }
+      if (handlers.onHttpError?.(res.status, code, message) === true) return;
       fail(message);
       return;
     }

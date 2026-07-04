@@ -11,6 +11,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe('api client', () => {
@@ -79,6 +80,22 @@ describe('api client', () => {
     expect(init?.method).toBe('POST');
     expect(init?.body).toBe(JSON.stringify({ amountCents: 100 }));
     expect(new Headers(init?.headers).get('Content-Type')).toBe('application/json');
+  });
+
+  it('attaches Authorization when VITE_DEV_BEARER_TOKEN is set (and omits it otherwise)', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ ok: true }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.get('/healthz');
+    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get('Authorization')).toBeNull();
+
+    vi.stubEnv('VITE_DEV_BEARER_TOKEN', 'dev-token');
+    await api.get('/healthz');
+    expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('Authorization')).toBe(
+      'Bearer dev-token',
+    );
   });
 });
 

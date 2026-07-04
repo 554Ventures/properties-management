@@ -15,6 +15,7 @@ import {
 import { OKAFOR_NAME } from '../../prisma/seed-constants';
 import { buildApp } from '../app';
 import { currentPeriod } from '../lib/dates';
+import { prisma } from '../lib/prisma';
 import { getDemoAccountId } from '../plugins/auth';
 import * as dashboardService from '../services/dashboard.service';
 import * as rentService from '../services/rent.service';
@@ -200,6 +201,12 @@ describe('mock script 2 — the full askUserQuestion round-trip', () => {
         type: 'schedule_e',
         taxYear: new Date().getUTCFullYear(),
       });
+
+      // The model invoked generate_report itself → the write is audited as 'system'.
+      const audit = await prisma.auditLog.findFirst({
+        where: { accountId, action: 'report.generated', entityId: reportId },
+      });
+      expect(audit?.actor).toBe('system');
 
       // The single assistant ChatMessage now carries ALL blocks: pre-pause + post-resume.
       const finalMessages = ChatMessageListResponseSchema.parse(

@@ -27,6 +27,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { postSse } from '../api/sse';
+import { useToast } from '../components/ui/Toast';
 
 export type ChatStatus = 'idle' | 'streaming' | 'awaiting_input' | 'error';
 
@@ -63,7 +64,10 @@ type ChatAction =
   | { type: 'messages_loaded'; messages: ChatMessage[] }
   | { type: 'user_message'; message: ChatMessage }
   | { type: 'answer_submitted'; answer: AskUserQuestionAnswer }
+  | { type: 'answer_failed'; questionId: string }
   | { type: 'send_failed'; message: string }
+  | { type: 'send_conflict'; messageId: string }
+  | { type: 'session_resynced'; messages: ChatMessage[] }
   | { type: 'sse_event'; event: SseEvent };
 
 /** Sets blocks[index], padding any gap with empty text blocks (never holes). */
@@ -210,6 +214,13 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
         errorMessage: null,
         answers: { ...state.answers, [action.answer.questionId]: action.answer },
       };
+    case 'answer_failed': {
+      // The /answer POST never reached the server-side resume — undo the
+      // optimistic mark so the question is answerable again (no dead-end).
+      const answers = { ...state.answers };
+      delete answers[action.questionId];
+      return { ...state, status: 'awaiting_input', errorMessage: null, toolActivity: null, answers };
+    }
     case 'send_failed':
       return {
         ...state,
@@ -217,6 +228,34 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
         errorMessage: action.message,
         toolActivity: null,
       };
+    case 'send_conflict':
+      // The server refused the send (409: still awaiting an answer) — drop
+      // the optimistic user message; session_resynced restores the history.
+      return {
+        ...state,
+        status: 'awaiting_input',
+        errorMessage: null,
+        toolActivity: null,
+        messages: state.messages.filter((m) => m.id !== action.messageId),
+      };
+    case 'session_resynced': {
+      // Recovery from a client/server state mismatch (send 409'd while the
+      // session is awaiting_user): merge server history like messages_loaded
+      // and re-open the latest question so the user can answer it again.
+      const serverIds = new Set(action.messages.map((m) => m.id));
+      const localOnly = state.messages.filter((m) => !serverIds.has(m.id));
+      const messages = [...action.messages, ...localOnly];
+      const answers = { ...state.answers };
+      const lastQuestion = messages
+        .flatMap((m) => m.blocks)
+        .filter(
+          (b): b is Extract<ContentBlock, { type: 'ask_user_question' }> =>
+            b.type === 'ask_user_question',
+        )
+        .at(-1);
+      if (lastQuestion) delete answers[lastQuestion.questionId];
+      return { ...state, status: 'awaiting_input', errorMessage: null, messages, answers };
+    }
     case 'sse_event':
       return applySseEvent(state, action.event);
   }
@@ -255,6 +294,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const location = useLocation();
   const queryClient = useQueryClient();
+  const { toast } = useToast();
 
   const sessionIdRef = useRef<string | null>(null);
   const sessionPromiseRef = useRef<Promise<string> | null>(null);
@@ -329,9 +369,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     (event: SseEvent) => {
       dispatch({ type: 'sse_event', event });
       if (event.event === 'message_complete') {
-        // The assistant may have generated reports / actioned insights.
-        void queryClient.invalidateQueries({ queryKey: ['reports'] });
-        void queryClient.invalidateQueries({ queryKey: ['insights'] });
+        // In real-AI mode the assistant can write anywhere in the ledger
+        // (payments, transactions, reports, insights…) — refresh everything.
+        // Cheap given how infrequently turns complete.
+        void queryClient.invalidateQueries();
       }
     },
     [queryClient],
@@ -341,10 +382,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     (text: string) => {
       const trimmed = text.trim();
       if (!trimmed) return;
+      const messageId = `local-${++localMessageId}`;
       dispatch({
         type: 'user_message',
         message: {
-          id: `local-${++localMessageId}`,
+          id: messageId,
           sessionId: sessionIdRef.current ?? 'pending',
           role: 'user',
           blocks: [{ type: 'text', text: trimmed }],
@@ -356,6 +398,19 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           abortRef.current?.abort();
           abortRef.current = postSse(`/chat/sessions/${sessionId}/messages`, { text: trimmed }, {
             onEvent: handleEvent,
+            // Defensive resync: a 409 means the server still considers the
+            // session awaiting_user while the composer thought it wasn't
+            // (e.g. a lost /answer ack). Reload history so the pending
+            // question reappears instead of every send dead-ending.
+            onHttpError: (status) => {
+              if (status !== 409) return false;
+              dispatch({ type: 'send_conflict', messageId });
+              void api
+                .get<ChatMessage[]>(`/chat/sessions/${sessionId}/messages`)
+                .then((messages) => dispatch({ type: 'session_resynced', messages }))
+                .catch(() => {});
+              return true;
+            },
           });
         })
         .catch(() => {
@@ -375,11 +430,23 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       dispatch({ type: 'answer_submitted', answer: value });
       abortRef.current?.abort();
       // The /answer response is a new SSE stream continuing the same turn.
+      // The answer is marked optimistically; if the stream fails before the
+      // resume starts (message_start) the server never accepted it, so roll
+      // the mark back and let the user retry instead of freezing the question.
+      let resumed = false;
       abortRef.current = postSse(`/chat/sessions/${sessionId}/answer`, value, {
-        onEvent: handleEvent,
+        onEvent: (event) => {
+          if (event.event === 'message_start') resumed = true;
+          if (event.event === 'error' && !resumed) {
+            dispatch({ type: 'answer_failed', questionId: value.questionId });
+            toast("Couldn't send your answer — try again.", 'danger');
+            return;
+          }
+          handleEvent(event);
+        },
       });
     },
-    [handleEvent],
+    [handleEvent, toast],
   );
 
   const value = useMemo<ChatContextValue>(

@@ -109,3 +109,58 @@ describe('POST /transactions/:id/confirm', () => {
     expect(audit?.actor).toBe('ai_suggested_user_confirmed');
   });
 });
+
+describe('PATCH / DELETE /transactions/:id', () => {
+  it('audits the update with the prior amount/category and the delete with the removed row', async () => {
+    const accountId = await getDemoAccountId();
+    const supplies = await prisma.category.findFirst({
+      where: { name: 'Supplies', isSystem: true },
+    });
+    const createRes = await app.inject({
+      method: 'POST',
+      url: '/api/v1/transactions',
+      payload: {
+        date: iso(new Date()),
+        amountCents: 5000,
+        type: 'expense',
+        description: 'Audit-trail test row',
+        categoryId: supplies?.id,
+      },
+    });
+    expect(createRes.statusCode).toBe(201);
+    const txn = TransactionSchema.parse(createRes.json());
+    createdIds.push(txn.id); // afterAll cleanup is a no-op once the DELETE below ran
+
+    const patchRes = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/transactions/${txn.id}`,
+      payload: { amountCents: 7500 },
+    });
+    expect(patchRes.statusCode).toBe(200);
+    const updatedAudit = await prisma.auditLog.findFirst({
+      where: { accountId, action: 'transaction.updated', entityId: txn.id },
+    });
+    expect(updatedAudit?.actor).toBe('user');
+    expect(JSON.parse(updatedAudit!.detailJson!)).toEqual({
+      priorAmountCents: 5000,
+      priorCategoryId: supplies?.id ?? null,
+      amountCents: 7500,
+      categoryId: supplies?.id ?? null,
+    });
+
+    const deleteRes = await app.inject({
+      method: 'DELETE',
+      url: `/api/v1/transactions/${txn.id}`,
+    });
+    expect(deleteRes.statusCode).toBe(204);
+    const deletedAudit = await prisma.auditLog.findFirst({
+      where: { accountId, action: 'transaction.deleted', entityId: txn.id },
+    });
+    expect(deletedAudit?.actor).toBe('user');
+    expect(JSON.parse(deletedAudit!.detailJson!)).toEqual({
+      amountCents: 7500,
+      categoryId: supplies?.id ?? null,
+      type: 'expense',
+    });
+  });
+});
