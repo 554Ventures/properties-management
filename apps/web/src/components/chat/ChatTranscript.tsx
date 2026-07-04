@@ -120,7 +120,7 @@ export function ChatTranscript() {
               Ask Hearth anything about your rentals
             </p>
             <p className="text-sm text-ink-muted">
-              Cash flow, late rent, tax prep — every answer comes straight from your ledger.
+              Cash flow, late rent, tax prep — or add & edit properties, tenants, and transactions. Every answer comes straight from your ledger.
             </p>
           </div>
         ) : (
