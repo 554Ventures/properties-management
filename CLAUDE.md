@@ -10,6 +10,11 @@ Hearth — AI-native property management app for independent landlords. npm-work
 - `docs/ARCHITECTURE.md` — the implementation plan; its §4 derivation rules, §5 chat block/SSE protocol, and §10 seed spec are **binding**
 - `docs/FEATURES.md` — inventory of what is already implemented (check before building "new" features)
 - `docs/WHATS_NEXT.md` — prioritized roadmap of remaining work
+- `docs/property-app-deployment-plan.md` — deployment architecture as shipped; `docs/ACCOUNT_SETUP.md` — how the provider accounts are wired
+
+## Production
+
+Live at **https://app.554properties.com** since 2026-07-04: one Cloudflare Worker (`wrangler.jsonc` + `deploy/worker.ts`) serves the web bundle as static assets and routes `/api/*` to the Fastify container; Supabase hosts Postgres + Auth. **Pushing to `main` deploys automatically** (CI `deploy` job: migrate → wrangler deploy → smoke test) — keep migrations additive-first. Deployment credentials live in the gitignored `.secrets.local`; production is never demo-seeded.
 
 ## Commands
 

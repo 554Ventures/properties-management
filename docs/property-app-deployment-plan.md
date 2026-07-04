@@ -1,6 +1,6 @@
 # Property App — Deployment Plan
 
-**Status:** Revised after codebase audit (2026-07-03)
+**Status:** ✅ **Executed — production live since 2026-07-04** at https://app.554properties.com (first real account provisioned through Supabase auth). This document is now the record of the architecture as deployed, plus the remaining post-launch checklist (§13).
 **Team model:** Small team (owner + a few collaborators)
 **Phase 1 scope:** Web app only. Mobile is explicitly deferred to Phase 2.
 
@@ -238,19 +238,21 @@ RLS can still be enabled on all tables as **defense in depth** (it protects agai
 
 ## 13. Launch Checklist
 
-- [ ] §4 workstreams complete — **auth (§4.1) is the hard gate; nothing deploys publicly before it**
-- [ ] All CI checks green on `main`
-- [ ] Cross-account isolation verified with a second, non-owner account in production (§11) — deliberately before real data piles up, since there's no staging
-- [ ] Smoke test against production: sign up → create property/tenant/lease → chatbot interaction (real API key) → logout
-- [ ] Demo seed confirmed **not** run against production
-- [ ] Cron Trigger firing and daily-jobs endpoint verified (check for the monthly review report)
-- [ ] DNS cutover plan confirmed (TTL lowered in advance if switching an existing domain)
-- [ ] Rollback steps documented and mentally rehearsed
-- [ ] Anthropic API billing alerts configured
-- [ ] Supabase billing/usage alerts configured
-- [ ] Cloudflare Workers Paid plan active (Containers requirement)
-- [ ] Post-launch monitoring window planned (who watches dashboards + token-usage logs the first few hours)
-- [ ] Known stubs acknowledged in whatever passes for release notes: PDF export is a placeholder, integrations are mocks (§4.7)
+- [x] §4 workstreams complete (auth, Postgres, scheduler, build, hardening, config)
+- [x] All CI checks green on `main` — deploy pipeline (migrate → wrangler deploy → smoke test) proven end-to-end 2026-07-04
+- [x] Demo seed confirmed **not** run against production (verified: launched with 0 accounts)
+- [x] Daily-jobs endpoint verified against production (CRON_SECRET-guarded; cron scheduled 09:00 UTC)
+- [x] DNS live: `app.554properties.com` custom domain auto-provisioned by Cloudflare
+- [x] Cloudflare Workers Paid plan active
+- [x] Anthropic + Supabase billing/spend alerts configured
+- [x] First real signup provisioned an Account + User through Supabase auth in production
+- [ ] **Cross-account isolation verified with a second, non-owner account in production** (§11) — do this before real data piles up
+- [ ] Full product smoke test: create property/tenant/lease → chatbot interaction (real API key) → logout
+- [ ] Backups: test a Supabase restore once, before an incident forces it
+- [ ] Cloudflare edge rate-limit rule on `/api/v1/chat/*` (defense in depth above the app limiter)
+- [ ] Uptime check on `https://app.554properties.com/api/v1/healthz`
+- [ ] Rotate the Cloudflare token + Anthropic key at some point (they transited chat once during setup)
+- Known stubs, acknowledged: PDF export is a placeholder, integrations are mocks (§4.7)
 
 ---
 
@@ -266,6 +268,6 @@ RLS can still be enabled on all tables as **defense in depth** (it protects agai
 
 ### Open items
 
-1. Accept Workers Paid plan cost for Containers (or consciously pick the Workers+Hono rewrite instead).
-2. Container sizing/scale-to-zero settings — decide after first load testing; the cron design (§3) already assumes scale-to-zero is possible.
-3. Auth detail: 1:1 user-per-account for v1, or build the `User ↔ Account` join now (§4.1 recommends designing the schema for many-users-per-account even if v1 behavior is 1:1).
+1. ~~Workers Paid plan~~ — accepted and active (2026-07-04).
+2. Container sizing/scale-to-zero settings — running `basic`, single instance, 15m idle sleep; revisit after first load testing.
+3. ~~Auth schema~~ — resolved: `User ↔ Account` join table shipped (many-per-account by design, 1:1 provisioning in v1).

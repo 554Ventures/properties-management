@@ -45,6 +45,7 @@ Complete inventory of what Hearth v1 does today (as of 2026-07-03). Companion to
 - **Scheduled jobs**: daily monthly-review snapshot + insight refresh run per account (`jobs.service.ts`), via in-process `setInterval` and/or `POST /api/v1/internal/run-daily-jobs` guarded by `CRON_SECRET` (for external cron in deployments that scale to zero).
 - **Chat hardening** (deployment plan §4.5): per-model-call `aiUsage` structured logs (account/session/message/model/tokens; mock mode reports estimates) and per-account rate limiting on turn-starting chat routes (`CHAT_RATE_LIMIT_MAX`/min, 429 in the ApiError envelope).
 - **Production build** (deployment plan §4.4): `npm run build -w apps/api` → esbuild bundle at `dist/server.js`; `apps/api/Dockerfile` (multi-stage, non-root, healthcheck) verified against a postgres:17 container. CI (`.github/workflows/ci.yml`) gates PRs: typecheck → tests → builds → Docker image.
+- **Deployed to production** (2026-07-04): https://app.554properties.com — one Cloudflare Worker (`wrangler.jsonc` + `deploy/worker.ts`) serves the web bundle as static assets and routes `/api/*` to the Fastify container; Supabase Postgres (session pooler) + Supabase Auth (JWKS); daily-jobs cron at 09:00 UTC. Merges to `main` auto-deploy via the CI `deploy` job (migrate → wrangler deploy → smoke test).
 
 ## MCP server (PRD §10)
 
@@ -64,4 +65,4 @@ Complete inventory of what Hearth v1 does today (as of 2026-07-03). Companion to
 
 ## Explicitly NOT implemented (see WHATS_NEXT.md)
 
-Tenant portal · multi-user/roles (schema supports it; provisioning is 1:1) · real Plaid/Stripe/Docusign/email/OCR calls · real PDF rendering · real-model prompt tuning (only mock mode live-verified) · per-client MCP OAuth · CI deploy stage (gate exists; deploy is a commented template pending Cloudflare/Supabase secrets) · Playwright e2e.
+Tenant portal · multi-user/roles (schema supports it; provisioning is 1:1) · real Plaid/Stripe/Docusign/email/OCR calls · real PDF rendering · real-model prompt tuning (only mock mode live-verified) · per-client MCP OAuth · staging environment · Playwright e2e.

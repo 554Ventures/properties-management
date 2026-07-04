@@ -12,6 +12,8 @@ The demo is safe as-is; these matter once the model (not the deterministic mock)
 
 ## 2. Before multi-user / production deployment
 
+> **Production is live (2026-07-04)** at https://app.554properties.com — see `docs/property-app-deployment-plan.md` (§13 has the remaining post-launch checklist). The unchecked items below are hardening work, no longer launch blockers.
+
 - [x] **Real auth** (PRD §7.3, deployment plan §4.1): Supabase mode — JWT verification in `plugins/auth.ts` (HS256 secret or JWKS), first-sight `Account`+`User` provisioning in `services/auth.service.ts`, web login screen + session bearer tokens. Demo mode remains the no-env default. Remaining: a `User ↔ Account` many-to-many UX (schema is ready) and rate limiting on auth endpoints.
 - [x] **Postgres migration** (deployment plan §4.2): provider swapped; baseline migration in `prisma/migrations`; local dev/tests boot an npm-managed embedded Postgres (`apps/api/scripts/`), production points `DATABASE_URL` at Supabase. String-enum columns deliberately stay Strings (shared Zod enums remain the source of truth) — converting to native Postgres enums is a possible later migration, not a blocker.
 - [ ] **Atomic session-state transitions**: the chat 409 guards are read-then-act (`chat.service.ts`) — use conditional `updateMany` transitions so concurrent sends/answers can't both enter the loop. Same pattern review for any remaining check-then-create paths (rent tracker materialization already retries on unique-constraint; `recordPayment` is transactional).

@@ -1,8 +1,18 @@
 # Account Wiring Guide — what you (the human) need to click
 
-Everything code-side is done (deployment plan §4). This is the account-side
-checklist to take Hearth live: Supabase, Anthropic, Cloudflare, GitHub — in
-that order, since later steps consume values from earlier ones.
+> **Status: ✅ completed 2026-07-04 — all accounts wired, production live at
+> https://app.554properties.com.** Kept as the reference for how everything
+> is connected, and as the template for a future staging environment (second
+> Supabase project + Worker environment). Deployment credentials live in the
+> gitignored `.secrets.local` at the repo root.
+>
+> Remaining post-launch follow-ups live in the deployment plan §13 (restore
+> test, edge rate rule, uptime check, second-account isolation check, key
+> rotation).
+
+This is the account-side checklist to take Hearth live: Supabase, Anthropic,
+Cloudflare, GitHub — in that order, since later steps consume values from
+earlier ones.
 
 Instructions verified against provider docs on **2026-07-04**. Dashboards
 change; if a menu item moved, the concept names below should still find it
