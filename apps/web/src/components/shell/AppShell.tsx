@@ -30,7 +30,7 @@ function ShellLayout() {
           open && 'xl:pr-[420px]',
         )}
       >
-        <main id="main" tabIndex={-1} className="mx-auto w-full max-w-6xl px-4 py-6 outline-none md:px-8 md:py-8">
+        <main id="main" tabIndex={-1} className="w-full px-4 py-6 outline-none md:px-8 md:py-8">
           <div key={location.pathname} className="animate-page-enter">
             <Outlet />
           </div>
