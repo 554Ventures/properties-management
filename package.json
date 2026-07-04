@@ -14,13 +14,16 @@
     "dev:web": "npm run dev --workspace apps/web",
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present && tsc -p deploy",
     "db:setup": "npm run db:setup --workspace apps/api"
   },
   "devDependencies": {
+    "@cloudflare/containers": "^0.3.7",
+    "@cloudflare/workers-types": "^4.20260702.1",
     "npm-run-all": "^4.1.5",
     "prettier": "^3.3.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "wrangler": "^4.107.0"
   },
   "engines": {
     "node": ">=22"

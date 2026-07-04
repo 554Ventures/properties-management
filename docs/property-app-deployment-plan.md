@@ -21,8 +21,8 @@
 | Layer | Service | Notes |
 |---|---|---|
 | DNS / CDN / WAF | Cloudflare | Domain proxied through Cloudflare regardless of where compute lands |
-| Frontend hosting | Cloudflare Pages | Static Vite build, preview deployments per PR |
-| Backend/API compute | **Cloudflare Containers** (decided — see §3) | Fastify app in a container, fronted by a Worker |
+| Frontend hosting | Cloudflare **Workers static assets** (revised 2026-07-04 from Pages) | The same Worker that fronts the API serves the Vite bundle — same-origin by construction, one deploy; Pages is in maintenance mode and Workers assets is Cloudflare's recommended path |
+| Backend/API compute | **Cloudflare Containers** (decided — see §3) | Fastify app in a container, fronted by that Worker (`deploy/worker.ts` + `wrangler.jsonc`) |
 | Database | Supabase (Postgres) | One project per environment (see §5) |
 | Auth | Supabase Auth | Login/signup via supabase-js in the frontend; API verifies the JWT (see §4.1) |
 | File storage | Supabase Storage | Future — no upload features exist yet beyond CSV import (held in memory) |
@@ -191,10 +191,9 @@ Flow: `feature/*` → PR (CI + preview URL) → review → merge to `main` → d
 
 ## 9. Domain & DNS
 
-1. Add the domain to Cloudflare (if not already).
-2. Production: `app.yourdomain.com` → Cloudflare Pages production deployment.
-3. API: same-origin — `app.yourdomain.com/api/*` routed to the Worker fronting the container. Avoids CORS in production entirely; the frontend already uses relative `/api/v1` paths, so no client changes needed.
-4. When staging is added later, `staging.yourdomain.com` slots in without touching production records.
+1. Add the domain to Cloudflare (if not already). Domain: **554properties.com**.
+2. Production: `app.554properties.com` is a Worker **custom domain** (declared in `wrangler.jsonc`; Cloudflare manages the DNS record). The Worker serves the web bundle as static assets and routes `/api/*` to the container — same-origin, no CORS, no separate frontend deployment.
+3. When staging is added later, `staging.554properties.com` slots in as a second Worker environment without touching production records.
 
 ---
 

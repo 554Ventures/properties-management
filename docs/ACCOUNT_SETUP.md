@@ -76,29 +76,20 @@ postgresql://postgres.<ref>:<db-password>@aws-0-<region>.pooler.supabase.com:543
 
 **My Profile → API Tokens → Create Token** → start from the *Edit Cloudflare Workers* template and add **Cloudflare Pages: Edit** permission. Scope to your account + zone. 📋 collect → `CLOUDFLARE_API_TOKEN` GitHub secret.
 
-### 3.3 Containers (the API)
+### 3.3 The Worker (web + API in one) — *scaffolded 2026-07-04*
 
-The repo has the Dockerfile (`apps/api/Dockerfile`) but **not yet** the fronting Worker + `wrangler.jsonc` — that's a small code task that needs your account to exist first (ask Claude to scaffold it; it's the `containers-template` pattern: a Durable-Object-backed Worker that routes `app.yourdomain.com/api/*` to the container, plus a Cron Trigger).
+The repo now has `wrangler.jsonc` + `deploy/worker.ts`: a single Worker that serves the web bundle as **static assets** and routes `/api/*` to the Fastify container (this superseded the earlier separate-Pages design — same-origin by construction, one deploy). `npx wrangler deploy` builds the image, pushes it to Cloudflare's registry, and provisions the container; the Cron Trigger and the `app.554properties.com` custom domain are declared in the same config.
 
-When it exists, `npx wrangler deploy` will build the image, push it to Cloudflare's registry, and provision the container (first provisioning takes several minutes). Container runtime secrets to set (via `wrangler secret put` or dashboard):
+Worker secrets (set once with `npx wrangler secret put <NAME>`; forwarded into the container):
 
 | Secret | Value from |
 |---|---|
 | `DATABASE_URL` | Supabase session pooler (§1.5) |
 | `SUPABASE_URL` | §1.2 |
 | `ANTHROPIC_API_KEY` | §2 |
-| `CRON_SECRET` | generate: `openssl rand -hex 32` 📋 collect (needed by both Worker and container) |
+| `CRON_SECRET` | generated (in `.secrets.local`) |
 
-Instance sizing: start with the smallest that fits (`lite`/`basic`); revisit after load testing (plan open item #2).
-
-### 3.4 Pages (the web app)
-
-**Workers & Pages → Create → Pages → Connect to Git** → select the repo.
-- Build command: `npm run build --workspace apps/web`
-- Build output directory: `apps/web/dist`
-- Build-time env vars: `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` (the publishable key, §1.2)
-
-Then **Custom domains** → add `app.yourdomain.com`. PR preview deployments are on by default — remember previews hit the production API/database (accepted risk, plan §5).
+Instance sizing: `basic` to start; revisit after load testing (plan open item #2).
 
 ### 3.5 Edge extras (after DNS is live)
 

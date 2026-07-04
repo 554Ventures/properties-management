@@ -1,0 +1,42 @@
+// Cloudflare deployment (deployment plan §3): one Worker serves the web
+// bundle as static assets and routes /api/* to the Fastify container.
+// Same-origin by construction — no CORS, no separate Pages project.
+//
+// Deploys via `npx wrangler deploy` (CI does this on merge to main; the
+// container image builds from apps/api/Dockerfile with the repo root as
+// context, exactly like the local `docker build`). Requires Workers Paid.
+//
+// Runtime secrets (set once with `npx wrangler secret put <NAME>`):
+//   DATABASE_URL, SUPABASE_URL, ANTHROPIC_API_KEY, CRON_SECRET
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "hearth",
+  "main": "deploy/worker.ts",
+  "compatibility_date": "2026-06-01",
+  "workers_dev": true,
+  "routes": [{ "pattern": "app.554properties.com", "custom_domain": true }],
+  "assets": {
+    "directory": "./apps/web/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    // API requests must never be swallowed by the SPA fallback.
+    "run_worker_first": ["/api/*"]
+  },
+  "containers": [
+    {
+      "class_name": "HearthApi",
+      "image": "./apps/api/Dockerfile",
+      "image_build_context": ".",
+      "max_instances": 1,
+      "instance_type": "basic"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "HEARTH_API", "class_name": "HearthApi" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["HearthApi"] }],
+  // Daily jobs (monthly review snapshot + insight refresh) — the Worker calls
+  // the container's guarded internal endpoint; survives scale-to-zero.
+  "triggers": { "crons": ["0 9 * * *"] },
+  "observability": { "enabled": true }
+}

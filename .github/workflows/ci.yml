@@ -1,8 +1,8 @@
-# CI quality gates (deployment plan §6). Every PR and every push to main runs
-# the same checks; the API test suite boots its own throwaway embedded
-# Postgres, so no service containers are needed. The deploy stage is a
-# template at the bottom — enable it once the Cloudflare/Supabase secrets
-# exist in a `production` GitHub Environment (plan §7).
+# CI quality gates + deploy (deployment plan §6). Every PR and every push to
+# main runs the checks; the API test suite boots its own throwaway embedded
+# Postgres, so no service containers are needed. Merges to main additionally
+# run migrations against Supabase and deploy the Worker (web assets + API
+# container) via wrangler, using the `production` GitHub Environment.
 name: CI
 
 on:
@@ -42,33 +42,41 @@ jobs:
       - name: Build API container image
         run: docker build -f apps/api/Dockerfile -t hearth-api:${{ github.sha }} .
 
-  # ── deploy (template — plan §6 "on merge to main") ─────────────────────────
-  # Enable by creating the `production` GitHub Environment with:
-  #   DATABASE_URL_DIRECT   direct Supabase connection string (migrations only)
-  #   CLOUDFLARE_API_TOKEN  wrangler deploys (Worker/Container + Pages)
-  # then uncommenting:
-  #
-  # deploy:
-  #   needs: checks
-  #   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-  #   runs-on: ubuntu-latest
-  #   environment: production
-  #   steps:
-  #     - uses: actions/checkout@v5
-  #     - uses: actions/setup-node@v5
-  #       with: { node-version: 22, cache: npm }
-  #     - run: npm ci
-  #     - name: Run migrations (additive-first — plan §6.1)
-  #       run: npx prisma migrate deploy --schema apps/api/prisma/schema.prisma
-  #       env:
-  #         DATABASE_URL: ${{ secrets.DATABASE_URL_DIRECT }}
-  #     - name: Deploy API container (wrangler)
-  #       run: npx wrangler deploy   # wrangler.jsonc added when the CF account is wired
-  #       env:
-  #         CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-  #     - name: Deploy web to Cloudflare Pages
-  #       run: npx wrangler pages deploy apps/web/dist --project-name hearth
-  #       env:
-  #         CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-  #     - name: Smoke test
-  #       run: curl -fsS https://app.yourdomain.com/api/v1/healthz
+  # ── deploy (plan §6 "on merge to main") ─────────────────────────────────────
+  # Secrets/variables live in the `production` GitHub Environment:
+  #   secrets: DATABASE_URL_DIRECT (Supabase session pooler — IPv4-safe),
+  #            CLOUDFLARE_API_TOKEN
+  #   vars:    CLOUDFLARE_ACCOUNT_ID, VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
+  deploy:
+    needs: checks
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+
+      - name: Build web bundle (Supabase auth mode baked in)
+        run: npm run build --workspace apps/web
+        env:
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
+
+      - name: Run migrations (additive-first — plan §6.1)
+        run: npx prisma migrate deploy --schema apps/api/prisma/schema.prisma
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL_DIRECT }}
+
+      - name: Deploy Worker (web assets + API container)
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Smoke test
+        run: curl -fsS --retry 5 --retry-delay 10 https://app.554properties.com/api/v1/healthz
