@@ -13,7 +13,7 @@ import { iso } from '../lib/dates';
 import { ConflictError, NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { sseEnd, sseSend, sseStart } from '../plugins/sse';
-import { prepareResume, resumeTurn, runUserTurn, type Emit } from '../ai/agent-loop';
+import { prepareResume, resumeTurn, runUserTurn, type Emit, type UsageLog } from '../ai/agent-loop';
 
 export function toApiSession(s: DbChatSession): ChatSession {
   return {
@@ -90,8 +90,9 @@ export async function sendMessage(
 
   sseStart(reply);
   const emit: Emit = (event, data) => sseSend(reply, event, data);
+  const log: UsageLog = (data, message) => reply.log.info(data, message);
   try {
-    await runUserTurn({ accountId, session, text, emit });
+    await runUserTurn({ accountId, session, text, emit, log });
   } finally {
     sseEnd(reply);
   }
@@ -113,8 +114,9 @@ export async function answerQuestion(
 
   sseStart(reply);
   const emit: Emit = (event, data) => sseSend(reply, event, data);
+  const log: UsageLog = (data, message) => reply.log.info(data, message);
   try {
-    await resumeTurn({ accountId, session, prepared, emit });
+    await resumeTurn({ accountId, session, prepared, emit, log });
   } finally {
     sseEnd(reply);
   }

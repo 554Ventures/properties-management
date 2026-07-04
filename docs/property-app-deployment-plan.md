@@ -82,14 +82,14 @@ Current "auth" (`src/plugins/auth.ts`) attaches the seeded demo account to every
 
 Daily jobs (`services/jobs.service.ts`) iterate all accounts with per-account error isolation, and `POST /api/v1/internal/run-daily-jobs` (guarded by `CRON_SECRET`) is ready for the Cloudflare Cron Trigger per §3. Known nit: a brand-new empty account gets a $0 monthly review on the first run — consider skipping accounts with no transactions.
 
-### 4.4 Production build
+### 4.4 Production build — **done (2026-07-04)**
 
-Add a build step per workspace (`tsc` or esbuild for the API; `vite build` already exists for web), a Dockerfile for the API, and stop using `tsx` outside dev.
+`npm run build -w apps/api` bundles the API with esbuild into `dist/server.js` (`@hearth/shared` inlined, `@prisma/client` external); `start` runs `node dist/server.js`. `apps/api/Dockerfile` (multi-stage, node:22-slim, non-root, healthcheck on `/api/v1/healthz`) builds from the repo root; Prisma `binaryTargets` pin engines for darwin (dev), linux-arm64 and linux-x64 (containers). Verified end-to-end: image + postgres:17 container, JWT auth, chat SSE streaming, cron endpoint, usage logs — all inside the container. Migrations are CI's job, never the container's.
 
-### 4.5 Chat hardening
+### 4.5 Chat hardening — **done (2026-07-04)**
 
-- **Token-usage logging** per request (user/account + session id) in `src/ai/agent-loop.ts` — the model client already sees usage data; log it structured from day one so a runaway loop is visible before the invoice.
-- **Rate limiting** on the chat endpoints (`@fastify/rate-limit` in-app, plus a Cloudflare rate-limiting rule at the edge for defense in depth) and on auth endpoints.
+- **Token-usage logging**: every model call emits a `usage` provider event; the agent loop logs a structured `aiUsage` line (account, session, message, iteration, model, input/output tokens) through the request logger. Mock mode reports model `mock` with character-estimate counts so the pipeline is always exercised.
+- **Rate limiting**: `@fastify/rate-limit` on the three turn-starting chat routes, keyed per account (IP fallback), `CHAT_RATE_LIMIT_MAX`/minute (default 30), 429s in the ApiError envelope. Auth endpoints live on Supabase (their rate limiting applies there); add the Cloudflare edge rule on `/api/v1/chat/*` at DNS setup time.
 
 ### 4.6 Config hygiene
 
@@ -126,7 +126,7 @@ Flow: `feature/*` → PR (CI + preview URL) → review → merge to `main` → d
 
 ## 6. CI/CD Pipeline (GitHub Actions)
 
-**There are no workflows in the repo today** — this is built from scratch, not adapted. Monorepo layout (matches the repo):
+**Status: the PR-gate workflow exists** (`.github/workflows/ci.yml`, added 2026-07-04): install → prisma generate → typecheck → tests (self-contained embedded Postgres) → web+API build → Docker image build. The merge-to-main deploy stage is a commented template in the same file, ready to enable once the Cloudflare/Supabase secrets exist. Monorepo layout (matches the repo):
 
 ```
 /apps

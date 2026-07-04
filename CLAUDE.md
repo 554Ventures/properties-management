@@ -20,7 +20,9 @@ npm run db:serve --workspace apps/api # dev Postgres alone (data in apps/api/pri
 npm run test --workspace apps/api    # backend suite (vitest; boots a throwaway embedded Postgres on :5434)
 npm run test --workspace apps/web    # frontend suite (vitest + jsdom, incl. axe a11y tests)
 npm run typecheck                     # all workspaces
+npm run build                         # web bundle + API dist/server.js (esbuild)
 npm run mcp --workspace apps/api     # MCP server over stdio
+docker build -f apps/api/Dockerfile . # production API image (build from repo root)
 npx vitest run src/__tests__/chat.test.ts        # single test file (run from the workspace dir)
 npx vitest run -t "name substring"               # single test by name
 ```

@@ -1,5 +1,6 @@
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
+import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { registerAuth } from './plugins/auth';
 import { registerErrorHandler } from './plugins/error-handler';
@@ -31,6 +32,16 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
 
   registerErrorHandler(app);
   registerAuth(app);
+
+  // Per-route opt-in rate limiting (deployment plan §4.5) — only the chat
+  // routes set `config.rateLimit` today. Keyed per account (the auth hook is
+  // registered first, so accountId is resolved before counting); IP fallback
+  // covers unauthenticated 401 traffic. Cloudflare adds an edge layer on top.
+  await app.register(rateLimit, {
+    global: false,
+    keyGenerator: (req) => req.accountId || req.ip,
+    // The 429 is shaped into the ApiError envelope by error-handler.ts.
+  });
 
   app.get('/api/v1/healthz', async () => ({ status: 'ok' }));
 

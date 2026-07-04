@@ -89,10 +89,22 @@ export class MockAiClient implements AiClient {
       result: (name) => resultByName.get(name),
       answer,
     };
+    let outputChars = 0;
     for (const ev of step(ctx)) {
       // Tiny delay per text delta so streaming UI is demoable.
-      if (ev.type === 'text_delta') await sleep(DELTA_DELAY_MS);
+      if (ev.type === 'text_delta') {
+        await sleep(DELTA_DELAY_MS);
+        outputChars += ev.text.length;
+      }
       yield ev;
     }
+    // Character-estimate usage (~4 chars/token) so the cost-logging pipeline
+    // (deployment plan §4.5) is exercised end-to-end in mock mode too.
+    yield {
+      type: 'usage',
+      model: 'mock',
+      inputTokens: Math.ceil(JSON.stringify(params.messages).length / 4),
+      outputTokens: Math.ceil(outputChars / 4),
+    };
   }
 }

@@ -31,6 +31,8 @@
     "esbuild@0.21.5": true,
     "prisma@6.19.3": true,
     "@prisma/client@6.19.3": true,
-    "@embedded-postgres/darwin-arm64@17.10.0-beta.17": true
+    "@embedded-postgres/darwin-arm64@17.10.0-beta.17": true,
+    "@embedded-postgres/linux-x64@17.10.0-beta.17": true,
+    "@embedded-postgres/linux-arm64@17.10.0-beta.17": true
   }
 }

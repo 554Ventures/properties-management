@@ -25,6 +25,10 @@ import { ASK_USER_QUESTION_TOOL, anthropicToolDefs, findRenderTool, findServiceT
 
 export type Emit = (event: SseEventName, data: unknown) => void;
 
+/** Structured log sink (pino-compatible), used for per-call token usage
+ *  (deployment plan §4.5). Routes pass the request logger. */
+export type UsageLog = (data: Record<string, unknown>, message: string) => void;
+
 const MAX_ITERATIONS = 8;
 
 interface SessionContext {
@@ -85,6 +89,7 @@ interface LoopParams {
   messages: MessageParam[];
   blocks: ContentBlock[];
   emit: Emit;
+  log?: UsageLog;
 }
 
 async function finalize(params: LoopParams): Promise<void> {
@@ -148,6 +153,22 @@ async function runLoop(params: LoopParams): Promise<void> {
           flushText();
           assistantContent.push({ type: 'tool_use', id: ev.id, name: ev.name, input: ev.input });
           toolUses.push(ev);
+        } else if (ev.type === 'usage') {
+          // One line per model call — the runaway-loop early-warning signal.
+          params.log?.(
+            {
+              aiUsage: {
+                accountId,
+                sessionId,
+                messageId: assistantMessageId,
+                iteration,
+                model: ev.model,
+                inputTokens: ev.inputTokens,
+                outputTokens: ev.outputTokens,
+              },
+            },
+            'ai token usage',
+          );
         }
         // 'stop' carries no extra work: no tool_use in the batch means we are done.
       }
@@ -264,6 +285,7 @@ export async function runUserTurn(opts: {
   session: DbChatSession;
   text: string;
   emit: Emit;
+  log?: UsageLog;
 }): Promise<void> {
   const { accountId, session, text, emit } = opts;
   const state = parseProviderState(session.providerStateJson);
@@ -296,6 +318,7 @@ export async function runUserTurn(opts: {
     messages: buildHistory(history),
     blocks: [],
     emit,
+    ...(opts.log ? { log: opts.log } : {}),
   });
 }
 
@@ -370,6 +393,7 @@ export async function resumeTurn(opts: {
   session: DbChatSession;
   prepared: PreparedResume;
   emit: Emit;
+  log?: UsageLog;
 }): Promise<void> {
   const { accountId, session, prepared, emit } = opts;
   const state = parseProviderState(session.providerStateJson);
@@ -389,5 +413,6 @@ export async function resumeTurn(opts: {
     messages: prepared.messages,
     blocks: prepared.blocks,
     emit,
+    ...(opts.log ? { log: opts.log } : {}),
   });
 }

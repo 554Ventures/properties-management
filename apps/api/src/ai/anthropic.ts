@@ -9,8 +9,9 @@ export class AnthropicAiClient implements AiClient {
   private readonly client = new Anthropic(); // reads ANTHROPIC_API_KEY
 
   async *stream(params: AiStreamParams): AsyncIterable<ProviderEvent> {
+    const model = process.env.ANTHROPIC_MODEL ?? DEFAULT_MODEL;
     const stream = this.client.messages.stream({
-      model: process.env.ANTHROPIC_MODEL ?? DEFAULT_MODEL,
+      model,
       max_tokens: MAX_TOKENS,
       system: params.system,
       messages: params.messages,
@@ -19,9 +20,14 @@ export class AnthropicAiClient implements AiClient {
 
     let pendingTool: { id: string; name: string; json: string } | null = null;
     let stopReason: string | null = null;
+    let inputTokens = 0;
+    let outputTokens = 0;
 
     for await (const ev of stream) {
       switch (ev.type) {
+        case 'message_start':
+          inputTokens = ev.message.usage.input_tokens;
+          break;
         case 'content_block_start':
           if (ev.content_block.type === 'tool_use') {
             pendingTool = { id: ev.content_block.id, name: ev.content_block.name, json: '' };
@@ -47,10 +53,12 @@ export class AnthropicAiClient implements AiClient {
           break;
         case 'message_delta':
           stopReason = ev.delta.stop_reason ?? stopReason;
+          outputTokens = ev.usage.output_tokens; // cumulative per the SDK
           break;
       }
     }
 
+    yield { type: 'usage', model, inputTokens, outputTokens };
     yield {
       type: 'stop',
       reason:

@@ -7,7 +7,7 @@ Status as of 2026-07-03: v1 is feature-complete per [PRD.md](PRD.md) and demoabl
 The demo is safe as-is; these matter once the model (not the deterministic mock) drives tool calls:
 
 - [ ] **Exercise the real Anthropic client path end-to-end.** Only the mock `AiClient` has been driven live. Run the full chat flows (chart, tax pause/resume, late rent) against the real model; tune `src/ai/prompts.ts` until render/ask tool usage is reliable.
-- [ ] **AI usage cost controls** (PRD §13.4): per-account budget/rate limit on chat turns and scheduled jobs; token-usage logging.
+- [~] **AI usage cost controls** (PRD §13.4): token-usage logging (structured `aiUsage` lines per model call) and per-account rate limiting on chat turns are done (deployment plan §4.5). Remaining: a per-account monthly token *budget* with a hard cutoff, and cost visibility in Settings.
 - [ ] **Persist askUserQuestion selections.** The shared `AskUserQuestionBlock` has no field recording the chosen option, and no user message is written for the answer — after a reload the transcript shows the question but not the selection (kept in client state today). Add an `answeredOptionIds` field to the block (or persist a user answer message) and backfill the renderer.
 
 ## 2. Before multi-user / production deployment

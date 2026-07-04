@@ -27,6 +27,12 @@ export function registerErrorHandler(app: FastifyInstance): void {
       const body: ApiError = { error: { code: err.code, message: err.message } };
       return reply.code(err.statusCode).send(body);
     }
+    if ((err as { statusCode?: unknown }).statusCode === 429) {
+      // @fastify/rate-limit errors, reshaped into the envelope.
+      const message = err instanceof Error && err.message ? err.message : 'Too many requests';
+      const body: ApiError = { error: { code: 'rate_limited', message } };
+      return reply.code(429).send(body);
+    }
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025') {
       const body: ApiError = { error: { code: 'not_found', message: 'Record not found' } };
       return reply.code(404).send(body);
