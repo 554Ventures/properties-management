@@ -10,6 +10,19 @@ export function formatDate(iso: string): string {
   });
 }
 
+/** ISO datetime → "Jul 3, 2:14 PM" (year included when not the current one). */
+export function formatDateTime(iso: string): string {
+  const date = new Date(iso);
+  const sameYear = date.getFullYear() === new Date().getFullYear();
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    ...(sameYear ? {} : { year: 'numeric' as const }),
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
 /** "YYYY-MM" period → "Jul 2026". */
 export function formatMonth(period: string): string {
   const [y, m] = period.split('-');

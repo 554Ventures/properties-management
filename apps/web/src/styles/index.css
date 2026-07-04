@@ -55,3 +55,17 @@
 .animate-page-enter {
   animation: page-enter var(--motion-slow) var(--motion-ease) both;
 }
+
+/* Chat drawer slide-in — zeroed by the reduced-motion override in tokens.css. */
+@keyframes drawer-enter {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: none;
+  }
+}
+
+.animate-drawer-enter {
+  animation: drawer-enter var(--motion-slow) var(--motion-ease) both;
+}

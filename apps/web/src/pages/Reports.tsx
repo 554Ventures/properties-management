@@ -21,10 +21,12 @@ import { StatusBadge } from '../components/ui/StatusBadge';
 import { useToast } from '../components/ui/Toast';
 import { formatDate } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
+import { useChat } from '../state/chat';
 
 export function Reports() {
   usePageTitle('Reports & Tax');
   const navigate = useNavigate();
+  const { openWithContext } = useChat();
   const { toast } = useToast();
   const library = useReportsLibrary();
   const recent = useReports();
@@ -106,8 +108,6 @@ export function Reports() {
         </div>
       </Card>
 
-      {/* TODO(chat-drawer, build-order task 9): open the assistant drawer with
-          report-building context instead of navigating with ?chat=open. */}
       <AiSurface>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -117,7 +117,7 @@ export function Reports() {
               assistant assembles it from your ledger.
             </p>
           </div>
-          <Button variant="secondary" size="sm" onClick={() => navigate('/?chat=open')}>
+          <Button variant="secondary" size="sm" onClick={() => openWithContext({ screen: 'reports' })}>
             Open assistant
           </Button>
         </div>
