@@ -38,6 +38,21 @@ model Account {
   chatSessions ChatSession[]
   integrations Integration[]
   auditLogs    AuditLog[]
+  users        User[]
+}
+
+// Auth principal → Account mapping (deployment plan §4.1). One row per
+// external identity; many-users-per-account is supported by design even
+// though v1 provisions 1:1. Absent in demo mode (no Supabase configured).
+model User {
+  id             String   @id @default(cuid())
+  accountId      String
+  supabaseUserId String   @unique // Supabase Auth `sub` claim
+  email          String
+  role           String   @default("owner") // UserRole (@hearth/shared): owner
+  createdAt      DateTime @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
 }
 
 model Property {

@@ -56,6 +56,9 @@ export type IntegrationType = z.infer<typeof IntegrationTypeSchema>;
 export const IntegrationStatusSchema = z.enum(['connected', 'disconnected', 'mock']);
 export type IntegrationStatus = z.infer<typeof IntegrationStatusSchema>;
 
+export const UserRoleSchema = z.enum(['owner']);
+export type UserRole = z.infer<typeof UserRoleSchema>;
+
 export const ChatRoleSchema = z.enum(['user', 'assistant']);
 export type ChatRole = z.infer<typeof ChatRoleSchema>;
 

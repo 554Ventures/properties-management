@@ -12,7 +12,7 @@ The demo is safe as-is; these matter once the model (not the deterministic mock)
 
 ## 2. Before multi-user / production deployment
 
-- [ ] **Real auth** (PRD §7.3): replace the seeded demo account + optional `DEV_BEARER_TOKEN` with session auth. Every service already takes `accountId` first, so this is additive.
+- [x] **Real auth** (PRD §7.3, deployment plan §4.1): Supabase mode — JWT verification in `plugins/auth.ts` (HS256 secret or JWKS), first-sight `Account`+`User` provisioning in `services/auth.service.ts`, web login screen + session bearer tokens. Demo mode remains the no-env default. Remaining: a `User ↔ Account` many-to-many UX (schema is ready) and rate limiting on auth endpoints.
 - [ ] **Postgres migration**: swap the SQLite provider; convert the String-enum columns to real Prisma enums and cents `Int`s stay as-is (schema header comment documents the plan).
 - [ ] **Atomic session-state transitions**: the chat 409 guards are read-then-act (`chat.service.ts`) — use conditional `updateMany` transitions so concurrent sends/answers can't both enter the loop. Same pattern review for any remaining check-then-create paths (rent tracker materialization already retries on unique-constraint; `recordPayment` is transactional).
 - [ ] **MCP per-client OAuth** (PRD §10): replace the single `HEARTH_MCP_ENABLE_WRITE` env gate with per-client authorization + scopes, revocable from Settings; the `Integration` model (`type: mcp_client`, `scopesJson`) is the intended home.

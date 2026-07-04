@@ -1,8 +1,5 @@
 import { buildApp } from './app';
-import { addMonthsToPeriod, currentPeriod, monthStart } from './lib/dates';
-import { prisma } from './lib/prisma';
-import { getDemoAccountId } from './plugins/auth';
-import * as insightService from './services/insight.service';
+import { runDailyJobs } from './services/jobs.service';
 
 const port = Number(process.env.PORT ?? 3001);
 // Local-only by default; set HOST=0.0.0.0 explicitly to expose the server.
@@ -17,28 +14,28 @@ try {
   process.exit(1);
 }
 
-// Daily scheduled jobs (ARCHITECTURE §4), disabled via HEARTH_DISABLE_SCHEDULER
-// (tests): once a new month has begun, snapshot a monthly_review Report for the
-// previous month if none exists yet; then refresh insights so new-month rules
-// (dedupeKeys carry the period) fire without reseeding.
+// Daily scheduled jobs (ARCHITECTURE §4, jobs.service.ts), disabled via
+// HEARTH_DISABLE_SCHEDULER (tests). In deployments where the process may
+// scale to zero, an external cron calls POST /api/v1/internal/run-daily-jobs
+// instead (deployment plan §3) — both paths run the same service function,
+// which is idempotent per account and day.
 if (!process.env.HEARTH_DISABLE_SCHEDULER) {
-  const runDailyJobs = async (): Promise<void> => {
+  const tick = async (): Promise<void> => {
     try {
-      const accountId = await getDemoAccountId();
-      const period = addMonthsToPeriod(currentPeriod(), -1);
-      const existing = await prisma.report.findFirst({
-        where: { accountId, type: 'monthly_review', periodStart: monthStart(period) },
-      });
-      if (!existing) {
-        await insightService.generateMonthlyReview(accountId, period);
-        app.log.info(`monthly review generated for ${period}`);
+      const result = await runDailyJobs();
+      if (result.monthlyReviewsCreated > 0) {
+        app.log.info(`generated ${result.monthlyReviewsCreated} monthly review(s)`);
       }
-      const created = await insightService.generateInsights(accountId);
-      if (created.length > 0) app.log.info(`generated ${created.length} new insight(s)`);
+      if (result.insightsCreated > 0) {
+        app.log.info(`generated ${result.insightsCreated} new insight(s)`);
+      }
+      for (const e of result.errors) {
+        app.log.error({ accountId: e.accountId }, `daily jobs failed for account: ${e.message}`);
+      }
     } catch (err) {
       app.log.error(err, 'daily scheduled jobs failed');
     }
   };
-  void runDailyJobs();
-  setInterval(runDailyJobs, 24 * 60 * 60 * 1000).unref();
+  void tick();
+  setInterval(tick, 24 * 60 * 60 * 1000).unref();
 }

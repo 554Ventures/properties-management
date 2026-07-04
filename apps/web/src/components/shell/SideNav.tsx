@@ -1,6 +1,7 @@
 // Desktop navigation spine (hidden below md; BottomTabBar takes over).
 import { NavLink } from 'react-router-dom';
 import { cx } from '../../lib/cx';
+import { useAuth } from '../../state/auth';
 import {
   IconBuilding,
   IconCalendarCheck,
@@ -53,6 +54,7 @@ function NavItemLink({ item }: { item: NavItem }) {
 }
 
 export function SideNav() {
+  const { enabled, signOut } = useAuth();
   return (
     <nav
       aria-label="Main"
@@ -74,11 +76,22 @@ export function SideNav() {
           </li>
         ))}
       </ul>
-      {/* Settings pinned to the bottom */}
+      {/* Settings (and sign out, in auth mode) pinned to the bottom */}
       <ul className="border-t border-border px-3 py-3">
         <li>
           <NavItemLink item={{ to: '/settings', label: 'Settings', icon: IconGear }} />
         </li>
+        {enabled && (
+          <li>
+            <button
+              type="button"
+              onClick={() => void signOut()}
+              className={cx(navLinkClasses(false), 'w-full')}
+            >
+              Sign out
+            </button>
+          </li>
+        )}
       </ul>
     </nav>
   );

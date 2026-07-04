@@ -19,6 +19,7 @@ import { Skeleton } from '../components/ui/Skeleton';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { useToast } from '../components/ui/Toast';
 import { usePageTitle } from '../lib/usePageTitle';
+import { useAuth } from '../state/auth';
 
 const TIMEZONES = [
   'America/New_York',
@@ -98,9 +99,33 @@ export function Settings() {
               </p>
             </Card>
           </section>
+
+          <SessionSection />
         </div>
       </div>
     </div>
+  );
+}
+
+/** Signed-in identity + sign out; hidden in demo mode (no login exists). */
+function SessionSection() {
+  const { enabled, session, signOut } = useAuth();
+  if (!enabled) return null;
+  return (
+    <section aria-label="Session">
+      <Card>
+        <h2 className="mb-2 text-sm font-semibold text-ink">Session</h2>
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm text-ink-muted">
+            Signed in as{' '}
+            <span className="font-medium text-ink">{session?.user.email ?? 'unknown'}</span>
+          </p>
+          <Button variant="secondary" size="sm" onClick={() => void signOut()}>
+            Sign out
+          </Button>
+        </div>
+      </Card>
+    </section>
   );
 }
 

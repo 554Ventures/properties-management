@@ -6,6 +6,7 @@
 // the server closing without a terminal event — are surfaced to the caller as
 // a synthetic `error` event, so consumers handle exactly one event union.
 import { SseEventNameSchema, type SseEvent, type SseEventName } from '@hearth/shared';
+import { getAccessToken } from '../lib/supabase';
 
 const BASE_URL = '/api/v1';
 
@@ -84,9 +85,9 @@ async function readStream(
   };
 
   try {
-    // Dev-only auth: VITE_DEV_BEARER_TOKEN (e.g. in apps/web/.env.local)
-    // attaches `Authorization: Bearer <token>`, matching api/client.ts.
-    const token = import.meta.env.VITE_DEV_BEARER_TOKEN as string | undefined;
+    // Supabase session token in auth mode, VITE_DEV_BEARER_TOKEN in demo mode
+    // (lib/supabase.ts), matching api/client.ts.
+    const token = await getAccessToken();
     const res = await fetch(`${BASE_URL}${path}`, {
       method: 'POST',
       headers: {

@@ -2,6 +2,7 @@
 // Base path per ARCHITECTURE §3; errors follow the `{ error: { code, message,
 // fields? } }` envelope (ApiErrorSchema in @hearth/shared).
 import type { ApiError } from '@hearth/shared';
+import { getAccessToken } from '../lib/supabase';
 
 const BASE_URL = '/api/v1';
 
@@ -19,19 +20,12 @@ export class ApiClientError extends Error {
   }
 }
 
-/**
- * Dev-only auth: set VITE_DEV_BEARER_TOKEN (e.g. in apps/web/.env.local) to
- * send `Authorization: Bearer <token>` with every request when the API runs
- * with its bearer-token guard enabled. Read lazily so tests can stub it.
- */
-function devBearerToken(): string | undefined {
-  return import.meta.env.VITE_DEV_BEARER_TOKEN as string | undefined;
-}
-
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set('Accept', 'application/json');
-  const token = devBearerToken();
+  // Supabase session token in auth mode, VITE_DEV_BEARER_TOKEN in demo mode
+  // (lib/supabase.ts). Read per request so refreshed sessions are picked up.
+  const token = await getAccessToken();
   if (token) headers.set('Authorization', `Bearer ${token}`);
   if (init.body !== undefined && !(init.body instanceof FormData)) {
     headers.set('Content-Type', 'application/json');

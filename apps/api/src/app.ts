@@ -7,6 +7,7 @@ import { categoriesRoutes } from './routes/categories';
 import { chatRoutes } from './routes/chat';
 import { dashboardRoutes } from './routes/dashboard';
 import { insightsRoutes } from './routes/insights';
+import { internalRoutes } from './routes/internal';
 import { leasesRoutes } from './routes/leases';
 import { propertiesRoutes } from './routes/properties';
 import { rentRoutes } from './routes/rent';
@@ -19,9 +20,13 @@ import { unitsRoutes } from './routes/units';
 export async function buildApp(opts: { logger?: boolean } = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: opts.logger ?? false });
 
-  await app.register(cors, {
-    origin: ['http://localhost:5173', 'http://127.0.0.1:5173'],
-  });
+  // CORS_ORIGIN: comma-separated allowed origins (deployment plan §4.6);
+  // defaults cover local dev. Same-origin production traffic never needs it.
+  const corsOrigins = (process.env.CORS_ORIGIN ?? 'http://localhost:5173,http://127.0.0.1:5173')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  await app.register(cors, { origin: corsOrigins });
   await app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 } });
 
   registerErrorHandler(app);
@@ -43,6 +48,7 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
       await api.register(dashboardRoutes);
       await api.register(settingsRoutes);
       await api.register(chatRoutes);
+      await api.register(internalRoutes);
     },
     { prefix: '/api/v1' },
   );
