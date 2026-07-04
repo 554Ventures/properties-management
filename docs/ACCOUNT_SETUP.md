@@ -47,6 +47,8 @@ In **Authentication → Sign In / Up**: make sure **Email** provider is enabled 
 
 In **Authentication → URL Configuration**: set **Site URL** to `https://app.yourdomain.com` (confirmation emails link here). Add `http://localhost:5173` to **Redirect URLs** if you also want to log into prod Supabase from local dev.
 
+Branded auth emails (confirm signup, reset password, etc.) live in `supabase/email-templates/` — apply them with `node supabase/email-templates/apply.mjs` (needs a Supabase access token + project ref) or paste per its README. Content-only; wire a custom SMTP provider before real signup volume.
+
 ### 1.5 Connection strings
 
 Click **Connect** at the top of the dashboard. You need the **Session pooler** string (port **5432**, via Supavisor):

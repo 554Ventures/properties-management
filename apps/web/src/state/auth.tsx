@@ -21,6 +21,13 @@ interface AuthContextValue {
   session: Session | null;
   /** True while the initial getSession() is in flight (auth mode only). */
   loading: boolean;
+  /**
+   * True after a password-recovery link established a session — the user must
+   * set a new password before entering the app (see AuthGate). Cleared by
+   * endRecovery() once they do (or bail out).
+   */
+  recovering: boolean;
+  endRecovery: () => void;
   signOut: () => Promise<void>;
 }
 
@@ -28,6 +35,8 @@ const AuthContext = createContext<AuthContextValue>({
   enabled: false,
   session: null,
   loading: false,
+  recovering: false,
+  endRecovery: () => {},
   signOut: async () => {},
 });
 
@@ -38,6 +47,7 @@ export function useAuth(): AuthContextValue {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(authEnabled);
+  const [recovering, setRecovering] = useState(false);
 
   useEffect(() => {
     if (!supabase) return;
@@ -47,8 +57,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(data.session);
       setLoading(false);
     });
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, next) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, next) => {
       setSession(next);
+      // A recovery link signs the user in with a temporary session; hold them
+      // on the "set a new password" screen until they've set one.
+      if (event === 'PASSWORD_RECOVERY') setRecovering(true);
     });
     return () => {
       cancelled = true;
@@ -61,20 +74,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       enabled: authEnabled,
       session,
       loading,
+      recovering,
+      endRecovery: () => setRecovering(false),
       signOut: async () => {
+        setRecovering(false);
         await supabase?.auth.signOut();
       },
     }),
-    [session, loading],
+    [session, loading, recovering],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function AuthGate({ children }: { children: ReactNode }) {
-  const { enabled, session, loading } = useAuth();
+  const { enabled, session, loading, recovering } = useAuth();
   if (!enabled) return <>{children}</>;
   if (loading) return null; // brief; avoids a login flash while the stored session loads
+  // A recovery session exists but must set a new password before entering.
+  if (recovering) return <Login initialMode="update_password" />;
   if (!session) return <Login />;
   return <>{children}</>;
 }

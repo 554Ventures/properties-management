@@ -1,11 +1,14 @@
 // Login page (auth mode, deployment plan §4.1): sign-in flow wiring, error
-// surfacing, sign-up confirmation notice, and the merge-blocking axe check.
+// surfacing, sign-up confirmation notice, password recovery, and the
+// merge-blocking axe check.
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import axe from 'axe-core';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const signInWithPassword = vi.fn();
 const signUp = vi.fn();
+const resetPasswordForEmail = vi.fn();
+const updateUser = vi.fn();
 
 vi.mock('../lib/supabase', () => ({
   authEnabled: true,
@@ -16,6 +19,12 @@ vi.mock('../lib/supabase', () => ({
       },
       get signUp() {
         return signUp;
+      },
+      get resetPasswordForEmail() {
+        return resetPasswordForEmail;
+      },
+      get updateUser() {
+        return updateUser;
       },
     },
   },
@@ -30,6 +39,10 @@ function fillCredentials(email: string, password: string): void {
 }
 
 describe('Login', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it('signs in with the entered credentials', async () => {
     signInWithPassword.mockResolvedValueOnce({ error: null });
     render(<Login />);
@@ -69,6 +82,53 @@ describe('Login', () => {
     expect(notice).toHaveTextContent(/check your email/i);
     // Flips back to sign-in so the confirmed user can log in directly.
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument();
+  });
+
+  it('requests a reset link from the forgot-password flow', async () => {
+    resetPasswordForEmail.mockResolvedValueOnce({ error: null });
+    render(<Login />);
+
+    fireEvent.click(screen.getByRole('button', { name: /forgot your password/i }));
+    fireEvent.change(screen.getByLabelText(/email/i), { target: { value: 'sam@example.com' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send reset link' }));
+
+    await waitFor(() =>
+      expect(resetPasswordForEmail).toHaveBeenCalledWith(
+        'sam@example.com',
+        expect.objectContaining({ redirectTo: expect.stringContaining('/') }),
+      ),
+    );
+    // Neutral wording (no account enumeration) and a return to sign-in.
+    const notice = await screen.findByRole('status');
+    expect(notice).toHaveTextContent(/reset link/i);
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument();
+  });
+
+  it('sets a new password in recovery mode', async () => {
+    updateUser.mockResolvedValueOnce({ error: null });
+    render(<Login initialMode="update_password" />);
+
+    fireEvent.change(screen.getByLabelText(/^new password/i), { target: { value: 'brandnewpw1' } });
+    fireEvent.change(screen.getByLabelText(/confirm new password/i), {
+      target: { value: 'brandnewpw1' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Update password' }));
+
+    await waitFor(() => expect(updateUser).toHaveBeenCalledWith({ password: 'brandnewpw1' }));
+  });
+
+  it('rejects mismatched passwords in recovery mode without calling Supabase', async () => {
+    render(<Login initialMode="update_password" />);
+
+    fireEvent.change(screen.getByLabelText(/^new password/i), { target: { value: 'brandnewpw1' } });
+    fireEvent.change(screen.getByLabelText(/confirm new password/i), {
+      target: { value: 'mismatchpw1' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Update password' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/do not match/i);
+    expect(updateUser).not.toHaveBeenCalled();
   });
 
   it('has no axe violations', async () => {
