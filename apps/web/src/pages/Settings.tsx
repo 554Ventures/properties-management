@@ -5,7 +5,6 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { usePlaidLink } from 'react-plaid-link';
 import type { AccountSettings, Integration, IntegrationType } from '@hearth/shared';
 import {
-  useConnectIntegration,
   useCreatePlaidLinkToken,
   useDisconnectIntegration,
   useExchangePlaidPublicToken,
@@ -75,11 +74,7 @@ export function Settings() {
                 <ul className="divide-y divide-border">
                   {KNOWN_INTEGRATIONS.map((known) => {
                     const row = integrations.data.find((i) => i.type === known.type) ?? known;
-                    return known.type === 'plaid' ? (
-                      <PlaidIntegrationRow key={known.type} row={row} />
-                    ) : (
-                      <IntegrationRow key={known.type} row={row} />
-                    );
+                    return <PlaidIntegrationRow key={known.type} row={row} />;
                   })}
                 </ul>
               )}
@@ -217,14 +212,12 @@ const integrationStatusBadge = {
   disconnected: { tone: 'neutral' as const, label: 'Disconnected' },
 };
 
-/** All 4 connectable types, rendered even when the account has no matching
- * DB row yet (a fresh production account starts with zero — the "No
- * integrations configured" dead end this list replaces). */
+/** Only Plaid is implemented today (Stripe/Docusign/Email are deferred —
+ * docs/WHATS_NEXT.md §3), so we surface just the one connectable type.
+ * Rendered even when the account has no matching DB row yet (a fresh
+ * production account starts with zero). */
 const KNOWN_INTEGRATIONS: { type: IntegrationType; name: string }[] = [
   { type: 'plaid', name: 'Plaid (bank import)' },
-  { type: 'stripe', name: 'Stripe (rent payments)' },
-  { type: 'docusign', name: 'Docusign (e-sign)' },
-  { type: 'email', name: 'Email (reminders & reports)' },
 ];
 
 type IntegrationRowInput = Integration | { type: IntegrationType; name: string };
@@ -237,54 +230,7 @@ function isConnectedIntegration(row: IntegrationRowInput): row is Integration {
 // so a real Plaid public token can never accidentally route through it.
 const MOCK_PUBLIC_TOKEN = 'mock-public-token';
 
-function IntegrationRow({ row }: { row: IntegrationRowInput }) {
-  const connect = useConnectIntegration();
-  const disconnect = useDisconnectIntegration();
-  const { toast } = useToast();
-  const badge = integrationStatusBadge['id' in row ? row.status : 'disconnected'];
-
-  return (
-    <li className="flex items-center justify-between gap-3 py-3 first:pt-0 last:pb-0">
-      <div>
-        <p className="text-sm font-medium text-ink">{row.name}</p>
-        <div className="mt-1">
-          <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge>
-        </div>
-      </div>
-      {isConnectedIntegration(row) ? (
-        <Button
-          variant="secondary"
-          size="sm"
-          busy={disconnect.isPending}
-          onClick={() =>
-            disconnect.mutate(row.id, {
-              onSuccess: () => toast(`${row.name} disconnected.`, 'neutral'),
-              onError: () => toast('Could not disconnect. Try again.', 'danger'),
-            })
-          }
-        >
-          Disconnect
-        </Button>
-      ) : (
-        <Button
-          variant="secondary"
-          size="sm"
-          busy={connect.isPending}
-          onClick={() =>
-            connect.mutate(row.type, {
-              onSuccess: () => toast(`${row.name} connected.`, 'positive'),
-              onError: () => toast('Could not connect. Try again.', 'danger'),
-            })
-          }
-        >
-          Connect
-        </Button>
-      )}
-    </li>
-  );
-}
-
-/** Plaid gets a real Link flow instead of the generic one-click mock connect:
+/** Plaid gets a real Link flow instead of a generic one-click mock connect:
  * in mock mode (no real Plaid keys configured server-side) it still behaves
  * like the other rows (immediate connect, no modal); once real keys are
  * configured, Connect launches Plaid's hosted Sandbox/Production Link modal. */

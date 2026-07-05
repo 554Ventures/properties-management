@@ -14,12 +14,18 @@ export class HearthApi extends Container<Env> {
   // Scale to zero when idle; the cron trigger wakes it for daily jobs.
   sleepAfter = '15m';
   // Worker secrets forwarded into the container process (Fastify reads them
-  // as normal env vars — same names as .env.example).
+  // as normal env vars — same names as .env.example). Plaid's three secrets
+  // (+ PLAID_ENV) must all be forwarded together, else the API silently falls
+  // back to the mock Plaid adapter (integrations/factory.ts).
   envVars = {
     DATABASE_URL: secrets.DATABASE_URL,
     SUPABASE_URL: secrets.SUPABASE_URL,
     ANTHROPIC_API_KEY: secrets.ANTHROPIC_API_KEY,
     CRON_SECRET: secrets.CRON_SECRET,
+    PLAID_CLIENT_ID: secrets.PLAID_CLIENT_ID,
+    PLAID_SECRET: secrets.PLAID_SECRET,
+    PLAID_ENV: secrets.PLAID_ENV,
+    INTEGRATION_ENCRYPTION_KEY: secrets.INTEGRATION_ENCRYPTION_KEY,
   };
 }
 
@@ -30,6 +36,10 @@ interface Env {
   SUPABASE_URL: string;
   ANTHROPIC_API_KEY: string;
   CRON_SECRET: string;
+  PLAID_CLIENT_ID: string;
+  PLAID_SECRET: string;
+  PLAID_ENV: string;
+  INTEGRATION_ENCRYPTION_KEY: string;
 }
 
 export default {

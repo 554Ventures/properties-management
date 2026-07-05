@@ -1,5 +1,5 @@
-// Settings integrations: (1) all 4 known types render even with zero backend
-// rows (closes the "No integrations configured" dead end), (2) Plaid's mock
+// Settings integrations: (1) only Plaid (the one implemented type) renders,
+// even with zero backend rows (Stripe/Docusign/Email are deferred), (2) Plaid's mock
 // mode still 1-click-connects without opening Link, (3) real mode opens the
 // actual Plaid Link modal instead of auto-exchanging. react-plaid-link is
 // mocked so tests never load a real hosted iframe.
@@ -91,7 +91,7 @@ afterEach(() => {
 });
 
 describe('Settings integrations', () => {
-  it('renders all 4 known integration types even when the account has zero rows', async () => {
+  it('renders only Plaid (the one implemented integration) even when the account has zero rows', async () => {
     vi.stubGlobal(
       'fetch',
       makeFetch([
@@ -103,9 +103,10 @@ describe('Settings integrations', () => {
     const { container } = renderWithProviders(<Settings />);
 
     expect(await screen.findByText('Plaid (bank import)')).toBeInTheDocument();
-    expect(screen.getByText('Stripe (rent payments)')).toBeInTheDocument();
-    expect(screen.getByText('Docusign (e-sign)')).toBeInTheDocument();
-    expect(screen.getByText('Email (reminders & reports)')).toBeInTheDocument();
+    // Stripe/Docusign/Email are deferred and must not be surfaced yet.
+    expect(screen.queryByText('Stripe (rent payments)')).not.toBeInTheDocument();
+    expect(screen.queryByText('Docusign (e-sign)')).not.toBeInTheDocument();
+    expect(screen.queryByText('Email (reminders & reports)')).not.toBeInTheDocument();
     expect(screen.queryByText('No integrations configured.')).not.toBeInTheDocument();
 
     const results = await axe.run(container, {
