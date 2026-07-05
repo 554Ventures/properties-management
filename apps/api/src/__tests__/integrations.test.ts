@@ -75,6 +75,47 @@ describe('Plaid connect flow (mock mode)', () => {
   });
 });
 
+describe('disconnect is best-effort when the stored token is unreadable', () => {
+  it('disconnects a mock-mode (plaintext) Plaid row even after INTEGRATION_ENCRYPTION_KEY is set', async () => {
+    // Reproduces the production bug: Connect ran in mock mode (no encryption
+    // key) so the access token was stored as plaintext; later the key is set,
+    // so decodeAccessToken tries to decrypt the plaintext and throws
+    // "malformed ciphertext". Disconnect must swallow that and still flip.
+    const account = await prisma.account.create({
+      data: { name: 'Plaid Stale Token', email: 'plaid-stale@integrationtest.example' },
+    });
+    // status:'connected' with a plaintext (mock) access token — exactly what
+    // exchangePublicToken persists when INTEGRATION_ENCRYPTION_KEY is unset.
+    const row = await prisma.integration.create({
+      data: {
+        accountId: account.id,
+        type: 'plaid',
+        name: 'Plaid (bank import)',
+        status: 'connected',
+        externalRef: 'mock_item_id',
+        scopesJson: '[]',
+        configJson: JSON.stringify({
+          accessTokenEncrypted: 'mock-access-token', // plaintext, not iv.tag.ct
+          itemId: 'mock_item_id',
+          cursor: null,
+        }),
+      },
+    });
+
+    process.env.INTEGRATION_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString('base64');
+    try {
+      await expect(integrationService.disconnect(account.id, row.id)).resolves.toBeUndefined();
+    } finally {
+      delete process.env.INTEGRATION_ENCRYPTION_KEY;
+    }
+
+    const updated = await prisma.integration.findUniqueOrThrow({ where: { id: row.id } });
+    expect(updated.status).toBe('disconnected');
+    expect(updated.configJson).toBe('{}');
+    expect(updated.externalRef).toBeNull();
+  });
+});
+
 describe('importFromBank in real mode requires a connected Plaid row', () => {
   const account2Id = { current: '' };
 

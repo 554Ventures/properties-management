@@ -158,10 +158,17 @@ export async function disconnect(accountId: string, id: string): Promise<void> {
   if (!existing) throw new NotFoundError('integration', id);
 
   if (existing.type === 'plaid' && existing.configJson !== '{}') {
-    const config = JSON.parse(existing.configJson) as Partial<PlaidConfig>;
-    if (config.accessTokenEncrypted) {
-      // Best-effort: a transient Plaid-side error must never block disconnect.
-      await createPlaidAdapter().removeItem(decodeAccessToken(config.accessTokenEncrypted));
+    // Best-effort: nothing here — a Plaid-side error, a malformed config, or a
+    // token stored in a different mode (e.g. a plaintext mock token that now
+    // fails to decrypt once INTEGRATION_ENCRYPTION_KEY is set) — may block the
+    // user's local disconnect. Swallow everything and still flip the row.
+    try {
+      const config = JSON.parse(existing.configJson) as Partial<PlaidConfig>;
+      if (config.accessTokenEncrypted) {
+        await createPlaidAdapter().removeItem(decodeAccessToken(config.accessTokenEncrypted));
+      }
+    } catch (err) {
+      console.error('[plaid] pre-disconnect cleanup failed (continuing local disconnect)', err);
     }
   }
 
