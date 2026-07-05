@@ -3,7 +3,8 @@
 // file creates is deleted again so the seeded ledger stays pristine.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { ReviewQueueResponseSchema, TransactionSchema } from '@hearth/shared';
+import FormData from 'form-data';
+import { ReceiptScanResponseSchema, ReviewQueueResponseSchema, TransactionSchema } from '@hearth/shared';
 import { OKAFOR_NAME, OKAFOR_RENT_CENTS } from '../../prisma/seed-constants';
 import { buildApp } from '../app';
 import { addDays, currentPeriod, iso } from '../lib/dates';
@@ -400,6 +401,54 @@ describe('POST /transactions/:id/confirm with rentPaymentId', () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().error.message).toMatch(/income/);
+  });
+});
+
+describe('POST /transactions/receipt (mock mode)', () => {
+  // PNG magic bytes — content is irrelevant in mock mode (no model call).
+  const png = Buffer.from('89504e470d0a1a0a', 'hex');
+
+  function receiptForm(contentType: string) {
+    const form = new FormData();
+    form.append('file', png, { filename: 'receipt.png', contentType });
+    return form;
+  }
+
+  it('returns the deterministic fixture parse with resolved seed ids', async () => {
+    const accountId = await getDemoAccountId();
+    const form = receiptForm('image/png');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/transactions/receipt',
+      payload: form.getBuffer(),
+      headers: form.getHeaders(),
+    });
+    expect(res.statusCode).toBe(200);
+    const scan = ReceiptScanResponseSchema.parse(res.json());
+
+    const repairs = await prisma.category.findFirst({ where: { name: 'Repairs', isSystem: true } });
+    const firstProperty = await prisma.property.findFirstOrThrow({
+      where: { accountId, archivedAt: null },
+      orderBy: { createdAt: 'asc' },
+    });
+    expect(scan.vendor).toBe('ACE Hardware #2214');
+    expect(scan.amountCents).toBe(4327);
+    expect(scan.suggestedCategoryId).toBe(repairs?.id);
+    expect(scan.suggestedPropertyId).toBe(firstProperty.id);
+    expect(scan.confidence).toBe(0.84);
+  });
+
+  it('rejects a non-image upload with a 400', async () => {
+    const form = receiptForm('text/plain');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/transactions/receipt',
+      payload: form.getBuffer(),
+      headers: form.getHeaders(),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('bad_request');
+    expect(res.json().error.message).toMatch(/JPEG, PNG, WebP, or GIF/);
   });
 });
 

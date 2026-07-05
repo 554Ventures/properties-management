@@ -34,7 +34,7 @@ Interfaces in `apps/api/src/integrations/types.ts`; each swap is one adapter imp
 - [ ] **Docusign** — real envelope creation + status webhooks (lease `esignStatus` already modeled).
 - [ ] **Email provider** — transactional email for reminders / "email accountant".
 - [ ] **Real PDF rendering** — `src/lib/pdf.ts` is a plain-text placeholder buffer served as `application/pdf`; the function signature is stable, drop in a renderer (e.g. pdfkit / puppeteer-print).
-- [ ] **Receipt OCR** — `scanReceipt` returns a fixture parse in mock mode; wire the Anthropic vision call in the real path.
+- [x] **Receipt OCR** — real Anthropic vision extraction (`apps/api/src/ai/receipt.ts`; forced-tool call, category/property candidates in the prompt resolved back to account-scoped ids) when `ANTHROPIC_API_KEY` is set; deterministic mock fixture otherwise. Route hardened with an image mimetype allowlist, 5 MB cap, and a per-account rate limit (`RECEIPT_RATE_LIMIT_MAX`, default 10/min); token usage logged as `aiUsage` lines (`context: receipt_scan`).
 - [ ] **QuickBooks export format** — currently CSV/PDF only; add the QBO-compatible export named in PRD §5.6.
 
 ## 4. Product build-out (PRD Phase 2)

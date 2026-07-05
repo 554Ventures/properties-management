@@ -2,7 +2,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { AiClient, AiStreamParams, ProviderEvent } from './client';
 
-const DEFAULT_MODEL = 'claude-sonnet-5';
+export const DEFAULT_MODEL = 'claude-sonnet-5';
 const MAX_TOKENS = 4096;
 
 export class AnthropicAiClient implements AiClient {

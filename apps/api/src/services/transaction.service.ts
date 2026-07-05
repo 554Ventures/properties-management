@@ -19,6 +19,8 @@ import { addDays, currentPeriod, iso, periodOf } from '../lib/dates';
 import { BadRequestError, NotFoundError, PlaidNotConnectedError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { getConnectedPlaid, persistPlaidCursor } from './integration.service';
+import type { UsageLog } from '../ai/agent-loop';
+import { createReceiptExtractor, type ReceiptImageMimetype } from '../ai/receipt';
 import { writeAudit, type AuditActor } from './audit.service';
 import {
   RENT_MATCH_WINDOW_DAYS,
@@ -424,24 +426,68 @@ async function confirmWithRentLink(
   return toApiTransaction(row);
 }
 
-// ── receipt scan (mock fixture parse — pre-fills the form, never saves) ──────
+// ── receipt scan (pre-fills the form, never saves) ───────────────────────────
+// Real Anthropic vision extraction when ANTHROPIC_API_KEY is set; the
+// deterministic mock fixture otherwise. The extractor returns candidate
+// *names*; ids are resolved here against the account's own rows so the model
+// can never point at another account's data.
+
+/** Case-insensitive exact match of an extracted name against candidate rows. */
+export function resolveByName<T extends { id: string }>(
+  name: string | null,
+  candidates: Array<T & { name: string }>,
+): string | null {
+  if (!name) return null;
+  const lower = name.trim().toLowerCase();
+  return candidates.find((c) => c.name.toLowerCase() === lower)?.id ?? null;
+}
+
+export function resolveByLabel<T extends { id: string }>(
+  label: string | null,
+  candidates: Array<T & { label: string }>,
+): string | null {
+  if (!label) return null;
+  const lower = label.trim().toLowerCase();
+  return candidates.find((c) => c.label.toLowerCase() === lower)?.id ?? null;
+}
 
 export async function scanReceipt(
   accountId: string,
-  _image: Buffer,
+  image: Buffer,
+  mimetype: ReceiptImageMimetype,
+  log?: UsageLog,
 ): Promise<ReceiptScanResponse> {
-  const repairs = await prisma.category.findFirst({ where: { name: 'Repairs', isSystem: true } });
-  const firstProperty = await prisma.property.findFirst({
-    where: { accountId },
-    orderBy: { createdAt: 'asc' },
+  const categories = await prisma.category.findMany({
+    where: { type: 'expense', OR: [{ isSystem: true }, { accountId }] },
+    select: { id: true, name: true },
   });
+  const properties = await prisma.property.findMany({
+    where: { accountId, archivedAt: null },
+    orderBy: { createdAt: 'asc' },
+    select: { id: true, nickname: true, addressLine1: true },
+  });
+  const propertyCandidates = properties.map((p) => ({
+    id: p.id,
+    label: p.nickname ?? p.addressLine1,
+  }));
+
+  const extractor = createReceiptExtractor();
+  const extraction = await extractor.extract({
+    accountId,
+    image,
+    mimetype,
+    categories: categories.map((c) => ({ name: c.name })),
+    properties: propertyCandidates.map((p) => ({ label: p.label })),
+    log,
+  });
+
   return {
-    vendor: 'ACE Hardware #2214',
-    amountCents: 4327,
-    date: iso(new Date()),
-    suggestedCategoryId: repairs?.id ?? null,
-    suggestedPropertyId: firstProperty?.id ?? null,
-    confidence: 0.84,
+    vendor: extraction.vendor,
+    amountCents: extraction.amountCents,
+    date: extraction.date,
+    suggestedCategoryId: resolveByName(extraction.categoryName, categories),
+    suggestedPropertyId: resolveByLabel(extraction.propertyLabel, propertyCandidates),
+    confidence: extraction.confidence,
   };
 }
 

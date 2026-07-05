@@ -38,3 +38,10 @@ export class PlaidNotConnectedError extends HttpError {
     this.name = 'PlaidNotConnectedError';
   }
 }
+
+export class ReceiptScanFailedError extends HttpError {
+  constructor() {
+    super(502, 'receipt_scan_failed', "Couldn't read the receipt — enter the details manually.");
+    this.name = 'ReceiptScanFailedError';
+  }
+}
