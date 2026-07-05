@@ -14,3 +14,14 @@ export const IntegrationSchema = z.object({
 
 // GET /integrations
 export const IntegrationListResponseSchema = z.array(IntegrationSchema);
+
+// POST /integrations/plaid/link-token
+export const LinkTokenResponseSchema = z.object({
+  linkToken: z.string(),
+  mock: z.boolean(),
+});
+
+// POST /integrations/plaid/exchange
+export const ExchangePublicTokenInputSchema = z.object({
+  publicToken: z.string(),
+});

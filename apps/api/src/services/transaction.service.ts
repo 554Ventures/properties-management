@@ -13,10 +13,11 @@ import type {
   UpdateTransactionInput,
 } from '@hearth/shared';
 import type { Prisma, Transaction as DbTransaction } from '@prisma/client';
+import { createPlaidAdapter, isRealPlaidConfigured } from '../integrations/factory';
 import { iso } from '../lib/dates';
-import { NotFoundError } from '../lib/errors';
+import { NotFoundError, PlaidNotConnectedError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
-import { mockPlaid } from '../integrations/mock/mock-plaid';
+import { getConnectedPlaid, persistPlaidCursor } from './integration.service';
 import { writeAudit, type AuditActor } from './audit.service';
 
 export function toApiTransaction(t: DbTransaction): Transaction {
@@ -283,14 +284,38 @@ export async function scanReceipt(
   };
 }
 
-// ── bank import (mock Plaid → pending_review rows) ───────────────────────────
+// ── bank import (Plaid → pending_review rows) ────────────────────────────────
 
 export async function importFromBank(accountId: string): Promise<ImportTransactionsResponse> {
-  const pendingReviewCount = await prisma.transaction.count({
-    where: { accountId, status: 'pending_review' },
-  });
-  const incoming = await mockPlaid.fetchNewTransactions(accountId, { pendingReviewCount });
+  const adapter = createPlaidAdapter();
+
+  // Mock mode stays stateless (no Integration row required, as before). Real
+  // mode requires an already-connected Plaid item to sync against.
+  let accessToken = 'mock-access-token';
+  let cursor: string | null = null;
+  let plaidState: Awaited<ReturnType<typeof getConnectedPlaid>> = null;
+
+  if (isRealPlaidConfigured()) {
+    plaidState = await getConnectedPlaid(accountId);
+    if (!plaidState) throw new PlaidNotConnectedError();
+    accessToken = plaidState.accessToken;
+    cursor = plaidState.cursor;
+  }
+
+  const { transactions: incoming, nextCursor } = await adapter.syncTransactions(
+    accessToken,
+    cursor,
+  );
+
+  let importedCount = 0;
   for (const t of incoming) {
+    // Dedup guard: Plaid's sync can redeliver the same transaction_id on
+    // retries; the mock reuses fixed ids across repeated imports too.
+    const existing = await prisma.transaction.findFirst({
+      where: { accountId, externalId: t.externalId },
+    });
+    if (existing) continue;
+
     const suggestion = await suggestCategory(accountId, {
       type: t.type,
       description: t.description,
@@ -304,6 +329,7 @@ export async function importFromBank(accountId: string): Promise<ImportTransacti
         type: t.type,
         description: t.description,
         vendor: t.vendor,
+        externalId: t.externalId,
         source: 'bank',
         status: 'pending_review',
         aiSuggestedCategoryId: suggestion?.categoryId ?? null,
@@ -317,6 +343,17 @@ export async function importFromBank(accountId: string): Promise<ImportTransacti
       entityId: row.id,
       detail: { source: 'bank', externalId: t.externalId },
     });
+    importedCount += 1;
   }
-  return { imported: incoming.length };
+
+  if (plaidState) {
+    await persistPlaidCursor(
+      plaidState.integrationId,
+      plaidState.itemId,
+      plaidState.accessTokenEncrypted,
+      nextCursor,
+    );
+  }
+
+  return { imported: importedCount };
 }

@@ -1,10 +1,14 @@
-// Settings (PRD §5.9): account profile + tax rate, integrations with mock
-// connect/disconnect, and plain copy about MCP access.
-import { useState, type FormEvent } from 'react';
-import type { AccountSettings, Integration } from '@hearth/shared';
+// Settings (PRD §5.9): account profile + tax rate, integrations (Plaid is a
+// real Sandbox/Production Link flow; Stripe/Docusign/Email stay mock —
+// docs/WHATS_NEXT.md §3), and plain copy about MCP access.
+import { useEffect, useState, type FormEvent } from 'react';
+import { usePlaidLink } from 'react-plaid-link';
+import type { AccountSettings, Integration, IntegrationType } from '@hearth/shared';
 import {
   useConnectIntegration,
+  useCreatePlaidLinkToken,
   useDisconnectIntegration,
+  useExchangePlaidPublicToken,
   useIntegrations,
   useSettings,
   useUpdateSettings,
@@ -67,13 +71,16 @@ export function Settings() {
                   error={integrations.error}
                   onRetry={() => void integrations.refetch()}
                 />
-              ) : integrations.data.length === 0 ? (
-                <p className="text-sm text-ink-muted">No integrations configured.</p>
               ) : (
                 <ul className="divide-y divide-border">
-                  {integrations.data.map((integration) => (
-                    <IntegrationRow key={integration.id} integration={integration} />
-                  ))}
+                  {KNOWN_INTEGRATIONS.map((known) => {
+                    const row = integrations.data.find((i) => i.type === known.type) ?? known;
+                    return known.type === 'plaid' ? (
+                      <PlaidIntegrationRow key={known.type} row={row} />
+                    ) : (
+                      <IntegrationRow key={known.type} row={row} />
+                    );
+                  })}
                 </ul>
               )}
             </Card>
@@ -210,29 +217,48 @@ const integrationStatusBadge = {
   disconnected: { tone: 'neutral' as const, label: 'Disconnected' },
 };
 
-function IntegrationRow({ integration }: { integration: Integration }) {
+/** All 4 connectable types, rendered even when the account has no matching
+ * DB row yet (a fresh production account starts with zero — the "No
+ * integrations configured" dead end this list replaces). */
+const KNOWN_INTEGRATIONS: { type: IntegrationType; name: string }[] = [
+  { type: 'plaid', name: 'Plaid (bank import)' },
+  { type: 'stripe', name: 'Stripe (rent payments)' },
+  { type: 'docusign', name: 'Docusign (e-sign)' },
+  { type: 'email', name: 'Email (reminders & reports)' },
+];
+
+type IntegrationRowInput = Integration | { type: IntegrationType; name: string };
+
+function isConnectedIntegration(row: IntegrationRowInput): row is Integration {
+  return 'id' in row && row.status !== 'disconnected';
+}
+
+// The mock adapter asserts this exact literal (integrations/mock/mock-plaid.ts)
+// so a real Plaid public token can never accidentally route through it.
+const MOCK_PUBLIC_TOKEN = 'mock-public-token';
+
+function IntegrationRow({ row }: { row: IntegrationRowInput }) {
   const connect = useConnectIntegration();
   const disconnect = useDisconnectIntegration();
   const { toast } = useToast();
-  const badge = integrationStatusBadge[integration.status];
-  const isConnected = integration.status !== 'disconnected';
+  const badge = integrationStatusBadge['id' in row ? row.status : 'disconnected'];
 
   return (
     <li className="flex items-center justify-between gap-3 py-3 first:pt-0 last:pb-0">
       <div>
-        <p className="text-sm font-medium text-ink">{integration.name}</p>
+        <p className="text-sm font-medium text-ink">{row.name}</p>
         <div className="mt-1">
           <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge>
         </div>
       </div>
-      {isConnected ? (
+      {isConnectedIntegration(row) ? (
         <Button
           variant="secondary"
           size="sm"
           busy={disconnect.isPending}
           onClick={() =>
-            disconnect.mutate(integration.id, {
-              onSuccess: () => toast(`${integration.name} disconnected.`, 'neutral'),
+            disconnect.mutate(row.id, {
+              onSuccess: () => toast(`${row.name} disconnected.`, 'neutral'),
               onError: () => toast('Could not disconnect. Try again.', 'danger'),
             })
           }
@@ -245,11 +271,88 @@ function IntegrationRow({ integration }: { integration: Integration }) {
           size="sm"
           busy={connect.isPending}
           onClick={() =>
-            connect.mutate(integration.type, {
-              onSuccess: () => toast(`${integration.name} connected.`, 'positive'),
+            connect.mutate(row.type, {
+              onSuccess: () => toast(`${row.name} connected.`, 'positive'),
               onError: () => toast('Could not connect. Try again.', 'danger'),
             })
           }
+        >
+          Connect
+        </Button>
+      )}
+    </li>
+  );
+}
+
+/** Plaid gets a real Link flow instead of the generic one-click mock connect:
+ * in mock mode (no real Plaid keys configured server-side) it still behaves
+ * like the other rows (immediate connect, no modal); once real keys are
+ * configured, Connect launches Plaid's hosted Sandbox/Production Link modal. */
+function PlaidIntegrationRow({ row }: { row: IntegrationRowInput }) {
+  const { toast } = useToast();
+  const createLinkToken = useCreatePlaidLinkToken();
+  const exchange = useExchangePlaidPublicToken();
+  const disconnect = useDisconnectIntegration();
+  const [linkToken, setLinkToken] = useState<string | null>(null);
+  const badge = integrationStatusBadge['id' in row ? row.status : 'disconnected'];
+
+  const finishConnecting = (publicToken: string) => {
+    exchange.mutate(publicToken, {
+      onSuccess: () => toast('Plaid connected.', 'positive'),
+      onError: () => toast('Could not finish connecting Plaid. Try again.', 'danger'),
+    });
+  };
+
+  const { open, ready } = usePlaidLink({
+    token: linkToken,
+    onSuccess: (publicToken) => finishConnecting(publicToken),
+  });
+
+  useEffect(() => {
+    if (linkToken && ready) open();
+  }, [linkToken, ready, open]);
+
+  const handleConnect = () => {
+    createLinkToken.mutate(undefined, {
+      onSuccess: ({ linkToken: token, mock }) => {
+        if (mock) {
+          finishConnecting(MOCK_PUBLIC_TOKEN);
+        } else {
+          setLinkToken(token);
+        }
+      },
+      onError: () => toast('Could not start the bank connection. Try again.', 'danger'),
+    });
+  };
+
+  return (
+    <li className="flex items-center justify-between gap-3 py-3 first:pt-0 last:pb-0">
+      <div>
+        <p className="text-sm font-medium text-ink">{row.name}</p>
+        <div className="mt-1">
+          <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge>
+        </div>
+      </div>
+      {isConnectedIntegration(row) ? (
+        <Button
+          variant="secondary"
+          size="sm"
+          busy={disconnect.isPending}
+          onClick={() =>
+            disconnect.mutate(row.id, {
+              onSuccess: () => toast(`${row.name} disconnected.`, 'neutral'),
+              onError: () => toast('Could not disconnect. Try again.', 'danger'),
+            })
+          }
+        >
+          Disconnect
+        </Button>
+      ) : (
+        <Button
+          variant="secondary"
+          size="sm"
+          busy={createLinkToken.isPending || exchange.isPending}
+          onClick={handleConnect}
         >
           Connect
         </Button>

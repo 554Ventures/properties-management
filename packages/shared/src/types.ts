@@ -113,6 +113,8 @@ export type DashboardInsightResponse = z.infer<typeof s.DashboardInsightResponse
 // Integrations
 export type Integration = z.infer<typeof s.IntegrationSchema>;
 export type IntegrationListResponse = z.infer<typeof s.IntegrationListResponseSchema>;
+export type LinkTokenResponse = z.infer<typeof s.LinkTokenResponseSchema>;
+export type ExchangePublicTokenInput = z.infer<typeof s.ExchangePublicTokenInputSchema>;
 
 // Chat content blocks
 export type ColorRole = z.infer<typeof s.ColorRoleSchema>;

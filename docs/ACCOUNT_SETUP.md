@@ -100,6 +100,9 @@ Worker secrets (set once with `npx wrangler secret put <NAME>`; forwarded into t
 | `SUPABASE_URL` | §1.2 |
 | `ANTHROPIC_API_KEY` | §2 |
 | `CRON_SECRET` | generated (in `.secrets.local`) |
+| `PLAID_CLIENT_ID` / `PLAID_SECRET` | §6 — optional, falls back to the mock adapter until set |
+| `PLAID_ENV` | §6 — literal `sandbox` for now |
+| `INTEGRATION_ENCRYPTION_KEY` | §6 — self-generated, not from Plaid |
 
 Instance sizing: `basic` to start; revisit after load testing (plan open item #2).
 
@@ -129,6 +132,18 @@ Instance sizing: `basic` to start; revisit after load testing (plan open item #2
 4. GitHub: `production` environment secrets → ruleset → enable deploy job
 5. Run the launch checklist in the deployment plan §13 (cross-account isolation with a second real account, restore-test a backup, demo seed never touches prod, cron verified)
 
+---
+
+## 6. Plaid (bank import) — *added 2026-07-04*
+
+Real Sandbox bank-transaction import (`docs/WHATS_NEXT.md` §3). Optional — the app runs the mock Plaid adapter until these are set.
+
+1. [dashboard.plaid.com](https://dashboard.plaid.com) → sign up (free for Sandbox, no approval wait) → **Team Settings → Keys**. 📋 collect the **Sandbox** `client_id` and `secret` → `PLAID_CLIENT_ID` / `PLAID_SECRET`.
+2. Set `PLAID_ENV=sandbox`. Production requires Plaid's separate app-review process — out of scope until the app has real users linking real banks.
+3. Generate a dedicated encryption key for at-rest storage of the Plaid access token (this is unrelated to Plaid's own keys): `openssl rand -base64 32` → `INTEGRATION_ENCRYPTION_KEY`. All three vars must be set together or the app falls back to the mock adapter (a boot-time warning fires if only some are set).
+4. To test: Settings → Connect on the Plaid row → pick any Sandbox institution → log in with Plaid's test credentials (`user_good` / `pass_good`, any Sandbox-supported institution) → Money → "Import from bank" (a second click a little later may be needed — Plaid's first sync after linking commonly returns 0 rows while it finishes its initial pull).
+5. Moving to Production later is a values-only swap: new `PLAID_CLIENT_ID`/`PLAID_SECRET` from Plaid's Production keys (after their review) + `PLAID_ENV=production`. `INTEGRATION_ENCRYPTION_KEY` stays the same.
+
 ## Values you should have collected
 
 | # | Value | Goes to |
@@ -141,3 +156,5 @@ Instance sizing: `basic` to start; revisit after load testing (plan open item #2
 | 6 | Cloudflare API token | GitHub `CLOUDFLARE_API_TOKEN` |
 | 7 | `CRON_SECRET` (self-generated) | container + Worker |
 | 8 | (nothing else — the Supabase secret key is deliberately never provisioned) |
+| 9 | Plaid Sandbox `client_id`/`secret` (§6) | container `PLAID_CLIENT_ID` / `PLAID_SECRET` |
+| 10 | `INTEGRATION_ENCRYPTION_KEY` (self-generated, §6) | container secret |

@@ -31,3 +31,10 @@ export class ConflictError extends HttpError {
     this.name = 'ConflictError';
   }
 }
+
+export class PlaidNotConnectedError extends HttpError {
+  constructor() {
+    super(409, 'plaid_not_connected', 'Connect a bank account in Settings before importing.');
+    this.name = 'PlaidNotConnectedError';
+  }
+}

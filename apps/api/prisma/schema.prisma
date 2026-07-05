@@ -179,6 +179,7 @@ model Transaction {
   aiSuggestedCategoryId String?
   aiConfidence          Float?
   receiptUrl            String?
+  externalId            String? // bank source only: Plaid transaction_id, dedups repeated syncs
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 
@@ -190,6 +191,7 @@ model Transaction {
 
   @@index([accountId, date])
   @@index([accountId, status])
+  @@unique([accountId, externalId])
 }
 
 model RentPayment {
@@ -294,6 +296,7 @@ model Integration {
   status      String // IntegrationStatus (@hearth/shared): connected | disconnected | mock
   externalRef String?
   scopesJson  String   @default("[]")
+  configJson  String   @default("{}") // provider-specific config, e.g. Plaid { accessTokenEncrypted, itemId, cursor }
   createdAt   DateTime @default(now())
 
   account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)

@@ -7,7 +7,10 @@
 // context, exactly like the local `docker build`). Requires Workers Paid.
 //
 // Runtime secrets (set once with `npx wrangler secret put <NAME>`):
-//   DATABASE_URL, SUPABASE_URL, ANTHROPIC_API_KEY, CRON_SECRET
+//   DATABASE_URL, SUPABASE_URL, ANTHROPIC_API_KEY, CRON_SECRET,
+//   PLAID_CLIENT_ID, PLAID_SECRET, PLAID_ENV, INTEGRATION_ENCRYPTION_KEY
+//   (Plaid is optional — the app falls back to a mock adapter until all
+//   four are set; account setup §6)
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "hearth",

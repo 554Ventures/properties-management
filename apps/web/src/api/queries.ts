@@ -27,6 +27,7 @@ import type {
   Lease,
   LeaseDetailResponse,
   LeaseWithContext,
+  LinkTokenResponse,
   Property,
   PropertyDetailResponse,
   PropertyWithStats,
@@ -596,6 +597,23 @@ export function useDisconnectIntegration() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.delete(`/integrations/${id}`),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['integrations'] });
+    },
+  });
+}
+
+export function useCreatePlaidLinkToken() {
+  return useMutation({
+    mutationFn: () => api.post<LinkTokenResponse>('/integrations/plaid/link-token'),
+  });
+}
+
+export function useExchangePlaidPublicToken() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (publicToken: string) =>
+      api.post<Integration>('/integrations/plaid/exchange', { publicToken }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['integrations'] });
     },

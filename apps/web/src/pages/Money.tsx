@@ -4,9 +4,11 @@ import { useMemo, useState } from 'react';
 import { formatUsd } from '@hearth/shared';
 import type { TransactionStatus, TransactionType } from '@hearth/shared';
 import { Link } from 'react-router-dom';
+import { ApiClientError } from '../api/client';
 import {
   useCategories,
   useImportTransactions,
+  useIntegrations,
   useProperties,
   useReviewQueue,
   useTransactions,
@@ -40,6 +42,7 @@ export function Money() {
   const review = useReviewQueue();
   const categories = useCategories();
   const properties = useProperties();
+  const integrations = useIntegrations();
   const importBank = useImportTransactions();
   const { toast } = useToast();
 
@@ -67,14 +70,31 @@ export function Money() {
               busy={importBank.isPending}
               onClick={() =>
                 importBank.mutate(undefined, {
-                  onSuccess: (res) =>
+                  onSuccess: (res) => {
+                    if (res.imported > 0) {
+                      toast(
+                        `Imported ${res.imported} bank transactions into the review queue.`,
+                        'positive',
+                      );
+                      return;
+                    }
+                    const plaidConnected = integrations.data?.some(
+                      (i) => i.type === 'plaid' && i.status === 'connected',
+                    );
                     toast(
-                      res.imported > 0
-                        ? `Imported ${res.imported} bank transactions into the review queue.`
+                      plaidConnected
+                        ? 'No new transactions yet — bank sync can take a minute after connecting. Try again shortly.'
                         : 'No new bank transactions to import.',
-                      'positive',
-                    ),
-                  onError: () => toast('Bank import failed. Try again.', 'danger'),
+                      'neutral',
+                    );
+                  },
+                  onError: (err) => {
+                    if (err instanceof ApiClientError && err.code === 'plaid_not_connected') {
+                      toast('Connect a bank account in Settings first.', 'danger');
+                      return;
+                    }
+                    toast('Bank import failed. Try again.', 'danger');
+                  },
                 })
               }
             >

@@ -1,4 +1,5 @@
 import {
+  ExchangePublicTokenInputSchema,
   IntegrationTypeSchema,
   UpdateAccountSettingsInputSchema,
   type AccountSettings,
@@ -36,6 +37,15 @@ export async function settingsRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get('/integrations', async (req) => integrationService.list(req.accountId));
+
+  app.post('/integrations/plaid/link-token', async (req) =>
+    integrationService.createLinkToken(req.accountId),
+  );
+
+  app.post('/integrations/plaid/exchange', async (req) => {
+    const input = parseBody(ExchangePublicTokenInputSchema, req.body);
+    return integrationService.exchangePublicToken(req.accountId, input.publicToken);
+  });
 
   app.post<{ Params: { type: string } }>('/integrations/:type/connect', async (req) => {
     const type = IntegrationTypeSchema.parse(req.params.type);

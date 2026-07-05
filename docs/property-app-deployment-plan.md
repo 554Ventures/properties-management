@@ -173,6 +173,8 @@ Flow: `feature/*` → PR (CI + preview URL) → review → merge to `main` → d
 | `DATABASE_URL` (pooler) | Container secret | Runtime Prisma connection through Supavisor |
 | `DATABASE_URL_DIRECT` | GitHub Actions secret | Direct connection, used only by the CI migration step |
 | Internal cron secret | Container secret + Worker secret | Shared header guarding `POST /api/v1/internal/run-daily-jobs` (§3) |
+| `PLAID_CLIENT_ID` / `PLAID_SECRET` | Container secret, never frontend | Sandbox for now (account setup §6); Production later is the same two secrets with new values plus flipping `PLAID_ENV` |
+| `INTEGRATION_ENCRYPTION_KEY` | Container secret, never frontend | Self-generated (not Plaid-issued) — encrypts the Plaid access token at rest in `Integration.configJson` |
 | Cloudflare API token, Supabase access token | GitHub **Environment** secrets (`production` environment) | Environments (not plain repo secrets) so required reviewers can be added later without restructuring |
 
 **Rule of thumb:** if a key can write data or cost money, it lives server-side only. Nothing sensitive in committed `.env` files — `.env.example` documents shape only (already the repo's convention).

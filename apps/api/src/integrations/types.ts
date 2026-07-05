@@ -12,14 +12,21 @@ export interface PlaidBankTransaction {
 }
 
 export interface PlaidAdapter {
+  /** Create a Link token to hand to the frontend's Plaid Link launch. */
+  createLinkToken(accountId: string): Promise<{ linkToken: string; mock: boolean }>;
+  /** Exchange a Link `public_token` for a long-lived `access_token` + item id. */
+  exchangePublicToken(publicToken: string): Promise<{ accessToken: string; itemId: string }>;
   /**
-   * Pull new bank transactions. `pendingReviewCount` lets the mock stay
-   * idempotent-ish: it returns rows only when the review queue is empty.
+   * Cursor-based transaction sync (mirrors Plaid's `/transactions/sync`).
+   * Pass `cursor: null` for the first sync; persist the returned `nextCursor`
+   * and pass it back on the next call.
    */
-  fetchNewTransactions(
-    accountRef: string,
-    opts: { pendingReviewCount: number },
-  ): Promise<PlaidBankTransaction[]>;
+  syncTransactions(
+    accessToken: string,
+    cursor: string | null,
+  ): Promise<{ transactions: PlaidBankTransaction[]; nextCursor: string }>;
+  /** Revoke access to an item (best-effort on the caller's side). */
+  removeItem(accessToken: string): Promise<void>;
 }
 
 export interface StripeAdapter {
