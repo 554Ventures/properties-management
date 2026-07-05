@@ -50,8 +50,10 @@ describe('Plaid connect flow (mock mode)', () => {
   });
 
   it('importFromBank imports the mock batch once, then dedupes on repeat calls', async () => {
+    // 3 expenses + 1 income (the rent-match demo fixture). This account has no
+    // leases, which also proves the review-queue rent matcher no-ops safely.
     const first = await importFromBank(accountId);
-    expect(first.imported).toBe(3);
+    expect(first.imported).toBe(4);
 
     const second = await importFromBank(accountId);
     expect(second.imported).toBe(0);

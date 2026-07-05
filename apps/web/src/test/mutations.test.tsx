@@ -10,6 +10,7 @@ import {
   useArchiveProperty,
   useArchiveTenant,
   useArchiveUnit,
+  useConfirmTransaction,
   useCreateLease,
   useCreateRenewal,
   useCreateTenant,
@@ -21,6 +22,7 @@ import {
   useUpdateLease,
   useUpdateProperty,
   useUpdateTenant,
+  useUpdateTransaction,
   useUpdateUnit,
 } from '../api/queries';
 
@@ -302,5 +304,46 @@ describe('lease mutations', () => {
     const { leaseId: _leaseId, ...body } = terms;
     expect(init?.body).toBe(JSON.stringify(body));
     expect(keys).toContain(JSON.stringify(['leases', 'l1']));
+  });
+});
+
+describe('transaction mutations', () => {
+  it('useConfirmTransaction with rentPaymentId POSTs /confirm and invalidates ledger + rent + tenants', async () => {
+    const fetchMock = stubFetch(() => jsonResponse({ id: 'tx1' }));
+    const { keys, wrapper } = setup();
+
+    const { result } = renderHook(() => useConfirmTransaction(), { wrapper });
+    result.current.mutate({ id: 'tx1', rentPaymentId: 'rp1' });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/v1/transactions/tx1/confirm');
+    expect(init?.method).toBe('POST');
+    expect(init?.body).toBe(JSON.stringify({ rentPaymentId: 'rp1' }));
+    expect(keys).toEqual(
+      expect.arrayContaining([
+        JSON.stringify(['transactions']),
+        JSON.stringify(['dashboard']),
+        JSON.stringify(['rent']),
+        JSON.stringify(['tenants']),
+      ]),
+    );
+  });
+
+  it('useUpdateTransaction PATCHes /transactions/:id and invalidates the ledger', async () => {
+    const fetchMock = stubFetch(() => jsonResponse({ id: 'tx1' }));
+    const { keys, wrapper } = setup();
+
+    const { result } = renderHook(() => useUpdateTransaction(), { wrapper });
+    result.current.mutate({ id: 'tx1', propertyId: 'p1', unitId: 'u1' });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/v1/transactions/tx1');
+    expect(init?.method).toBe('PATCH');
+    expect(init?.body).toBe(JSON.stringify({ propertyId: 'p1', unitId: 'u1' }));
+    expect(keys).toEqual(
+      expect.arrayContaining([JSON.stringify(['transactions']), JSON.stringify(['dashboard'])]),
+    );
   });
 });

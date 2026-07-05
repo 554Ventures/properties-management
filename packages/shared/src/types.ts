@@ -63,6 +63,7 @@ export type UpdateTransactionInput = z.infer<typeof s.UpdateTransactionInputSche
 export type ConfirmTransactionInput = z.infer<typeof s.ConfirmTransactionInputSchema>;
 export type TransactionListQuery = z.infer<typeof s.TransactionListQuerySchema>;
 export type TransactionListResponse = z.infer<typeof s.TransactionListResponseSchema>;
+export type RentMatchSuggestion = z.infer<typeof s.RentMatchSuggestionSchema>;
 export type ReviewQueueItem = z.infer<typeof s.ReviewQueueItemSchema>;
 export type ReviewQueueResponse = z.infer<typeof s.ReviewQueueResponseSchema>;
 export type ReceiptScanResponse = z.infer<typeof s.ReceiptScanResponseSchema>;

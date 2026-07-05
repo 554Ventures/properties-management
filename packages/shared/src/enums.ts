@@ -14,7 +14,7 @@ export type TransactionStatus = z.infer<typeof TransactionStatusSchema>;
 export const RentPaymentStatusSchema = z.enum(['due', 'processing', 'paid', 'failed']);
 export type RentPaymentStatus = z.infer<typeof RentPaymentStatusSchema>;
 
-export const RentPaymentMethodSchema = z.enum(['online', 'manual']);
+export const RentPaymentMethodSchema = z.enum(['online', 'manual', 'bank']);
 export type RentPaymentMethod = z.infer<typeof RentPaymentMethodSchema>;
 
 export const LeaseStatusSchema = z.enum(['active', 'ended', 'pending_signature']);

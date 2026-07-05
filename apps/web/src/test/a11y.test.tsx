@@ -6,6 +6,8 @@ import type {
   IncomeExpenseSeriesResponse,
   Insight,
   PropertyWithStats,
+  ReviewQueueResponse,
+  Transaction,
 } from '@hearth/shared';
 import type { LeaseDetailResponse } from '@hearth/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -18,11 +20,13 @@ import { LeaseFormModal } from '../components/forms/LeaseFormModal';
 import { LeaseTenantsModal } from '../components/forms/LeaseTenantsModal';
 import { PropertyFormModal } from '../components/forms/PropertyFormModal';
 import { TenantFormModal } from '../components/forms/TenantFormModal';
+import { TransactionEditModal } from '../components/forms/TransactionEditModal';
 import { UnitFormModal } from '../components/forms/UnitFormModal';
 import { AppShell } from '../components/shell/AppShell';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { ToastProvider } from '../components/ui/Toast';
 import { Dashboard } from '../pages/Dashboard';
+import { MoneyReview } from '../pages/MoneyReview';
 
 const kpis: DashboardKpisResponse = {
   netCashFlowMtdCents: 845000,
@@ -311,4 +315,132 @@ describe('CRUD modal accessibility', () => {
     );
     await expectNoModalViolations();
   });
+
+  it('TransactionEditModal has no axe violations', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const path = String(input).replace(/^https?:\/\/[^/]+/, '').split('?')[0] ?? '';
+        if (path === '/api/v1/properties') return fixtureFetch(input);
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }),
+    );
+    render(
+      <Providers>
+        <TransactionEditModal open onClose={() => {}} transaction={importedTransaction} />
+      </Providers>,
+    );
+    await expectNoModalViolations();
+  });
+});
+
+// --- Review queue (rent match + attribution selects) -------------------------
+
+const importedTransaction: Transaction = {
+  id: 'tx-income',
+  accountId: 'acc1',
+  propertyId: null,
+  unitId: null,
+  categoryId: null,
+  date: '2026-07-04T00:00:00.000Z',
+  amountCents: 115000,
+  type: 'income',
+  description: 'ACH CREDIT — RENT T OKAFOR',
+  vendor: 'ACH transfer',
+  source: 'bank',
+  status: 'pending_review',
+  aiSuggestedCategoryId: 'c-rent',
+  aiConfidence: 0.8,
+  receiptUrl: null,
+  createdAt: '2026-07-04T00:00:00.000Z',
+  updatedAt: '2026-07-04T00:00:00.000Z',
+};
+
+const reviewQueue: ReviewQueueResponse = {
+  items: [
+    {
+      ...importedTransaction,
+      aiSuggestedCategoryName: 'Rent',
+      rentMatch: {
+        rentPaymentId: 'rp1',
+        leaseId: 'l1',
+        tenantName: 'T. Okafor',
+        propertyId: 'p1',
+        propertyLabel: '21 Cedar Ct',
+        unitId: 'u1',
+        unitLabel: 'Main',
+        period: '2026-07',
+        dueDate: '2026-07-01T00:00:00.000Z',
+        amountCents: 115000,
+        confidence: 0.9,
+      },
+    },
+    {
+      ...importedTransaction,
+      id: 'tx-expense',
+      type: 'expense',
+      description: 'LOWES #00907',
+      vendor: "Lowe's",
+      amountCents: 6875,
+      aiSuggestedCategoryId: 'c-supplies',
+      aiConfidence: 0.62,
+      aiSuggestedCategoryName: 'Supplies',
+      rentMatch: null,
+    },
+  ],
+};
+
+describe('review queue accessibility', () => {
+  it('MoneyReview with a rent match and attribution selects has no axe violations', async () => {
+    const reviewFixtures: Record<string, unknown> = {
+      '/api/v1/transactions/review': reviewQueue,
+      '/api/v1/categories': [
+        { id: 'c-rent', name: 'Rent', type: 'income' },
+        { id: 'c-supplies', name: 'Supplies', type: 'expense' },
+      ],
+      '/api/v1/properties': properties,
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const path = String(input).replace(/^https?:\/\/[^/]+/, '').split('?')[0] ?? '';
+        const body = reviewFixtures[path];
+        return Promise.resolve(
+          new Response(JSON.stringify(body ?? { error: { code: 'not_found', message: path } }), {
+            status: body === undefined ? 404 : 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }),
+    );
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { container } = render(
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <MemoryRouter initialEntries={['/money/review']}>
+            <Routes>
+              <Route path="/money/review" element={<MoneyReview />} />
+            </Routes>
+          </MemoryRouter>
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+
+    // Rent-match chip + both items' selects rendered before auditing.
+    await screen.findByText(/T\. Okafor's Jul 2026 rent/);
+    await screen.findByText('LOWES #00907');
+
+    const results = await axe.run(container, {
+      rules: { 'color-contrast': { enabled: false } },
+    });
+    expect(
+      results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`),
+    ).toEqual([]);
+  }, 20_000);
 });

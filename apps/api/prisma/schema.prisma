@@ -208,10 +208,10 @@ model RentPayment {
   remindedAt    DateTime?
 
   lease       Lease        @relation(fields: [leaseId], references: [id], onDelete: Cascade)
-  // KNOWN DESYNC: deleting the ledger Transaction SetNulls transactionId but
-  // leaves this row status 'paid', so the tracker shows paid rent with no
-  // backing ledger entry. Future fix: revert the RentPayment to 'due' (or
-  // block the delete) when its linked Transaction is removed.
+  // Deleting a linked ledger Transaction is blocked in the service layer
+  // (transaction.service.remove) — otherwise SetNull would leave this row
+  // status 'paid' with no backing ledger entry. SetNull remains the DB-level
+  // fallback for deletes that bypass the service.
   transaction Transaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
 
   @@unique([leaseId, period])

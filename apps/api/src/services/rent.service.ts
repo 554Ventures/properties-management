@@ -64,12 +64,11 @@ export function deriveRentStatus(
   return { status: 'due' };
 }
 
-/** Materialize missing expected RentPayment rows for `period`, then derive. */
-export async function getMonthStatus(
+/** Insert any missing expected RentPayment rows for `period`'s active leases. */
+export async function materializeExpectedPayments(
   accountId: string,
   period: string,
-): Promise<RentTrackerResponse> {
-  const account = await prisma.account.findUniqueOrThrow({ where: { id: accountId } });
+): Promise<void> {
   const periodStart = monthStart(period);
   const periodEnd = monthEndExclusive(period);
 
@@ -115,6 +114,15 @@ export async function getMonthStatus(
       if (stillMissing.length > 0) await prisma.rentPayment.createMany({ data: stillMissing });
     }
   }
+}
+
+/** Materialize missing expected RentPayment rows for `period`, then derive. */
+export async function getMonthStatus(
+  accountId: string,
+  period: string,
+): Promise<RentTrackerResponse> {
+  const account = await prisma.account.findUniqueOrThrow({ where: { id: accountId } });
+  await materializeExpectedPayments(accountId, period);
 
   const payments = await prisma.rentPayment.findMany({
     where: {
@@ -165,6 +173,78 @@ export async function getMonthStatus(
     totalUnits: rows.length,
     rows,
   };
+}
+
+// ── bank-import rent matching (heuristic suggestion, never auto-applied) ──────
+
+/** How far a deposit's date may sit from the dueDate and still look like that rent. */
+export const RENT_MATCH_WINDOW_DAYS = 14;
+
+export interface RentMatchCandidate {
+  rentPaymentId: string;
+  leaseId: string;
+  tenantName: string;
+  propertyId: string;
+  propertyLabel: string;
+  unitId: string;
+  unitLabel: string;
+  period: string;
+  dueDate: Date;
+  amountCents: number;
+}
+
+/** Open (due/processing) expected rents with a dueDate inside `range`, account-scoped. */
+export async function findRentMatchCandidates(
+  accountId: string,
+  range: { from: Date; to: Date },
+): Promise<RentMatchCandidate[]> {
+  const payments = await prisma.rentPayment.findMany({
+    where: {
+      status: { in: ['due', 'processing'] },
+      dueDate: { gte: range.from, lte: range.to },
+      lease: { unit: { archivedAt: null, property: { accountId, archivedAt: null } } },
+    },
+    include: {
+      lease: {
+        include: {
+          unit: { include: { property: true } },
+          leaseTenants: { include: { tenant: true }, orderBy: { isPrimary: 'desc' } },
+        },
+      },
+    },
+  });
+  return payments.map((p) => {
+    const property = p.lease.unit.property;
+    return {
+      rentPaymentId: p.id,
+      leaseId: p.leaseId,
+      tenantName: p.lease.leaseTenants[0]?.tenant.fullName ?? 'Unknown tenant',
+      propertyId: property.id,
+      propertyLabel: property.nickname ?? property.addressLine1,
+      unitId: p.lease.unitId,
+      unitLabel: p.lease.unit.label,
+      period: p.period,
+      dueDate: p.dueDate,
+      amountCents: p.amountCents,
+    };
+  });
+}
+
+/**
+ * Pick the expected rent a bank deposit looks like: exact amount, dated within
+ * RENT_MATCH_WINDOW_DAYS of the due date. Two same-rent candidates in window
+ * is ambiguous — suppress the suggestion rather than guess.
+ */
+export function pickRentMatch(
+  txn: { amountCents: number; date: Date },
+  candidates: RentMatchCandidate[],
+): RentMatchCandidate | null {
+  const matches = candidates.filter(
+    (c) =>
+      c.amountCents === txn.amountCents &&
+      Math.abs(calendarDaysBetween(c.dueDate, txn.date)) <= RENT_MATCH_WINDOW_DAYS,
+  );
+  return matches.length === 1 ? (matches[0] ?? null) : null;
 }
 
 export async function recordPayment(

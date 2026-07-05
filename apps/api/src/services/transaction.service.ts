@@ -3,6 +3,7 @@ import type {
   CreateTransactionInput,
   ImportTransactionsResponse,
   ReceiptScanResponse,
+  RentMatchSuggestion,
   ReviewQueueResponse,
   Transaction,
   TransactionListQuery,
@@ -14,11 +15,17 @@ import type {
 } from '@hearth/shared';
 import type { Prisma, Transaction as DbTransaction } from '@prisma/client';
 import { createPlaidAdapter, isRealPlaidConfigured } from '../integrations/factory';
-import { iso } from '../lib/dates';
-import { NotFoundError, PlaidNotConnectedError } from '../lib/errors';
+import { addDays, currentPeriod, iso, periodOf } from '../lib/dates';
+import { BadRequestError, NotFoundError, PlaidNotConnectedError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { getConnectedPlaid, persistPlaidCursor } from './integration.service';
 import { writeAudit, type AuditActor } from './audit.service';
+import {
+  RENT_MATCH_WINDOW_DAYS,
+  findRentMatchCandidates,
+  materializeExpectedPayments,
+  pickRentMatch,
+} from './rent.service';
 
 export function toApiTransaction(t: DbTransaction): Transaction {
   return {
@@ -209,6 +216,15 @@ export async function remove(
   actor: AuditActor = 'user',
 ): Promise<void> {
   const prior = await getOwned(accountId, id);
+  // A rent-linked ledger row backs a `paid` RentPayment; deleting it would
+  // SetNull the link and leave the tracker showing paid rent with no ledger
+  // entry (the desync noted in schema.prisma) — block instead.
+  const linkedPayment = await prisma.rentPayment.findUnique({ where: { transactionId: id } });
+  if (linkedPayment) {
+    throw new BadRequestError(
+      `this transaction backs the recorded rent payment for ${linkedPayment.period} and cannot be deleted`,
+    );
+  }
   await prisma.transaction.delete({ where: { id } });
   await writeAudit(accountId, {
     actor,
@@ -228,14 +244,71 @@ export async function getReviewQueue(accountId: string): Promise<ReviewQueueResp
   });
   const categories = await prisma.category.findMany();
   const nameById = new Map(categories.map((c) => [c.id, c.name]));
+  const rentMatches = await computeRentMatches(accountId, rows);
   return {
     items: rows.map((r) => ({
       ...toApiTransaction(r),
       aiSuggestedCategoryName: r.aiSuggestedCategoryId
         ? (nameById.get(r.aiSuggestedCategoryId) ?? null)
         : null,
+      rentMatch: rentMatches.get(r.id) ?? null,
     })),
   };
+}
+
+// Heuristic confidence shown on the rent-match chip; a single exact-amount,
+// in-window candidate is a strong but not certain signal.
+const RENT_MATCH_CONFIDENCE = 0.9;
+
+/**
+ * Computed fresh on every queue load (never stored) so a payment recorded by
+ * other means between import and review simply stops being suggested; the
+ * confirm path re-validates inside a transaction regardless.
+ */
+async function computeRentMatches(
+  accountId: string,
+  rows: DbTransaction[],
+): Promise<Map<string, RentMatchSuggestion>> {
+  const matches = new Map<string, RentMatchSuggestion>();
+  const incomeRows = rows.filter((r) => r.type === 'income');
+  if (incomeRows.length === 0) return matches;
+
+  // Expected RentPayment rows only exist once their period is materialized;
+  // cover every period a deposit's ±window can reach, but never a future month
+  // (early payments for a not-yet-current period are an accepted miss).
+  const current = currentPeriod();
+  const periods = new Set<string>();
+  for (const r of incomeRows) {
+    for (const offset of [-RENT_MATCH_WINDOW_DAYS, 0, RENT_MATCH_WINDOW_DAYS]) {
+      const period = periodOf(addDays(r.date, offset));
+      if (period <= current) periods.add(period);
+    }
+  }
+  for (const period of periods) await materializeExpectedPayments(accountId, period);
+
+  const times = incomeRows.map((r) => r.date.getTime());
+  const candidates = await findRentMatchCandidates(accountId, {
+    from: addDays(new Date(Math.min(...times)), -RENT_MATCH_WINDOW_DAYS),
+    to: addDays(new Date(Math.max(...times)), RENT_MATCH_WINDOW_DAYS),
+  });
+  for (const r of incomeRows) {
+    const match = pickRentMatch({ amountCents: r.amountCents, date: r.date }, candidates);
+    if (!match) continue;
+    matches.set(r.id, {
+      rentPaymentId: match.rentPaymentId,
+      leaseId: match.leaseId,
+      tenantName: match.tenantName,
+      propertyId: match.propertyId,
+      propertyLabel: match.propertyLabel,
+      unitId: match.unitId,
+      unitLabel: match.unitLabel,
+      period: match.period,
+      dueDate: iso(match.dueDate),
+      amountCents: match.amountCents,
+      confidence: RENT_MATCH_CONFIDENCE,
+    });
+  }
+  return matches;
 }
 
 export async function confirm(
@@ -245,11 +318,19 @@ export async function confirm(
   actor: AuditActor = 'user',
 ): Promise<Transaction> {
   const existing = await getOwned(accountId, id);
+  if (input.rentPaymentId) {
+    return confirmWithRentLink(accountId, existing, input.rentPaymentId, input.categoryId, actor);
+  }
   const usedSuggestion = !input.categoryId && !!existing.aiSuggestedCategoryId;
   const categoryId = input.categoryId ?? existing.aiSuggestedCategoryId ?? existing.categoryId;
   const row = await prisma.transaction.update({
     where: { id },
-    data: { status: 'confirmed', categoryId },
+    data: {
+      status: 'confirmed',
+      categoryId,
+      ...(input.propertyId !== undefined ? { propertyId: input.propertyId } : {}),
+      ...(input.unitId !== undefined ? { unitId: input.unitId } : {}),
+    },
   });
   await writeAudit(accountId, {
     // A human confirm that accepts the AI suggestion is the one case that
@@ -258,7 +339,87 @@ export async function confirm(
     action: 'transaction.confirmed',
     entityType: 'transaction',
     entityId: id,
-    detail: { categoryId },
+    detail: { categoryId, propertyId: row.propertyId, unitId: row.unitId },
+  });
+  return toApiTransaction(row);
+}
+
+/**
+ * Confirm an imported income transaction as the ledger entry backing an
+ * expected rent payment: the transaction gets the lease's property/unit and
+ * the Rent category, and the RentPayment flips to paid with the link set —
+ * the same `RentPayment.transactionId` link recordPayment creates, just
+ * pointing at the bank row instead of a new manual one.
+ */
+async function confirmWithRentLink(
+  accountId: string,
+  existing: DbTransaction,
+  rentPaymentId: string,
+  categoryIdOverride: string | undefined,
+  actor: AuditActor,
+): Promise<Transaction> {
+  if (existing.type !== 'income') {
+    throw new BadRequestError('only an income transaction can be linked to a rent payment');
+  }
+  const payment = await prisma.rentPayment.findFirst({
+    where: { id: rentPaymentId, lease: { unit: { property: { accountId } } } },
+    include: { lease: { include: { unit: true } } },
+  });
+  if (!payment) throw new NotFoundError('rent payment', rentPaymentId);
+  const rentCategory = await prisma.category.findFirst({
+    where: { name: 'Rent', type: 'income' },
+  });
+
+  // Confirm + link commit or roll back together; the status re-check inside
+  // the transaction makes the double-pay guard hold under concurrent requests
+  // (mirrors recordPayment).
+  const { row, updatedPayment } = await prisma.$transaction(async (tx) => {
+    const fresh = await tx.rentPayment.findUniqueOrThrow({ where: { id: payment.id } });
+    if (fresh.status === 'paid') {
+      throw new BadRequestError(`rent for ${payment.period} is already recorded as paid`);
+    }
+    const confirmedRow = await tx.transaction.update({
+      where: { id: existing.id },
+      data: {
+        status: 'confirmed',
+        categoryId: categoryIdOverride ?? rentCategory?.id ?? existing.categoryId,
+        propertyId: payment.lease.unit.propertyId,
+        unitId: payment.lease.unitId,
+      },
+    });
+    const linkedPayment = await tx.rentPayment.update({
+      where: { id: payment.id },
+      data: {
+        status: 'paid',
+        method: 'bank',
+        paidAt: existing.date,
+        amountCents: existing.amountCents,
+        transactionId: existing.id,
+      },
+    });
+    return { row: confirmedRow, updatedPayment: linkedPayment };
+  });
+
+  // Accepting the rent-match suggestion is accepting AI-suggested content.
+  const auditActor = actor === 'user' ? 'ai_suggested_user_confirmed' : actor;
+  await writeAudit(accountId, {
+    actor: auditActor,
+    action: 'transaction.confirmed',
+    entityType: 'transaction',
+    entityId: row.id,
+    detail: { categoryId: row.categoryId, rentPaymentId: updatedPayment.id },
+  });
+  await writeAudit(accountId, {
+    actor: auditActor,
+    action: 'rent_payment.recorded',
+    entityType: 'rent_payment',
+    entityId: updatedPayment.id,
+    detail: {
+      period: updatedPayment.period,
+      amountCents: updatedPayment.amountCents,
+      method: 'bank',
+      via: 'bank_import',
+    },
   });
   return toApiTransaction(row);
 }

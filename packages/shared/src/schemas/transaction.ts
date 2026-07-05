@@ -4,6 +4,7 @@ import {
   TransactionStatusSchema,
   TransactionTypeSchema,
 } from '../enums';
+import { PeriodSchema } from './rent';
 
 export const TransactionSchema = z.object({
   id: z.string(),
@@ -43,9 +44,14 @@ export const CreateTransactionInputSchema = z.object({
 // PATCH /transactions/:id
 export const UpdateTransactionInputSchema = CreateTransactionInputSchema.partial();
 
-// POST /transactions/:id/confirm
+// POST /transactions/:id/confirm — rentPaymentId links the (income) transaction
+// to that expected rent payment and marks it paid; property/unit then come from
+// the lease and any propertyId/unitId here are ignored.
 export const ConfirmTransactionInputSchema = z.object({
   categoryId: z.string().optional(), // override; omitted = accept the AI suggestion
+  rentPaymentId: z.string().optional(),
+  propertyId: z.string().optional(),
+  unitId: z.string().optional(),
 });
 
 // GET /transactions query filters — also reused verbatim by the MCP
@@ -66,10 +72,28 @@ export const TransactionListResponseSchema = z.object({
   nextCursor: z.string().nullable(),
 });
 
+// Heuristic rent match computed at review time (never stored, never
+// auto-applied): an income bank transaction that looks like a lease's open
+// expected rent — same amount, dated within a window of the due date.
+export const RentMatchSuggestionSchema = z.object({
+  rentPaymentId: z.string(),
+  leaseId: z.string(),
+  tenantName: z.string(),
+  propertyId: z.string(),
+  propertyLabel: z.string(),
+  unitId: z.string(),
+  unitLabel: z.string(),
+  period: PeriodSchema,
+  dueDate: z.string().datetime(),
+  amountCents: z.number().int().positive(),
+  confidence: z.number().min(0).max(1),
+});
+
 // GET /transactions/review — pending_review items with their suggestion
 // resolved to a display name.
 export const ReviewQueueItemSchema = TransactionSchema.extend({
   aiSuggestedCategoryName: z.string().nullable(),
+  rentMatch: RentMatchSuggestionSchema.nullable(),
 });
 
 export const ReviewQueueResponseSchema = z.object({

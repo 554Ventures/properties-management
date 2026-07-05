@@ -55,6 +55,7 @@ import type {
   UpdateLeaseInput,
   UpdatePropertyInput,
   UpdateTenantInput,
+  UpdateTransactionInput,
   UpdateUnitInput,
 } from '@hearth/shared';
 import { api, toQuery } from './client';
@@ -390,6 +391,21 @@ export function useConfirmTransaction() {
   return useMutation({
     mutationFn: ({ id, ...input }: ConfirmTransactionInput & { id: string }) =>
       api.post<Transaction>(`/transactions/${id}/confirm`, input),
+    onSuccess: () => {
+      // Confirming with a rentPaymentId flips a RentPayment to paid, so the
+      // tracker and tenant payment history change alongside the ledger.
+      invalidateLedger(qc);
+      void qc.invalidateQueries({ queryKey: ['rent'] });
+      void qc.invalidateQueries({ queryKey: ['tenants'] });
+    },
+  });
+}
+
+export function useUpdateTransaction() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...input }: UpdateTransactionInput & { id: string }) =>
+      api.patch<Transaction>(`/transactions/${id}`, input),
     onSuccess: () => invalidateLedger(qc),
   });
 }

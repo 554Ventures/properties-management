@@ -2,7 +2,7 @@
 // count, and mock bank import (PRD §5.4).
 import { useMemo, useState } from 'react';
 import { formatUsd } from '@hearth/shared';
-import type { TransactionStatus, TransactionType } from '@hearth/shared';
+import type { Transaction, TransactionStatus, TransactionType } from '@hearth/shared';
 import { Link } from 'react-router-dom';
 import { ApiClientError } from '../api/client';
 import {
@@ -13,6 +13,7 @@ import {
   useReviewQueue,
   useTransactions,
 } from '../api/queries';
+import { TransactionEditModal } from '../components/forms/TransactionEditModal';
 import { PageHeader } from '../components/shell/PageHeader';
 import { Button, buttonClasses } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
@@ -33,6 +34,7 @@ export function Money() {
   const [propertyId, setPropertyId] = useState('');
   const [type, setType] = useState<'' | TransactionType>('');
   const [status, setStatus] = useState<'' | TransactionStatus>('');
+  const [editing, setEditing] = useState<Transaction | null>(null);
 
   const transactions = useTransactions({
     propertyId: propertyId || undefined,
@@ -189,7 +191,7 @@ export function Money() {
         </Card>
       ) : (
         <Card flush>
-          <Table caption="Transactions — date, description, property, category, amount, and status">
+          <Table caption="Transactions — date, description, property, category, amount, status, and actions">
             <thead>
               <tr>
                 <Th>Date</Th>
@@ -198,6 +200,9 @@ export function Money() {
                 <Th>Category</Th>
                 <Th align="right">Amount</Th>
                 <Th>Status</Th>
+                <Th>
+                  <span className="sr-only">Actions</span>
+                </Th>
               </tr>
             </thead>
             <tbody>
@@ -228,12 +233,24 @@ export function Money() {
                       <StatusBadge tone="warning">Needs review</StatusBadge>
                     )}
                   </Td>
+                  <Td>
+                    <Button variant="ghost" onClick={() => setEditing(txn)}>
+                      Edit
+                      <span className="sr-only"> “{txn.description}”</span>
+                    </Button>
+                  </Td>
                 </Tr>
               ))}
             </tbody>
           </Table>
         </Card>
       )}
+
+      <TransactionEditModal
+        open={editing !== null}
+        onClose={() => setEditing(null)}
+        transaction={editing}
+      />
     </div>
   );
 }

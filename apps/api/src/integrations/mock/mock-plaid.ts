@@ -47,6 +47,18 @@ export const mockPlaid: PlaidAdapter = {
         amountCents: 6875,
         type: 'expense',
       },
+      {
+        // Exercises the review-queue rent match end-to-end: amount equals the
+        // seed's OKAFOR_RENT_CENTS (seed-constants.ts — keep in sync) whose
+        // current-month RentPayment is late, so this deposit suggests as
+        // "T. Okafor's rent".
+        externalId: 'plaid_mock_4',
+        date: addDays(now, -1),
+        description: 'ACH CREDIT — RENT T OKAFOR',
+        vendor: 'ACH transfer',
+        amountCents: 115000,
+        type: 'income',
+      },
     ];
     return { transactions, nextCursor: 'mock_cursor_1' };
   },
