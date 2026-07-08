@@ -1,12 +1,13 @@
 // TanStack Query hooks — one per ARCHITECTURE §3 endpoint the web app
 // consumes. All shapes come from @hearth/shared; nothing is redeclared here.
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   AcceptRenewalInput,
   AccountSettings,
   ActivityItem,
   AddLeaseTenantInput,
   Category,
+  ConfirmAllReviewResponse,
   ConfirmTransactionInput,
   CreateLeaseInput,
   CreatePropertyInput,
@@ -15,6 +16,7 @@ import type {
   CreateUnitInput,
   DashboardInsightResponse,
   DashboardKpisResponse,
+  DismissAllReviewResponse,
   EsignEnvelopeResponse,
   GenerateReportInput,
   ImportTransactionsResponse,
@@ -40,6 +42,7 @@ import type {
   ReportDetailResponse,
   ReportType,
   ReportTypeInfo,
+  ReviewQueueFilter,
   ReviewQueueResponse,
   SendRemindersInput,
   SendRemindersResponse,
@@ -364,10 +367,17 @@ export function useTransactions(filters: TransactionFilters = {}) {
   });
 }
 
-export function useReviewQueue() {
-  return useQuery({
-    queryKey: ['transactions', 'review'],
-    queryFn: () => api.get<ReviewQueueResponse>('/transactions/review'),
+/**
+ * Cursor-paged review queue. `data.pages[0].total` is the full filtered count
+ * (all pages); fetchNextPage loads the next cursor page.
+ */
+export function useReviewQueue(filters: ReviewQueueFilter = {}) {
+  return useInfiniteQuery({
+    queryKey: ['transactions', 'review', filters],
+    queryFn: ({ pageParam }) =>
+      api.get<ReviewQueueResponse>(`/transactions/review${toQuery({ ...filters, cursor: pageParam })}`),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
     staleTime: STALE_SHORT,
   });
 }
@@ -398,6 +408,35 @@ export function useConfirmTransaction() {
       void qc.invalidateQueries({ queryKey: ['rent'] });
       void qc.invalidateQueries({ queryKey: ['tenants'] });
     },
+  });
+}
+
+/** POST /transactions/:id/dismiss — deny a pending item; it never hits reports. */
+export function useDismissTransaction() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post<Transaction>(`/transactions/${id}/dismiss`, {}),
+    onSuccess: () => invalidateLedger(qc),
+  });
+}
+
+/** Bulk-confirm the filtered queue (AI suggestions only; rent matches skipped). */
+export function useConfirmAllReview() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (filters: ReviewQueueFilter) =>
+      api.post<ConfirmAllReviewResponse>('/transactions/review/confirm-all', filters),
+    onSuccess: () => invalidateLedger(qc),
+  });
+}
+
+/** Bulk-dismiss the filtered queue. */
+export function useDismissAllReview() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (filters: ReviewQueueFilter) =>
+      api.post<DismissAllReviewResponse>('/transactions/review/dismiss-all', filters),
+    onSuccess: () => invalidateLedger(qc),
   });
 }
 

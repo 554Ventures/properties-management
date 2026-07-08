@@ -96,8 +96,38 @@ export const ReviewQueueItemSchema = TransactionSchema.extend({
   rentMatch: RentMatchSuggestionSchema.nullable(),
 });
 
+// Review-queue filters — also the body of the bulk confirm-all/dismiss-all
+// endpoints, so a bulk action applies to exactly the filtered set the user is
+// looking at (all pages of it, not just the loaded one).
+export const ReviewQueueFilterSchema = z.object({
+  q: z.string().optional(), // case-insensitive match on description or vendor
+  propertyId: z.string().optional(),
+  type: TransactionTypeSchema.optional(),
+  source: TransactionSourceSchema.optional(),
+});
+
+export const ReviewQueueQuerySchema = ReviewQueueFilterSchema.extend({
+  cursor: z.string().optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+});
+
 export const ReviewQueueResponseSchema = z.object({
   items: z.array(ReviewQueueItemSchema),
+  nextCursor: z.string().nullable(),
+  total: z.number().int(), // items matching the filter across all pages
+});
+
+// POST /transactions/review/confirm-all — confirms every filtered item with
+// its AI-suggested category; items with no suggestion or with a rent match
+// are skipped (rent linking stays an explicit per-item action).
+export const ConfirmAllReviewResponseSchema = z.object({
+  confirmed: z.number().int(),
+  skipped: z.number().int(),
+});
+
+// POST /transactions/review/dismiss-all
+export const DismissAllReviewResponseSchema = z.object({
+  dismissed: z.number().int(),
 });
 
 // POST /transactions/receipt — pre-fills the form, never saves.

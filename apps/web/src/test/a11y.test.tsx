@@ -393,6 +393,8 @@ const reviewQueue: ReviewQueueResponse = {
       rentMatch: null,
     },
   ],
+  nextCursor: null,
+  total: 2,
 };
 
 describe('review queue accessibility', () => {

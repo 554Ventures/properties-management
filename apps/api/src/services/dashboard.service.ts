@@ -178,6 +178,8 @@ export async function getActivity(accountId: string, limit: number): Promise<Act
     where: {
       accountId,
       id: { notIn: [...rentTxnIds] },
+      // Dismissed rows are denied imports — not portfolio activity.
+      status: { not: 'dismissed' },
       // Match the KPIs: the activity feed reflects the active portfolio.
       OR: [{ propertyId: null }, { property: { archivedAt: null } }],
     },

@@ -4,7 +4,13 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import FormData from 'form-data';
-import { ReceiptScanResponseSchema, ReviewQueueResponseSchema, TransactionSchema } from '@hearth/shared';
+import {
+  ConfirmAllReviewResponseSchema,
+  DismissAllReviewResponseSchema,
+  ReceiptScanResponseSchema,
+  ReviewQueueResponseSchema,
+  TransactionSchema,
+} from '@hearth/shared';
 import { OKAFOR_NAME, OKAFOR_RENT_CENTS } from '../../prisma/seed-constants';
 import { buildApp } from '../app';
 import { addDays, currentPeriod, iso } from '../lib/dates';
@@ -449,6 +455,234 @@ describe('POST /transactions/receipt (mock mode)', () => {
     expect(res.statusCode).toBe(400);
     expect(res.json().error.code).toBe('bad_request');
     expect(res.json().error.message).toMatch(/JPEG, PNG, WebP, or GIF/);
+  });
+});
+
+// ── review queue: search / filters / paging / bulk actions ──────────────────
+// Every request here is scoped by a unique description marker so the seeded
+// queue rows (and the figures other test files pin) are never touched.
+
+async function createQueueRow(
+  accountId: string,
+  over: Partial<{
+    description: string;
+    vendor: string;
+    type: string;
+    source: string;
+    status: string;
+    amountCents: number;
+    aiSuggestedCategoryId: string | null;
+    aiConfidence: number;
+  }> = {},
+) {
+  const row = await prisma.transaction.create({
+    data: {
+      accountId,
+      date: new Date(),
+      amountCents: 1111,
+      type: 'expense',
+      description: 'ZZQUEUE TEST ROW',
+      source: 'bank',
+      status: 'pending_review',
+      ...over,
+    },
+  });
+  createdIds.push(row.id);
+  return row;
+}
+
+describe('GET /transactions/review — search, filters, and paging', () => {
+  beforeAll(async () => {
+    const accountId = await getDemoAccountId();
+    await createQueueRow(accountId, {
+      description: 'ZZQUEUE HARDWARE RUN',
+      vendor: 'Acme Plumbing Co',
+    });
+    await createQueueRow(accountId, {
+      description: 'ZZQUEUE CITY WATER',
+      source: 'receipt',
+      amountCents: 2222,
+    });
+    await createQueueRow(accountId, {
+      description: 'ZZQUEUE MYSTERY DEPOSIT',
+      type: 'income',
+      amountCents: 3333,
+    });
+  });
+
+  it('searches description and vendor case-insensitively and reports the filtered total', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/v1/transactions/review?q=zzqueue' });
+    expect(res.statusCode).toBe(200);
+    const queue = ReviewQueueResponseSchema.parse(res.json());
+    expect(queue.total).toBe(3);
+    expect(queue.items).toHaveLength(3);
+    expect(queue.nextCursor).toBeNull();
+
+    const byVendor = ReviewQueueResponseSchema.parse(
+      (await app.inject({ method: 'GET', url: '/api/v1/transactions/review?q=acme+plumbing' })).json(),
+    );
+    expect(byVendor.total).toBe(1);
+    expect(byVendor.items[0]?.description).toBe('ZZQUEUE HARDWARE RUN');
+  });
+
+  it('filters by type and source', async () => {
+    const income = ReviewQueueResponseSchema.parse(
+      (await app.inject({ method: 'GET', url: '/api/v1/transactions/review?q=zzqueue&type=income' })).json(),
+    );
+    expect(income.total).toBe(1);
+    expect(income.items[0]?.description).toBe('ZZQUEUE MYSTERY DEPOSIT');
+
+    const receipts = ReviewQueueResponseSchema.parse(
+      (await app.inject({ method: 'GET', url: '/api/v1/transactions/review?q=zzqueue&source=receipt' })).json(),
+    );
+    expect(receipts.total).toBe(1);
+    expect(receipts.items[0]?.description).toBe('ZZQUEUE CITY WATER');
+  });
+
+  it('pages with a cursor while total stays the full filtered count', async () => {
+    const first = ReviewQueueResponseSchema.parse(
+      (await app.inject({ method: 'GET', url: '/api/v1/transactions/review?q=zzqueue&limit=2' })).json(),
+    );
+    expect(first.items).toHaveLength(2);
+    expect(first.total).toBe(3);
+    expect(first.nextCursor).not.toBeNull();
+
+    const second = ReviewQueueResponseSchema.parse(
+      (
+        await app.inject({
+          method: 'GET',
+          url: `/api/v1/transactions/review?q=zzqueue&limit=2&cursor=${first.nextCursor}`,
+        })
+      ).json(),
+    );
+    expect(second.items).toHaveLength(1);
+    expect(second.nextCursor).toBeNull();
+    const ids = [...first.items, ...second.items].map((i) => i.id);
+    expect(new Set(ids).size).toBe(3); // no overlap across pages
+  });
+});
+
+describe('POST /transactions/review/confirm-all', () => {
+  let accountId: string;
+
+  beforeAll(async () => {
+    accountId = await getDemoAccountId();
+  });
+
+  afterAll(async () => {
+    await prisma.auditLog.deleteMany({ where: { accountId, entityId: { in: createdIds } } });
+  });
+
+  it('confirms suggested items, skips rent matches and unsuggested ones, audits as accepted suggestions', async () => {
+    const supplies = await prisma.category.findFirst({
+      where: { name: 'Supplies', isSystem: true },
+    });
+    const suggested = await createQueueRow(accountId, {
+      description: 'ZZBULK SUGGESTED SUPPLIES',
+      aiSuggestedCategoryId: supplies?.id ?? null,
+      aiConfidence: 0.84,
+    });
+    const unsuggested = await createQueueRow(accountId, { description: 'ZZBULK NO SUGGESTION' });
+    // Looks exactly like Okafor's open rent → carries a rent match → skipped.
+    const rentLike = await createQueueRow(accountId, {
+      description: 'ZZBULK ACH RENT DEPOSIT',
+      type: 'income',
+      amountCents: OKAFOR_RENT_CENTS,
+      aiSuggestedCategoryId: (
+        await prisma.category.findFirst({ where: { name: 'Rent', type: 'income' } })
+      )?.id,
+      aiConfidence: 0.8,
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/transactions/review/confirm-all',
+      payload: { q: 'ZZBULK' },
+    });
+    expect(res.statusCode).toBe(200);
+    const result = ConfirmAllReviewResponseSchema.parse(res.json());
+    expect(result).toEqual({ confirmed: 1, skipped: 2 });
+
+    const confirmedRow = await prisma.transaction.findUniqueOrThrow({
+      where: { id: suggested.id },
+    });
+    expect(confirmedRow.status).toBe('confirmed');
+    expect(confirmedRow.categoryId).toBe(supplies?.id);
+    const audit = await prisma.auditLog.findFirst({
+      where: { accountId, action: 'transaction.confirmed', entityId: suggested.id },
+    });
+    expect(audit?.actor).toBe('ai_suggested_user_confirmed');
+
+    // Skipped rows stay pending; the rent payment is untouched.
+    for (const id of [unsuggested.id, rentLike.id]) {
+      const row = await prisma.transaction.findUniqueOrThrow({ where: { id } });
+      expect(row.status).toBe('pending_review');
+    }
+    const payment = await okaforPayment();
+    expect(payment.status).toBe('due');
+  });
+});
+
+describe('POST /transactions/:id/dismiss and /review/dismiss-all', () => {
+  let accountId: string;
+
+  beforeAll(async () => {
+    accountId = await getDemoAccountId();
+  });
+
+  afterAll(async () => {
+    await prisma.auditLog.deleteMany({ where: { accountId, entityId: { in: createdIds } } });
+  });
+
+  it('dismisses a pending item, audits it, and drops it from the queue without deleting it', async () => {
+    const row = await createQueueRow(accountId, { description: 'ZZDISMISS ONE' });
+
+    const res = await app.inject({ method: 'POST', url: `/api/v1/transactions/${row.id}/dismiss` });
+    expect(res.statusCode).toBe(200);
+    const dismissed = TransactionSchema.parse(res.json());
+    expect(dismissed.status).toBe('dismissed');
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { accountId, action: 'transaction.dismissed', entityId: row.id },
+    });
+    expect(audit?.actor).toBe('user');
+
+    const queue = ReviewQueueResponseSchema.parse(
+      (await app.inject({ method: 'GET', url: '/api/v1/transactions/review?q=zzdismiss+one' })).json(),
+    );
+    expect(queue.total).toBe(0);
+    expect(await prisma.transaction.findUnique({ where: { id: row.id } })).not.toBeNull();
+  });
+
+  it('rejects dismissing an already-dismissed (non-pending) transaction', async () => {
+    const row = await createQueueRow(accountId, {
+      description: 'ZZDISMISS TWICE',
+      status: 'dismissed',
+    });
+    const res = await app.inject({ method: 'POST', url: `/api/v1/transactions/${row.id}/dismiss` });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toMatch(/pending-review/);
+  });
+
+  it('dismiss-all dismisses exactly the filtered set', async () => {
+    const a = await createQueueRow(accountId, { description: 'ZZDISMISSALL A' });
+    const b = await createQueueRow(accountId, { description: 'ZZDISMISSALL B', type: 'income' });
+    const outside = await createQueueRow(accountId, { description: 'ZZKEEP OUTSIDE FILTER' });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/transactions/review/dismiss-all',
+      payload: { q: 'ZZDISMISSALL' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(DismissAllReviewResponseSchema.parse(res.json())).toEqual({ dismissed: 2 });
+
+    for (const id of [a.id, b.id]) {
+      const row = await prisma.transaction.findUniqueOrThrow({ where: { id } });
+      expect(row.status).toBe('dismissed');
+    }
+    const untouched = await prisma.transaction.findUniqueOrThrow({ where: { id: outside.id } });
+    expect(untouched.status).toBe('pending_review');
   });
 });
 

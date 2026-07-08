@@ -1,9 +1,13 @@
 import type {
+  ConfirmAllReviewResponse,
   ConfirmTransactionInput,
   CreateTransactionInput,
+  DismissAllReviewResponse,
   ImportTransactionsResponse,
   ReceiptScanResponse,
   RentMatchSuggestion,
+  ReviewQueueFilter,
+  ReviewQueueQuery,
   ReviewQueueResponse,
   Transaction,
   TransactionListQuery,
@@ -239,22 +243,59 @@ export async function remove(
 
 // ── review queue / confirm ───────────────────────────────────────────────────
 
-export async function getReviewQueue(accountId: string): Promise<ReviewQueueResponse> {
-  const rows = await prisma.transaction.findMany({
-    where: { accountId, status: 'pending_review' },
-    orderBy: [{ date: 'desc' }, { id: 'desc' }],
-  });
+const DEFAULT_REVIEW_LIMIT = 20;
+
+function reviewWhere(accountId: string, filter: ReviewQueueFilter): Prisma.TransactionWhereInput {
+  return {
+    accountId,
+    status: 'pending_review',
+    ...(filter.propertyId ? { propertyId: filter.propertyId } : {}),
+    ...(filter.type ? { type: filter.type } : {}),
+    ...(filter.source ? { source: filter.source } : {}),
+    ...(filter.q
+      ? {
+          OR: [
+            { description: { contains: filter.q, mode: 'insensitive' } },
+            { vendor: { contains: filter.q, mode: 'insensitive' } },
+          ],
+        }
+      : {}),
+  };
+}
+
+export async function getReviewQueue(
+  accountId: string,
+  query: ReviewQueueQuery = {},
+): Promise<ReviewQueueResponse> {
+  const limit = query.limit ?? DEFAULT_REVIEW_LIMIT;
+  const where = reviewWhere(accountId, query);
+  const [rows, total] = await Promise.all([
+    prisma.transaction.findMany({
+      where,
+      orderBy: [{ date: 'desc' }, { id: 'desc' }],
+      take: limit + 1,
+      ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
+    }),
+    prisma.transaction.count({ where }),
+  ]);
+  const hasMore = rows.length > limit;
+  const items = hasMore ? rows.slice(0, limit) : rows;
   const categories = await prisma.category.findMany();
   const nameById = new Map(categories.map((c) => [c.id, c.name]));
-  const rentMatches = await computeRentMatches(accountId, rows);
+  // Rent matches are computed for the returned page only — the bulk paths
+  // recompute over their own row set.
+  const rentMatches = await computeRentMatches(accountId, items);
+  const last = items[items.length - 1];
   return {
-    items: rows.map((r) => ({
+    items: items.map((r) => ({
       ...toApiTransaction(r),
       aiSuggestedCategoryName: r.aiSuggestedCategoryId
         ? (nameById.get(r.aiSuggestedCategoryId) ?? null)
         : null,
       rentMatch: rentMatches.get(r.id) ?? null,
     })),
+    nextCursor: hasMore && last ? last.id : null,
+    total,
   };
 }
 
@@ -424,6 +465,75 @@ async function confirmWithRentLink(
     },
   });
   return toApiTransaction(row);
+}
+
+// ── dismiss / bulk review actions ────────────────────────────────────────────
+
+/**
+ * Deny a pending-review item: keep the row (so bank-import dedup by externalId
+ * still holds and the audit trail stays intact) but mark it `dismissed`, which
+ * excludes it from reports/dashboards the same way `pending_review` is.
+ */
+export async function dismiss(
+  accountId: string,
+  id: string,
+  actor: AuditActor = 'user',
+): Promise<Transaction> {
+  const existing = await getOwned(accountId, id);
+  if (existing.status !== 'pending_review') {
+    throw new BadRequestError('only a pending-review transaction can be dismissed');
+  }
+  const row = await prisma.transaction.update({ where: { id }, data: { status: 'dismissed' } });
+  await writeAudit(accountId, {
+    actor,
+    action: 'transaction.dismissed',
+    entityType: 'transaction',
+    entityId: id,
+    detail: { amountCents: row.amountCents, type: row.type, source: row.source },
+  });
+  return toApiTransaction(row);
+}
+
+/**
+ * Confirm every filtered pending item with its AI-suggested category. Items
+ * with no suggestion are skipped (they'd land in reports uncategorized), and
+ * items with a rent match are skipped too — linking a deposit to a rent
+ * payment is an explicit per-item action, never applied in bulk.
+ */
+export async function confirmAllInReview(
+  accountId: string,
+  filter: ReviewQueueFilter = {},
+  actor: AuditActor = 'user',
+): Promise<ConfirmAllReviewResponse> {
+  const rows = await prisma.transaction.findMany({
+    where: reviewWhere(accountId, filter),
+    orderBy: [{ date: 'desc' }, { id: 'desc' }],
+  });
+  const rentMatches = await computeRentMatches(accountId, rows);
+  let confirmed = 0;
+  let skipped = 0;
+  for (const r of rows) {
+    if (!r.aiSuggestedCategoryId || rentMatches.has(r.id)) {
+      skipped += 1;
+      continue;
+    }
+    await confirm(accountId, r.id, {}, actor);
+    confirmed += 1;
+  }
+  return { confirmed, skipped };
+}
+
+export async function dismissAllInReview(
+  accountId: string,
+  filter: ReviewQueueFilter = {},
+  actor: AuditActor = 'user',
+): Promise<DismissAllReviewResponse> {
+  const rows = await prisma.transaction.findMany({
+    where: reviewWhere(accountId, filter),
+    select: { id: true },
+  });
+  for (const r of rows) await dismiss(accountId, r.id, actor);
+  return { dismissed: rows.length };
 }
 
 // ── receipt scan (pre-fills the form, never saves) ───────────────────────────

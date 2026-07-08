@@ -8,7 +8,10 @@ export type TransactionType = z.infer<typeof TransactionTypeSchema>;
 export const TransactionSourceSchema = z.enum(['manual', 'receipt', 'bank']);
 export type TransactionSource = z.infer<typeof TransactionSourceSchema>;
 
-export const TransactionStatusSchema = z.enum(['pending_review', 'confirmed']);
+// 'dismissed' = denied from the review queue: kept (so bank-import dedup by
+// externalId still holds) but excluded from reports/dashboards, which only
+// count 'confirmed' rows.
+export const TransactionStatusSchema = z.enum(['pending_review', 'confirmed', 'dismissed']);
 export type TransactionStatus = z.infer<typeof TransactionStatusSchema>;
 
 export const RentPaymentStatusSchema = z.enum(['due', 'processing', 'paid', 'failed']);

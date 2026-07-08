@@ -1,6 +1,8 @@
 import {
   ConfirmTransactionInputSchema,
   CreateTransactionInputSchema,
+  ReviewQueueFilterSchema,
+  ReviewQueueQuerySchema,
   TransactionListQuerySchema,
   UpdateTransactionInputSchema,
 } from '@hearth/shared';
@@ -39,7 +41,25 @@ export async function transactionsRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // Static routes before the parameterized ones.
-  app.get('/transactions/review', async (req) => transactionService.getReviewQueue(req.accountId));
+  app.get('/transactions/review', async (req) => {
+    const q = parseQuery(
+      ReviewQueueQuerySchema,
+      coerceNumbers(req.query as Record<string, unknown>, ['limit']),
+    );
+    return transactionService.getReviewQueue(req.accountId, q);
+  });
+
+  // Bulk actions take the same filter shape the queue was loaded with, so
+  // "confirm all"/"dismiss all" apply to exactly the set the user is viewing.
+  app.post('/transactions/review/confirm-all', async (req) => {
+    const filter = parseBody(ReviewQueueFilterSchema, req.body ?? {});
+    return transactionService.confirmAllInReview(req.accountId, filter);
+  });
+
+  app.post('/transactions/review/dismiss-all', async (req) => {
+    const filter = parseBody(ReviewQueueFilterSchema, req.body ?? {});
+    return transactionService.dismissAllInReview(req.accountId, filter);
+  });
 
   app.post('/transactions/receipt', { config: receiptScanLimit() }, async (req) => {
     const file = await req.file();
@@ -72,4 +92,8 @@ export async function transactionsRoutes(app: FastifyInstance): Promise<void> {
     const input = parseBody(ConfirmTransactionInputSchema, req.body);
     return transactionService.confirm(req.accountId, req.params.id, input);
   });
+
+  app.post<{ Params: { id: string } }>('/transactions/:id/dismiss', async (req) =>
+    transactionService.dismiss(req.accountId, req.params.id),
+  );
 }
