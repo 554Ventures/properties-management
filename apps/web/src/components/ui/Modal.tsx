@@ -23,7 +23,7 @@ export function Modal({ open, onClose, title, children, footer, size = 'md' }: M
   if (!open) return null;
 
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 flex w-[100dvw] items-center justify-center p-4">
       <div
         className="fixed inset-0 bg-black/40 transition-opacity duration-fast"
         onClick={onClose}

@@ -104,7 +104,7 @@ export function TenantsList() {
                 <Th align="right">Rent / mo</Th>
                 <Th>Lease ends</Th>
                 <Th>Status</Th>
-                <Th>
+                <Th stickyRight>
                   <span className="sr-only">Actions</span>
                 </Th>
               </tr>
@@ -147,7 +147,7 @@ export function TenantsList() {
                         <StatusBadge tone="positive">Current</StatusBadge>
                       )}
                     </Td>
-                    <Td>
+                    <Td stickyRight>
                       {row.status === 'late' && late && (
                         <Button
                           variant="secondary"

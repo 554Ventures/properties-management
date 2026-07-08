@@ -57,7 +57,7 @@ export function Money() {
     [properties.data],
   );
 
-  const pendingCount = review.data?.items.length ?? 0;
+  const pendingCount = review.data?.pages[0]?.total ?? 0;
 
   return (
     <div className="flex flex-col gap-6">
@@ -164,6 +164,7 @@ export function Money() {
               <option value="">Any status</option>
               <option value="confirmed">Confirmed</option>
               <option value="pending_review">Needs review</option>
+              <option value="dismissed">Dismissed</option>
             </Select>
           </div>
         </div>
@@ -200,7 +201,7 @@ export function Money() {
                 <Th>Category</Th>
                 <Th align="right">Amount</Th>
                 <Th>Status</Th>
-                <Th>
+                <Th stickyRight>
                   <span className="sr-only">Actions</span>
                 </Th>
               </tr>
@@ -229,11 +230,13 @@ export function Money() {
                   <Td>
                     {txn.status === 'confirmed' ? (
                       <StatusBadge tone="positive">Confirmed</StatusBadge>
+                    ) : txn.status === 'dismissed' ? (
+                      <StatusBadge tone="neutral">Dismissed</StatusBadge>
                     ) : (
                       <StatusBadge tone="warning">Needs review</StatusBadge>
                     )}
                   </Td>
-                  <Td>
+                  <Td stickyRight>
                     <Button variant="ghost" onClick={() => setEditing(txn)}>
                       Edit
                       <span className="sr-only"> “{txn.description}”</span>

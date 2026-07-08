@@ -91,7 +91,7 @@ export function PropertiesList() {
                 <Th>Occupancy</Th>
                 <Th align="right">Rent / mo</Th>
                 <Th>Status</Th>
-                <Th align="right">
+                <Th align="right" stickyRight>
                   <span className="sr-only">Actions</span>
                 </Th>
               </tr>
@@ -121,7 +121,7 @@ export function PropertiesList() {
                       {property.statusLabel}
                     </StatusBadge>
                   </Td>
-                  <Td align="right">
+                  <Td align="right" stickyRight>
                     <div className="flex justify-end gap-1">
                       <Button variant="ghost" size="sm" onClick={() => setEditing(property)}>
                         Edit

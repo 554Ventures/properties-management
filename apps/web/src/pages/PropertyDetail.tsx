@@ -237,7 +237,7 @@ export function PropertyDetail() {
                 <Th align="right">Rent / mo</Th>
                 <Th>Lease ends</Th>
                 <Th>Status</Th>
-                <Th align="right">
+                <Th align="right" stickyRight>
                   <span className="sr-only">Actions</span>
                 </Th>
               </tr>
@@ -276,7 +276,7 @@ export function PropertyDetail() {
                         <StatusBadge tone="warning">Vacant</StatusBadge>
                       )}
                     </Td>
-                    <Td align="right">
+                    <Td align="right" stickyRight>
                       <div className="flex flex-wrap justify-end gap-1">
                         {unit.archivedAt ? (
                           <Button

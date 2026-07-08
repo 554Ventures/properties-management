@@ -223,7 +223,7 @@ export function RentTracker() {
                     <Th>Due</Th>
                     <Th>Status</Th>
                     <Th>Paid</Th>
-                    <Th>
+                    <Th stickyRight>
                       <span className="sr-only">Actions</span>
                     </Th>
                   </tr>
@@ -259,7 +259,7 @@ export function RentTracker() {
                             '—'
                           )}
                         </Td>
-                        <Td>
+                        <Td stickyRight>
                           <div className="flex justify-end gap-2">
                             {row.status === 'late' && (
                               <Button

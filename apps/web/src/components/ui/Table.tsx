@@ -30,15 +30,27 @@ type Align = 'left' | 'right';
 
 export interface ThProps extends ThHTMLAttributes<HTMLTableCellElement> {
   align?: Align;
+  /** Pins the column to the right edge of the scroll area — for a trailing
+   * actions column so it stays reachable without scrolling through every
+   * other column on narrow viewports. */
+  stickyRight?: boolean;
 }
 
-export function Th({ align = 'left', className, children, scope = 'col', ...rest }: ThProps) {
+export function Th({
+  align = 'left',
+  stickyRight = false,
+  className,
+  children,
+  scope = 'col',
+  ...rest
+}: ThProps) {
   return (
     <th
       scope={scope}
       className={cx(
         'border-b border-border px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-ink-muted',
         align === 'right' ? 'text-right' : 'text-left',
+        stickyRight && 'sticky right-0 bg-surface shadow-[-8px_0_8px_-8px_rgb(27_23_20_/_0.08)]',
         className,
       )}
       {...rest}
@@ -50,14 +62,17 @@ export function Th({ align = 'left', className, children, scope = 'col', ...rest
 
 export interface TdProps extends TdHTMLAttributes<HTMLTableCellElement> {
   align?: Align;
+  /** See Th.stickyRight — keep the two in sync on the same column. */
+  stickyRight?: boolean;
 }
 
-export function Td({ align = 'left', className, children, ...rest }: TdProps) {
+export function Td({ align = 'left', stickyRight = false, className, children, ...rest }: TdProps) {
   return (
     <td
       className={cx(
         'px-4 py-3 align-top text-ink',
         align === 'right' ? 'text-right tabular-nums' : 'text-left',
+        stickyRight && 'sticky right-0 bg-surface shadow-[-8px_0_8px_-8px_rgb(27_23_20_/_0.08)]',
         className,
       )}
       {...rest}

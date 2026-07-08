@@ -3,11 +3,18 @@
 @tailwind utilities;
 
 @layer base {
+  /* Belt-and-suspenders: any element that's momentarily or accidentally wider
+     than the viewport (a wide table, an unwrapped toolbar) must never expand
+     the page itself into horizontal scroll on mobile — clip at the root.
+     Elements with their own overflow-x: auto (Table, drawers) still scroll
+     locally since they establish an independent scrolling context. */
   html {
     font-family: var(--font-sans);
+    overflow-x: hidden;
   }
 
   body {
+    overflow-x: hidden;
     @apply bg-app text-ink antialiased;
   }
 
