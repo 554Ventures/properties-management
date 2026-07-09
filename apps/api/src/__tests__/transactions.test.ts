@@ -5,8 +5,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import FormData from 'form-data';
 import {
+  ApiErrorSchema,
   ConfirmAllReviewResponseSchema,
   DismissAllReviewResponseSchema,
+  ImportTransactionsResponseSchema,
   ReceiptScanResponseSchema,
   ReviewQueueResponseSchema,
   TransactionListResponseSchema,
@@ -17,6 +19,7 @@ import { buildApp } from '../app';
 import { addDays, currentPeriod, iso } from '../lib/dates';
 import { prisma } from '../lib/prisma';
 import { getDemoAccountId } from '../plugins/auth';
+import { exchangePublicToken } from '../services/integration.service';
 import { pickRentMatch, type RentMatchCandidate } from '../services/rent.service';
 
 let app: FastifyInstance;
@@ -834,5 +837,53 @@ describe('POST /transactions/:id/confirm with property/unit attribution', () => 
     expect(confirmed.propertyId).toBe(unit.propertyId);
     expect(confirmed.unitId).toBe(unit.id);
     expect(confirmed.categoryId).toBe(supplies?.id);
+  });
+});
+
+describe('POST /transactions/import', () => {
+  it('parses the shared schema on 200 and returns the rate-limit envelope on 429', async () => {
+    const accountId = await getDemoAccountId();
+    // The seeded demo Plaid row is status 'mock'; capture it so every field
+    // this test mutates (status, config, lastSyncedAt) is restored verbatim.
+    const originalPlaid = await prisma.integration.findFirstOrThrow({
+      where: { accountId, type: 'plaid' },
+    });
+
+    try {
+      const first = await app.inject({ method: 'POST', url: '/api/v1/transactions/import' });
+      expect(first.statusCode).toBe(200);
+      expect(ImportTransactionsResponseSchema.parse(first.json())).toEqual({
+        imported: 4,
+        skipped: 0,
+        updated: 0,
+        removed: 0,
+      });
+
+      // Connect the row so the cooldown has a connected Plaid item (plus the
+      // lastSyncedAt just stamped by the import above) to gate on.
+      await exchangePublicToken(accountId, 'mock-public-token');
+      process.env.HEARTH_IMPORT_COOLDOWN_MINUTES = '60';
+
+      const second = await app.inject({ method: 'POST', url: '/api/v1/transactions/import' });
+      expect(second.statusCode).toBe(429);
+      const body = ApiErrorSchema.parse(second.json());
+      expect(body.error.code).toBe('import_rate_limited');
+      expect(body.error.detail?.nextAllowedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    } finally {
+      delete process.env.HEARTH_IMPORT_COOLDOWN_MINUTES;
+      await prisma.integration.update({
+        where: { id: originalPlaid.id },
+        data: {
+          status: originalPlaid.status,
+          externalRef: originalPlaid.externalRef,
+          configJson: originalPlaid.configJson,
+          lastSyncedAt: originalPlaid.lastSyncedAt,
+        },
+      });
+      // Keep the seeded ledger pristine for the pinned-figure tests.
+      await prisma.transaction.deleteMany({
+        where: { accountId, externalId: { startsWith: 'plaid_mock_' } },
+      });
+    }
   });
 });

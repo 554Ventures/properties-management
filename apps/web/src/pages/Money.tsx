@@ -5,6 +5,7 @@
 import { useMemo, useState } from 'react';
 import { formatUsd } from '@hearth/shared';
 import type {
+  ImportTransactionsResponse,
   Transaction,
   TransactionListQuery,
   TransactionSortField,
@@ -39,7 +40,7 @@ import { StatusBadge } from '../components/ui/StatusBadge';
 import { useToast } from '../components/ui/Toast';
 import { IconDollar, IconDownload, IconPlus } from '../components/ui/icons';
 import { cx } from '../lib/cx';
-import { formatDate } from '../lib/format';
+import { formatDate, formatDateTime } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
 
 const PAGE_SIZE = 20;
@@ -61,6 +62,37 @@ const STATUS_OPTIONS = [
   { value: 'pending_review', label: 'Needs review' },
   { value: 'dismissed', label: 'Dismissed' },
 ];
+
+/** Toast copy for a bank-import result. Exported for tests. */
+export function importToastMessage(
+  res: ImportTransactionsResponse,
+  plaidConnected: boolean,
+): { message: string; tone: 'positive' | 'neutral' } {
+  const s = (n: number) => (n === 1 ? '' : 's');
+  const parts: string[] = [];
+  if (res.imported > 0) {
+    parts.push(`Imported ${res.imported} new bank transaction${s(res.imported)} into the review queue.`);
+  }
+  if (res.updated > 0) {
+    parts.push(`Updated ${res.updated} pending transaction${s(res.updated)} with bank corrections.`);
+  }
+  if (res.removed > 0) {
+    parts.push(`Removed ${res.removed} transaction${s(res.removed)} voided by the bank.`);
+  }
+  if (parts.length > 0) return { message: parts.join(' '), tone: 'positive' };
+  if (res.skipped > 0) {
+    return {
+      message: `Already up to date — ${res.skipped} previously imported transaction${s(res.skipped)} unchanged.`,
+      tone: 'neutral',
+    };
+  }
+  return {
+    message: plaidConnected
+      ? 'No new transactions yet — bank sync can take a minute after connecting. Try again shortly.'
+      : 'No new bank transactions to import.',
+    tone: 'neutral',
+  };
+}
 
 // The single selected value of a select filter (server params are single-value).
 function selected(filters: Record<string, FilterValue>, id: string): string | undefined {
@@ -125,6 +157,14 @@ export function Money() {
   );
 
   const pendingCount = review.data?.pages[0]?.total ?? 0;
+
+  const plaid = integrations.data?.find((i) => i.type === 'plaid');
+  // Server-driven cooldown: set from an import_rate_limited (429) response.
+  // The server stays the authority — mock/demo mode has no cooldown, so the
+  // button is never disabled preemptively.
+  const [nextImportAt, setNextImportAt] = useState<string | null>(null);
+  const importCoolingDown =
+    nextImportAt !== null && new Date(nextImportAt).getTime() > Date.now();
 
   const columns: DataTableColumn<Transaction>[] = [
     {
@@ -231,32 +271,38 @@ export function Money() {
         breadcrumbs={[{ label: 'Dashboard', to: '/' }, { label: 'Money' }]}
         actions={
           <>
+            {plaid?.lastSyncedAt && (
+              <span className="self-center text-xs text-ink-muted">
+                Last imported {formatDateTime(plaid.lastSyncedAt)}
+              </span>
+            )}
             <Button
               variant="ghost"
               busy={importBank.isPending}
+              disabled={importCoolingDown}
               onClick={() =>
                 importBank.mutate(undefined, {
                   onSuccess: (res) => {
-                    if (res.imported > 0) {
-                      toast(
-                        `Imported ${res.imported} bank transactions into the review queue.`,
-                        'positive',
-                      );
-                      return;
-                    }
-                    const plaidConnected = integrations.data?.some(
-                      (i) => i.type === 'plaid' && i.status === 'connected',
+                    const { message, tone } = importToastMessage(
+                      res,
+                      plaid?.status === 'connected',
                     );
-                    toast(
-                      plaidConnected
-                        ? 'No new transactions yet — bank sync can take a minute after connecting. Try again shortly.'
-                        : 'No new bank transactions to import.',
-                      'neutral',
-                    );
+                    toast(message, tone);
                   },
                   onError: (err) => {
                     if (err instanceof ApiClientError && err.code === 'plaid_not_connected') {
                       toast('Connect a bank account in Settings first.', 'danger');
+                      return;
+                    }
+                    if (err instanceof ApiClientError && err.code === 'import_rate_limited') {
+                      const nextAllowedAt = err.detail?.nextAllowedAt;
+                      if (nextAllowedAt) setNextImportAt(nextAllowedAt);
+                      toast(
+                        nextAllowedAt
+                          ? `Bank already imported recently — next import available at ${formatDateTime(nextAllowedAt)}.`
+                          : 'Bank already imported recently — try again later.',
+                        'neutral',
+                      );
                       return;
                     }
                     toast('Bank import failed. Try again.', 'danger');

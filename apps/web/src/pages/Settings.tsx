@@ -22,6 +22,7 @@ import { Select } from '../components/ui/Select';
 import { Skeleton } from '../components/ui/Skeleton';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { useToast } from '../components/ui/Toast';
+import { formatDateTime } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
 import { useAuth } from '../state/auth';
 
@@ -297,6 +298,11 @@ function PlaidIntegrationRow({ row }: { row: IntegrationRowInput }) {
         <div className="mt-1">
           <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge>
         </div>
+        {'id' in row && row.lastSyncedAt && (
+          <p className="mt-1 text-xs text-ink-muted">
+            Last imported {formatDateTime(row.lastSyncedAt)}
+          </p>
+        )}
       </div>
       {isConnectedIntegration(row) ? (
         <Button

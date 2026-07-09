@@ -307,9 +307,10 @@ model Integration {
   name        String
   status      String // IntegrationStatus (@hearth/shared): connected | disconnected | mock
   externalRef String?
-  scopesJson  String   @default("[]")
-  configJson  String   @default("{}") // provider-specific config, e.g. Plaid { accessTokenEncrypted, itemId, cursor }
-  createdAt   DateTime @default(now())
+  scopesJson  String    @default("[]")
+  configJson  String    @default("{}") // provider-specific config, e.g. Plaid { accessTokenEncrypted, itemId, cursor }
+  lastSyncedAt DateTime? // plaid: last transaction import (display + import cooldown)
+  createdAt   DateTime  @default(now())
 
   account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
 

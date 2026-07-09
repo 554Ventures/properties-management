@@ -49,14 +49,64 @@ describe('Plaid connect flow (mock mode)', () => {
     expect(JSON.parse(row.configJson)).toMatchObject({ itemId: 'mock_item_id', cursor: null });
   });
 
-  it('importFromBank imports the mock batch once, then dedupes on repeat calls', async () => {
-    // 3 expenses + 1 income (the rent-match demo fixture). This account has no
-    // leases, which also proves the review-queue rent matcher no-ops safely.
+  it('importFromBank walks the mock cursor script: import, then modified+removed, then steady state', async () => {
+    // First sync (cursor null): 3 expenses + 1 income (the rent-match demo
+    // fixture). This account has no leases, which also proves the
+    // review-queue rent matcher no-ops safely.
     const first = await importFromBank(accountId);
-    expect(first.imported).toBe(4);
+    expect(first).toEqual({ imported: 4, skipped: 0, updated: 0, removed: 0 });
 
+    // Second sync (cursor mock_cursor_1): the pending Sherwin-Williams charge
+    // posts at a settled amount; the Lowe's pending auth is voided.
     const second = await importFromBank(accountId);
-    expect(second.imported).toBe(0);
+    expect(second).toEqual({ imported: 0, skipped: 0, updated: 1, removed: 1 });
+
+    const sherwin = await prisma.transaction.findFirstOrThrow({
+      where: { accountId, externalId: 'plaid_mock_1' },
+    });
+    expect(sherwin).toMatchObject({
+      description: 'SHERWIN WILLIAMS #7012 — POSTED',
+      amountCents: 9310,
+      status: 'pending_review',
+    });
+    expect(
+      await prisma.transaction.findFirst({ where: { accountId, externalId: 'plaid_mock_3' } }),
+    ).toBeNull();
+    expect(
+      await prisma.transaction.findFirst({ where: { accountId, externalId: 'plaid_mock_4' } }),
+    ).not.toBeNull();
+
+    // Machine edits are system-attributed with a reason in the audit trail.
+    const audits = await prisma.auditLog.findMany({
+      where: { accountId, action: { in: ['transaction.updated', 'transaction.deleted'] } },
+    });
+    expect(
+      audits.map((a) => ({
+        actor: a.actor,
+        action: a.action,
+        reason: (JSON.parse(a.detailJson!) as { reason?: string }).reason,
+      })),
+    ).toEqual(
+      expect.arrayContaining([
+        { actor: 'system', action: 'transaction.updated', reason: 'plaid_modified' },
+        { actor: 'system', action: 'transaction.deleted', reason: 'plaid_removed' },
+      ]),
+    );
+
+    // Cursor advanced to the steady state and lastSyncedAt was stamped.
+    const row = await prisma.integration.findFirstOrThrow({
+      where: { accountId, type: 'plaid' },
+    });
+    expect((JSON.parse(row.configJson) as { cursor: string }).cursor).toBe('mock_cursor_2');
+    expect(row.lastSyncedAt).not.toBeNull();
+
+    // Third sync: nothing left to deliver.
+    const third = await importFromBank(accountId);
+    expect(third).toEqual({ imported: 0, skipped: 0, updated: 0, removed: 0 });
+
+    // lastSyncedAt round-trips as an ISO string through the shared contract.
+    const listed = IntegrationListResponseSchema.parse(await integrationService.list(accountId));
+    expect(listed.find((i) => i.type === 'plaid')!.lastSyncedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
   it('disconnect clears configJson back to {}', async () => {
@@ -74,6 +124,100 @@ describe('Plaid connect flow (mock mode)', () => {
     await expect(integrationService.connectMock(accountId, 'plaid')).rejects.toThrow(
       /link-token/,
     );
+  });
+});
+
+describe('importFromBank without a Plaid row (stateless mock fallback)', () => {
+  it('replays the initial batch and dedup-skips on repeat calls', async () => {
+    const account = await prisma.account.create({
+      data: { name: 'Plaid Stateless', email: 'plaid-stateless@integrationtest.example' },
+    });
+    const first = await importFromBank(account.id);
+    expect(first).toEqual({ imported: 4, skipped: 0, updated: 0, removed: 0 });
+
+    // No Integration row → no cursor persisted → the mock replays the same
+    // batch; every id dedups against the unique (accountId, externalId).
+    const second = await importFromBank(account.id);
+    expect(second).toEqual({ imported: 0, skipped: 4, updated: 0, removed: 0 });
+    expect(await prisma.transaction.count({ where: { accountId: account.id } })).toBe(4);
+  });
+
+  it('concurrent imports never double-write — unique races count as skipped', async () => {
+    const account = await prisma.account.create({
+      data: { name: 'Plaid Concurrent', email: 'plaid-concurrent@integrationtest.example' },
+    });
+    const [a, b] = await Promise.all([importFromBank(account.id), importFromBank(account.id)]);
+    expect(a.imported + b.imported).toBe(4);
+    expect(a.skipped + b.skipped).toBe(4);
+    expect(await prisma.transaction.count({ where: { accountId: account.id } })).toBe(4);
+  });
+});
+
+describe('importFromBank never rewrites user-vouched rows', () => {
+  it('leaves confirmed rows untouched by Plaid modified/removed', async () => {
+    const account = await prisma.account.create({
+      data: { name: 'Plaid Confirmed Guard', email: 'plaid-confirmed@integrationtest.example' },
+    });
+    await integrationService.exchangePublicToken(account.id, 'mock-public-token');
+    await importFromBank(account.id); // batch in, cursor → mock_cursor_1
+
+    // The user confirms exactly the two rows the next sync would touch.
+    await prisma.transaction.updateMany({
+      where: { accountId: account.id, externalId: { in: ['plaid_mock_1', 'plaid_mock_3'] } },
+      data: { status: 'confirmed' },
+    });
+
+    const second = await importFromBank(account.id);
+    expect(second).toEqual({ imported: 0, skipped: 0, updated: 0, removed: 0 });
+
+    const sherwin = await prisma.transaction.findFirstOrThrow({
+      where: { accountId: account.id, externalId: 'plaid_mock_1' },
+    });
+    expect(sherwin).toMatchObject({
+      description: 'SHERWIN WILLIAMS #7012', // NOT the posted rewrite
+      amountCents: 9250,
+      status: 'confirmed',
+    });
+    const lowes = await prisma.transaction.findFirstOrThrow({
+      where: { accountId: account.id, externalId: 'plaid_mock_3' },
+    });
+    expect(lowes.status).toBe('confirmed'); // not deleted
+  });
+});
+
+describe('import cooldown (HEARTH_IMPORT_COOLDOWN_MINUTES)', () => {
+  it('rejects a second import inside the window, then allows it once the window passes', async () => {
+    const account = await prisma.account.create({
+      data: { name: 'Plaid Cooldown', email: 'plaid-cooldown@integrationtest.example' },
+    });
+    await integrationService.exchangePublicToken(account.id, 'mock-public-token');
+
+    process.env.HEARTH_IMPORT_COOLDOWN_MINUTES = '60';
+    try {
+      await importFromBank(account.id);
+
+      const before = Date.now();
+      const err: unknown = await importFromBank(account.id).catch((e: unknown) => e);
+      expect(err).toMatchObject({ code: 'import_rate_limited', statusCode: 429 });
+      const nextAllowedAt = new Date(
+        (err as { detail: { nextAllowedAt: string } }).detail.nextAllowedAt,
+      ).getTime();
+      expect(nextAllowedAt).toBeGreaterThan(before);
+      expect(nextAllowedAt).toBeLessThanOrEqual(before + 61 * 60_000);
+
+      // Rewind the stamp past the window — the guard lifts and the next
+      // cursor page (modified + removed) comes through.
+      await prisma.integration.updateMany({
+        where: { accountId: account.id, type: 'plaid' },
+        data: { lastSyncedAt: new Date(Date.now() - 61 * 60_000) },
+      });
+      await expect(importFromBank(account.id)).resolves.toMatchObject({
+        updated: 1,
+        removed: 1,
+      });
+    } finally {
+      delete process.env.HEARTH_IMPORT_COOLDOWN_MINUTES;
+    }
   });
 });
 

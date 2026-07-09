@@ -151,7 +151,10 @@ export const ReceiptScanResponseSchema = z.object({
   confidence: z.number().min(0).max(1),
 });
 
-// POST /transactions/import — mock Plaid pull into the review queue.
+// POST /transactions/import — Plaid pull into the review queue.
 export const ImportTransactionsResponseSchema = z.object({
-  imported: z.number().int(),
+  imported: z.number().int(), // new pending_review rows created
+  skipped: z.number().int(), // redelivered ids already present (incl. insert races)
+  updated: z.number().int(), // Plaid `modified` applied to still-pending rows
+  removed: z.number().int(), // Plaid `removed` deleted from still-pending rows
 });

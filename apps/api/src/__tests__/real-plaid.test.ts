@@ -80,8 +80,8 @@ describe('real Plaid adapter', () => {
       },
     });
     const adapter = createRealPlaidAdapter();
-    const { transactions } = await adapter.syncTransactions('access-xyz', null);
-    expect(transactions).toEqual([
+    const { added } = await adapter.syncTransactions('access-xyz', null);
+    expect(added).toEqual([
       {
         externalId: 't1',
         date: new Date('2026-07-01'),
@@ -112,8 +112,8 @@ describe('real Plaid adapter', () => {
       },
     });
     const adapter = createRealPlaidAdapter();
-    const { transactions } = await adapter.syncTransactions('access-xyz', null);
-    expect(transactions[0]).toMatchObject({ amountCents: 120000, type: 'income', vendor: null });
+    const { added } = await adapter.syncTransactions('access-xyz', null);
+    expect(added[0]).toMatchObject({ amountCents: 120000, type: 'income', vendor: null });
   });
 
   it('loops through has_more pages and returns only the final cursor', async () => {
@@ -147,7 +147,46 @@ describe('real Plaid adapter', () => {
       2,
       expect.objectContaining({ cursor: 'cursor-page-1' }),
     );
-    expect(result.transactions.map((t) => t.externalId)).toEqual(['p1', 'p2']);
+    expect(result.added.map((t) => t.externalId)).toEqual(['p1', 'p2']);
+    expect(result.nextCursor).toBe('cursor-page-2');
+  });
+
+  it('maps modified and removed, accumulating across has_more pages', async () => {
+    transactionsSync
+      .mockResolvedValueOnce({
+        data: {
+          added: [],
+          modified: [
+            { transaction_id: 'm1', date: '2026-07-03', name: 'POSTED CHARGE', merchant_name: 'Store', amount: 10 },
+          ],
+          removed: [{ transaction_id: 'r1' }],
+          next_cursor: 'cursor-page-1',
+          has_more: true,
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          added: [],
+          modified: [],
+          removed: [{ transaction_id: 'r2' }],
+          next_cursor: 'cursor-page-2',
+          has_more: false,
+        },
+      });
+    const adapter = createRealPlaidAdapter();
+    const result = await adapter.syncTransactions('access-xyz', 'cursor-0');
+    expect(result.added).toEqual([]);
+    expect(result.modified).toEqual([
+      {
+        externalId: 'm1',
+        date: new Date('2026-07-03'),
+        description: 'POSTED CHARGE',
+        vendor: 'Store',
+        amountCents: 1000,
+        type: 'expense',
+      },
+    ]);
+    expect(result.removed).toEqual(['r1', 'r2']);
     expect(result.nextCursor).toBe('cursor-page-2');
   });
 

@@ -66,7 +66,9 @@ export function createRealPlaidAdapter(): PlaidAdapter {
     },
 
     async syncTransactions(accessToken, cursor) {
-      const transactions: PlaidBankTransaction[] = [];
+      const added: PlaidBankTransaction[] = [];
+      const modified: PlaidBankTransaction[] = [];
+      const removed: string[] = [];
       let nextCursor = cursor ?? undefined;
       let hasMore = true;
       while (hasMore) {
@@ -74,11 +76,13 @@ export function createRealPlaidAdapter(): PlaidAdapter {
           access_token: accessToken,
           cursor: nextCursor,
         });
-        transactions.push(...res.data.added.map(toBankTransaction));
+        added.push(...res.data.added.map(toBankTransaction));
+        modified.push(...res.data.modified.map(toBankTransaction));
+        removed.push(...res.data.removed.map((r) => r.transaction_id));
         nextCursor = res.data.next_cursor;
         hasMore = res.data.has_more;
       }
-      return { transactions, nextCursor: nextCursor ?? '' };
+      return { added, modified, removed, nextCursor: nextCursor ?? '' };
     },
 
     async removeItem(accessToken) {

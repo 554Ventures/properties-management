@@ -10,13 +10,21 @@ export class ApiClientError extends Error {
   readonly status: number;
   readonly code: string;
   readonly fields?: Record<string, string>;
+  readonly detail?: Record<string, string>;
 
-  constructor(status: number, code: string, message: string, fields?: Record<string, string>) {
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    fields?: Record<string, string>,
+    detail?: Record<string, string>,
+  ) {
     super(message);
     this.name = 'ApiClientError';
     this.status = status;
     this.code = code;
     this.fields = fields;
+    this.detail = detail;
   }
 }
 
@@ -46,17 +54,19 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     let code = 'unknown_error';
     let message = `Request failed (${res.status})`;
     let fields: Record<string, string> | undefined;
+    let detail: Record<string, string> | undefined;
     try {
       const body = (await res.json()) as Partial<ApiError>;
       if (body && typeof body === 'object' && body.error) {
         code = body.error.code ?? code;
         message = body.error.message ?? message;
         fields = body.error.fields;
+        detail = body.error.detail;
       }
     } catch {
       // Non-JSON error body — keep the generic message.
     }
-    throw new ApiClientError(res.status, code, message, fields);
+    throw new ApiClientError(res.status, code, message, fields, detail);
   }
 
   if (res.status === 204) return undefined as T;

@@ -10,7 +10,7 @@ import type {
   SendRemindersInput,
   SendRemindersResponse,
 } from '@hearth/shared';
-import { Prisma, type RentPayment as DbRentPayment } from '@prisma/client';
+import type { RentPayment as DbRentPayment } from '@prisma/client';
 import {
   addDays,
   calendarDaysBetween,
@@ -21,13 +21,10 @@ import {
 } from '../lib/dates';
 import { NotFoundError, BadRequestError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
+import { isUniqueConstraintError } from '../lib/prisma-errors';
 import { mockEmail } from '../integrations/mock/mock-email';
 import { mockStripe } from '../integrations/mock/mock-stripe';
 import { writeAudit, type AuditActor } from './audit.service';
-
-function isUniqueConstraintError(err: unknown): boolean {
-  return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
-}
 
 export function toApiRentPayment(p: DbRentPayment): RentPayment {
   return {

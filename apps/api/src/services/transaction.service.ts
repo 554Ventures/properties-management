@@ -19,9 +19,16 @@ import type {
 } from '@hearth/shared';
 import type { Prisma, Transaction as DbTransaction } from '@prisma/client';
 import { createPlaidAdapter, isRealPlaidConfigured } from '../integrations/factory';
+import type { PlaidBankTransaction } from '../integrations/types';
 import { addDays, currentPeriod, iso, periodOf } from '../lib/dates';
-import { BadRequestError, NotFoundError, PlaidNotConnectedError } from '../lib/errors';
+import {
+  BadRequestError,
+  ImportRateLimitedError,
+  NotFoundError,
+  PlaidNotConnectedError,
+} from '../lib/errors';
 import { prisma } from '../lib/prisma';
+import { isUniqueConstraintError } from '../lib/prisma-errors';
 import { getConnectedPlaid, persistPlaidCursor } from './integration.service';
 import type { UsageLog } from '../ai/agent-loop';
 import { createReceiptExtractor, type ReceiptImageMimetype } from '../ai/receipt';
@@ -637,42 +644,39 @@ export async function scanReceipt(
 
 // ── bank import (Plaid → pending_review rows) ────────────────────────────────
 
-export async function importFromBank(accountId: string): Promise<ImportTransactionsResponse> {
-  const adapter = createPlaidAdapter();
+/**
+ * Server-side import cooldown. Plaid pulls are metered, so real mode defaults
+ * to once per hour; mock mode defaults to no cooldown so the offline demo
+ * (import → review → import again) stays frictionless. The env var overrides
+ * both (minutes; 0 disables).
+ */
+function importCooldownMs(): number {
+  const raw = process.env.HEARTH_IMPORT_COOLDOWN_MINUTES;
+  const minutes = raw !== undefined && raw !== '' ? Number(raw) : isRealPlaidConfigured() ? 60 : 0;
+  return Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : 0;
+}
 
-  // Mock mode stays stateless (no Integration row required, as before). Real
-  // mode requires an already-connected Plaid item to sync against.
-  let accessToken = 'mock-access-token';
-  let cursor: string | null = null;
-  let plaidState: Awaited<ReturnType<typeof getConnectedPlaid>> = null;
+/** Insert one synced bank transaction unless its externalId is already present. */
+async function createBankTransaction(
+  accountId: string,
+  t: PlaidBankTransaction,
+): Promise<'imported' | 'skipped'> {
+  // Dedup guard: Plaid's sync can redeliver the same transaction_id on
+  // retries; the mock replays fixed ids across cursorless imports too. The
+  // pre-check keeps us from burning a suggestCategory pass on known rows.
+  const existing = await prisma.transaction.findFirst({
+    where: { accountId, externalId: t.externalId },
+  });
+  if (existing) return 'skipped';
 
-  if (isRealPlaidConfigured()) {
-    plaidState = await getConnectedPlaid(accountId);
-    if (!plaidState) throw new PlaidNotConnectedError();
-    accessToken = plaidState.accessToken;
-    cursor = plaidState.cursor;
-  }
-
-  const { transactions: incoming, nextCursor } = await adapter.syncTransactions(
-    accessToken,
-    cursor,
-  );
-
-  let importedCount = 0;
-  for (const t of incoming) {
-    // Dedup guard: Plaid's sync can redeliver the same transaction_id on
-    // retries; the mock reuses fixed ids across repeated imports too.
-    const existing = await prisma.transaction.findFirst({
-      where: { accountId, externalId: t.externalId },
-    });
-    if (existing) continue;
-
-    const suggestion = await suggestCategory(accountId, {
-      type: t.type,
-      description: t.description,
-      vendor: t.vendor,
-    });
-    const row = await prisma.transaction.create({
+  const suggestion = await suggestCategory(accountId, {
+    type: t.type,
+    description: t.description,
+    vendor: t.vendor,
+  });
+  let row: DbTransaction;
+  try {
+    row = await prisma.transaction.create({
       data: {
         accountId,
         date: t.date,
@@ -687,14 +691,103 @@ export async function importFromBank(accountId: string): Promise<ImportTransacti
         aiConfidence: suggestion?.confidence ?? null,
       },
     });
+  } catch (err) {
+    // A concurrent import won the @@unique([accountId, externalId]) race.
+    if (isUniqueConstraintError(err)) return 'skipped';
+    throw err;
+  }
+  await writeAudit(accountId, {
+    actor: 'system',
+    action: 'transaction.created',
+    entityType: 'transaction',
+    entityId: row.id,
+    detail: { source: 'bank', externalId: t.externalId },
+  });
+  return 'imported';
+}
+
+export async function importFromBank(accountId: string): Promise<ImportTransactionsResponse> {
+  const adapter = createPlaidAdapter();
+
+  // Real mode requires an already-connected Plaid item. Mock mode uses a
+  // connected row when one exists (so the cursor advances through the mock
+  // script) and otherwise stays stateless (no Integration row required).
+  const plaidState = await getConnectedPlaid(accountId);
+  if (isRealPlaidConfigured() && !plaidState) throw new PlaidNotConnectedError();
+
+  const cooldownMs = importCooldownMs();
+  if (cooldownMs > 0 && plaidState?.lastSyncedAt) {
+    const nextAllowedAt = plaidState.lastSyncedAt.getTime() + cooldownMs;
+    if (Date.now() < nextAllowedAt) throw new ImportRateLimitedError(new Date(nextAllowedAt));
+  }
+
+  const accessToken = plaidState?.accessToken ?? 'mock-access-token';
+  const cursor = plaidState?.cursor ?? null;
+  const { added, modified, removed, nextCursor } = await adapter.syncTransactions(
+    accessToken,
+    cursor,
+  );
+
+  const counts = { imported: 0, skipped: 0, updated: 0, removed: 0 };
+
+  for (const t of added) {
+    counts[await createBankTransaction(accountId, t)] += 1;
+  }
+
+  for (const t of modified) {
+    const existing = await prisma.transaction.findFirst({
+      where: { accountId, externalId: t.externalId },
+    });
+    if (!existing) {
+      // Plaid delivers `modified` as full replacements, so an id we've never
+      // stored imports as new.
+      counts[await createBankTransaction(accountId, t)] += 1;
+      continue;
+    }
+    // Only machine-owned rows are machine-mutable: once the user confirms (or
+    // dismisses) a transaction it's their vouched ledger — a bank-side tweak
+    // must not silently rewrite it.
+    if (existing.status !== 'pending_review') continue;
+    const suggestion = await suggestCategory(accountId, {
+      type: t.type,
+      description: t.description,
+      vendor: t.vendor,
+    });
+    await prisma.transaction.update({
+      where: { id: existing.id },
+      data: {
+        date: t.date,
+        amountCents: t.amountCents,
+        type: t.type,
+        description: t.description,
+        vendor: t.vendor,
+        aiSuggestedCategoryId: suggestion?.categoryId ?? null,
+        aiConfidence: suggestion?.confidence ?? null,
+      },
+    });
     await writeAudit(accountId, {
       actor: 'system',
-      action: 'transaction.created',
+      action: 'transaction.updated',
       entityType: 'transaction',
-      entityId: row.id,
-      detail: { source: 'bank', externalId: t.externalId },
+      entityId: existing.id,
+      detail: { source: 'bank', externalId: t.externalId, reason: 'plaid_modified' },
     });
-    importedCount += 1;
+    counts.updated += 1;
+  }
+
+  for (const externalId of removed) {
+    const existing = await prisma.transaction.findFirst({ where: { accountId, externalId } });
+    // Same ownership rule as `modified`: only still-pending rows are deleted.
+    if (!existing || existing.status !== 'pending_review') continue;
+    await prisma.transaction.delete({ where: { id: existing.id } });
+    await writeAudit(accountId, {
+      actor: 'system',
+      action: 'transaction.deleted',
+      entityType: 'transaction',
+      entityId: existing.id,
+      detail: { source: 'bank', externalId, reason: 'plaid_removed' },
+    });
+    counts.removed += 1;
   }
 
   if (plaidState) {
@@ -705,6 +798,12 @@ export async function importFromBank(accountId: string): Promise<ImportTransacti
       nextCursor,
     );
   }
+  // "Last imported" display + cooldown anchor. Sync metadata, not a money
+  // write, so it isn't audited. updateMany no-ops for accounts with no row.
+  await prisma.integration.updateMany({
+    where: { accountId, type: 'plaid' },
+    data: { lastSyncedAt: new Date() },
+  });
 
-  return { imported: importedCount };
+  return counts;
 }

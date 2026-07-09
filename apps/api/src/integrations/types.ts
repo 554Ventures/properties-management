@@ -11,6 +11,15 @@ export interface PlaidBankTransaction {
   type: TransactionType;
 }
 
+export interface PlaidSyncResult {
+  added: PlaidBankTransaction[];
+  /** Full replacement objects for previously delivered ids (Plaid semantics). */
+  modified: PlaidBankTransaction[];
+  /** Plaid transaction_ids whose transactions no longer exist bank-side. */
+  removed: string[];
+  nextCursor: string;
+}
+
 export interface PlaidAdapter {
   /** Create a Link token to hand to the frontend's Plaid Link launch. */
   createLinkToken(accountId: string): Promise<{ linkToken: string; mock: boolean }>;
@@ -21,10 +30,7 @@ export interface PlaidAdapter {
    * Pass `cursor: null` for the first sync; persist the returned `nextCursor`
    * and pass it back on the next call.
    */
-  syncTransactions(
-    accessToken: string,
-    cursor: string | null,
-  ): Promise<{ transactions: PlaidBankTransaction[]; nextCursor: string }>;
+  syncTransactions(accessToken: string, cursor: string | null): Promise<PlaidSyncResult>;
   /** Revoke access to an item (best-effort on the caller's side). */
   removeItem(accessToken: string): Promise<void>;
 }

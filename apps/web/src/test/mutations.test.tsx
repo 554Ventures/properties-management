@@ -15,6 +15,7 @@ import {
   useCreateRenewal,
   useCreateTenant,
   useCreateUnit,
+  useImportTransactions,
   useRemoveLeaseTenant,
   useRestoreProperty,
   useRestoreUnit,
@@ -344,6 +345,29 @@ describe('transaction mutations', () => {
     expect(init?.body).toBe(JSON.stringify({ propertyId: 'p1', unitId: 'u1' }));
     expect(keys).toEqual(
       expect.arrayContaining([JSON.stringify(['transactions']), JSON.stringify(['dashboard'])]),
+    );
+  });
+
+  it('useImportTransactions POSTs /transactions/import and invalidates ledger + integrations', async () => {
+    const fetchMock = stubFetch(() =>
+      jsonResponse({ imported: 2, skipped: 1, updated: 1, removed: 0 }),
+    );
+    const { keys, wrapper } = setup();
+
+    const { result } = renderHook(() => useImportTransactions(), { wrapper });
+    result.current.mutate();
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/v1/transactions/import');
+    expect(init?.method).toBe('POST');
+    expect(keys).toEqual(
+      expect.arrayContaining([
+        JSON.stringify(['transactions']),
+        JSON.stringify(['dashboard']),
+        JSON.stringify(['properties']),
+        JSON.stringify(['integrations']),
+      ]),
     );
   });
 });

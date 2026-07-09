@@ -2,7 +2,7 @@ import type { Integration, IntegrationStatus, IntegrationType } from '@hearth/sh
 import type { Integration as DbIntegration } from '@prisma/client';
 import { createPlaidAdapter } from '../integrations/factory';
 import { decrypt, encrypt } from '../lib/crypto';
-import { iso } from '../lib/dates';
+import { iso, isoOrNull } from '../lib/dates';
 import { BadRequestError, NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { writeAudit, type AuditActor } from './audit.service';
@@ -41,6 +41,7 @@ export function toApiIntegration(i: DbIntegration): Integration {
     status: i.status as IntegrationStatus,
     externalRef: i.externalRef,
     scopes: JSON.parse(i.scopesJson) as string[],
+    lastSyncedAt: isoOrNull(i.lastSyncedAt),
     createdAt: iso(i.createdAt),
   };
 }
@@ -141,6 +142,7 @@ export interface ConnectedPlaidState {
   accessToken: string; // decrypted, ready to pass to the adapter
   accessTokenEncrypted: string; // pass back unchanged when persisting a new cursor
   cursor: string | null;
+  lastSyncedAt: Date | null;
 }
 
 export async function getConnectedPlaid(accountId: string): Promise<ConnectedPlaidState | null> {
@@ -155,6 +157,7 @@ export async function getConnectedPlaid(accountId: string): Promise<ConnectedPla
     accessToken: decodeAccessToken(config.accessTokenEncrypted),
     accessTokenEncrypted: config.accessTokenEncrypted,
     cursor: config.cursor,
+    lastSyncedAt: integration.lastSyncedAt,
   };
 }
 

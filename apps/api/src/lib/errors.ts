@@ -5,6 +5,8 @@ export class HttpError extends Error {
     public readonly statusCode: number,
     public readonly code: string,
     message: string,
+    /** Structured, client-parseable context; echoed in the error envelope. */
+    public readonly detail?: Record<string, string>,
   ) {
     super(message);
     this.name = 'HttpError';
@@ -36,6 +38,15 @@ export class PlaidNotConnectedError extends HttpError {
   constructor() {
     super(409, 'plaid_not_connected', 'Connect a bank account in Settings before importing.');
     this.name = 'PlaidNotConnectedError';
+  }
+}
+
+export class ImportRateLimitedError extends HttpError {
+  constructor(nextAllowedAt: Date) {
+    super(429, 'import_rate_limited', 'Bank transactions were already imported recently.', {
+      nextAllowedAt: nextAllowedAt.toISOString(),
+    });
+    this.name = 'ImportRateLimitedError';
   }
 }
 

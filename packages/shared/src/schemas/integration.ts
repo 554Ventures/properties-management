@@ -9,6 +9,7 @@ export const IntegrationSchema = z.object({
   status: IntegrationStatusSchema,
   externalRef: z.string().nullable(),
   scopes: z.array(z.string()), // parsed from scopesJson
+  lastSyncedAt: z.string().datetime().nullable(), // plaid: last transaction import
   createdAt: z.string().datetime(),
 });
 

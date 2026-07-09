@@ -24,7 +24,7 @@ export function registerErrorHandler(app: FastifyInstance): void {
       return reply.code(400).send(body);
     }
     if (err instanceof HttpError) {
-      const body: ApiError = { error: { code: err.code, message: err.message } };
+      const body: ApiError = { error: { code: err.code, message: err.message, detail: err.detail } };
       return reply.code(err.statusCode).send(body);
     }
     if ((err as { statusCode?: unknown }).statusCode === 429) {

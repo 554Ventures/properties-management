@@ -481,7 +481,10 @@ export function useImportTransactions() {
   return useMutation({
     mutationFn: () => api.post<ImportTransactionsResponse>('/transactions/import'),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['transactions'] });
+      // Imports create/update/delete ledger rows and stamp the plaid
+      // integration's lastSyncedAt.
+      invalidateLedger(qc);
+      void qc.invalidateQueries({ queryKey: ['integrations'] });
     },
   });
 }

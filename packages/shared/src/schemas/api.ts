@@ -2,12 +2,13 @@
 // in the API contract is exported from here, grouped by resource.
 import { z } from 'zod';
 
-// Error envelope for every non-2xx response: { error: { code, message, fields? } }
+// Error envelope for every non-2xx response: { error: { code, message, fields?, detail? } }
 export const ApiErrorSchema = z.object({
   error: z.object({
     code: z.string(),
     message: z.string(),
     fields: z.record(z.string()).optional(),
+    detail: z.record(z.string()).optional(), // structured context, e.g. import_rate_limited's nextAllowedAt
   }),
 });
 
