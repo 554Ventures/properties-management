@@ -50,6 +50,9 @@ export * from './dashboard';
 // Integrations
 export * from './integration';
 
+// Documents (uploaded files attached to entities)
+export * from './document';
+
 // Chat content blocks + sessions/messages + SSE protocol
 export * from './chat-blocks';
 export * from './chat';

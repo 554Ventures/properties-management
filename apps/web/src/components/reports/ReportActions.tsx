@@ -1,27 +1,30 @@
-// Shared report actions: CSV/PDF export links (direct downloads via the
-// export endpoint) and the "Email accountant" modal (POST /reports/:id/email).
+// Shared report actions: CSV/PDF export downloads (fetch-based so the auth
+// header rides along — a plain anchor would 401 in production's Supabase auth
+// mode) and the "Email accountant" modal (POST /reports/:id/email).
 import { useState, type FormEvent } from 'react';
-import { apiUrl } from '../../api/client';
+import { downloadFile } from '../../api/client';
 import { useEmailReport } from '../../api/queries';
-import { Button, buttonClasses } from '../ui/Button';
+import { Button } from '../ui/Button';
 import { FormField, Input } from '../ui/FormField';
 import { IconDownload, IconMail } from '../ui/icons';
 import { Modal } from '../ui/Modal';
 import { useToast } from '../ui/Toast';
 
 export function ExportLinks({ reportId, formats = ['csv', 'pdf'] }: { reportId: string; formats?: Array<'csv' | 'pdf'> }) {
+  const { toast } = useToast();
+  const download = (format: 'csv' | 'pdf') => {
+    downloadFile(`/reports/${reportId}/export?format=${format}`, `report.${format}`).catch(
+      (err: unknown) =>
+        toast(err instanceof Error ? err.message : 'Could not export the report.', 'danger'),
+    );
+  };
   return (
     <>
       {formats.map((format) => (
-        <a
-          key={format}
-          href={apiUrl(`/reports/${reportId}/export?format=${format}`)}
-          download
-          className={buttonClasses('secondary', 'sm')}
-        >
+        <Button key={format} variant="secondary" size="sm" onClick={() => download(format)}>
           <IconDownload size={14} />
           Export {format.toUpperCase()}
-        </a>
+        </Button>
       ))}
     </>
   );

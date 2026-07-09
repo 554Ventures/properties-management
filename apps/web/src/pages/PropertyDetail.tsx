@@ -14,6 +14,7 @@ import {
   useTerminateLease,
 } from '../api/queries';
 import { InsightCard } from '../components/ai/InsightCard';
+import { DocumentsCard } from '../components/documents/DocumentsCard';
 import { LeaseFormModal } from '../components/forms/LeaseFormModal';
 import { LeaseTenantsModal } from '../components/forms/LeaseTenantsModal';
 import { PropertyFormModal } from '../components/forms/PropertyFormModal';
@@ -340,6 +341,13 @@ export function PropertyDetail() {
             </tbody>
           </Table>
         </Card>
+      </section>
+
+      <section aria-label="Documents">
+        <DocumentsCard
+          filter={{ propertyId }}
+          uploadTarget={{ entityType: 'property', entityId: propertyId }}
+        />
       </section>
 
       <LiveRegion className="flex flex-col gap-4">

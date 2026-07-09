@@ -83,6 +83,15 @@ export function recentPeriods(count = 12): string[] {
   });
 }
 
+/** Byte count → human size: 812 → "812 B", 34_567 → "33.8 KB", 2_400_000 → "2.3 MB". */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb >= 10 ? Math.round(kb).toString() : kb.toFixed(1)} KB`;
+  const mb = kb / 1024;
+  return `${mb >= 10 ? Math.round(mb).toString() : mb.toFixed(1)} MB`;
+}
+
 /** Signed percent for trend text: 4.2 → "up 4.2%", -1.5 → "down 1.5%". */
 export function trendText(pct: number): string {
   const abs = Math.abs(pct);

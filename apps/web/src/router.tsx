@@ -2,6 +2,7 @@ import { createBrowserRouter } from 'react-router-dom';
 import { AppShell } from './components/shell/AppShell';
 import { AddTransaction } from './pages/AddTransaction';
 import { Dashboard } from './pages/Dashboard';
+import { DocumentsPage } from './pages/DocumentsPage';
 import { Insights } from './pages/Insights';
 import { Money } from './pages/Money';
 import { MoneyReview } from './pages/MoneyReview';
@@ -31,6 +32,7 @@ export const router = createBrowserRouter([
       { path: 'money/new', element: <AddTransaction /> },
       { path: 'money/review', element: <MoneyReview /> },
       { path: 'rent', element: <RentTracker /> },
+      { path: 'documents', element: <DocumentsPage /> },
       { path: 'reports', element: <Reports /> },
       { path: 'reports/:id', element: <ReportViewer /> },
       { path: 'insights', element: <Insights /> },

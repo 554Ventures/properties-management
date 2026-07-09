@@ -47,6 +47,7 @@ model Account {
   integrations Integration[]
   auditLogs    AuditLog[]
   users        User[]
+  documents    Document[]
 }
 
 // Auth principal → Account mapping (deployment plan §4.1). One row per
@@ -316,5 +317,26 @@ model AuditLog {
 
   account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
+  @@index([accountId, createdAt])
+}
+
+// An uploaded file attached to exactly one entity; display context (a lease
+// doc showing on its tenants/property) is derived at query time, never stored.
+model Document {
+  id              String   @id @default(cuid())
+  accountId       String
+  entityType      String // DocumentEntityType (@hearth/shared): property | unit | tenant | lease | transaction
+  entityId        String // no FK — polymorphic; entities soft-archive, never hard-delete
+  type            String // DocumentType (@hearth/shared): lease | insurance | receipt | inspection | notice | tax | other
+  name            String
+  storageKey      String   @unique
+  mimeType        String
+  sizeBytes       Int
+  uploadedByActor String   @default("user") // AuditActor: user | ai_suggested_user_confirmed | system
+  createdAt       DateTime @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, entityType, entityId])
   @@index([accountId, createdAt])
 }

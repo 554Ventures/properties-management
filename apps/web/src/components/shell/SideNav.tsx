@@ -27,6 +27,7 @@ const items: NavItem[] = [
   { to: '/tenants', label: 'Tenants & Leases', icon: IconUsers },
   { to: '/money', label: 'Money', icon: IconDollar },
   { to: '/rent', label: 'Rent Collection', icon: IconCalendarCheck },
+  { to: '/documents', label: 'Documents', icon: IconFileText },
   { to: '/reports', label: 'Reports & Tax', icon: IconFileText },
   { to: '/insights', label: 'AI Insights', icon: IconSparkle, ai: true },
 ];

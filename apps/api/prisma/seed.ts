@@ -3,6 +3,8 @@
 // demo clock. Idempotent: wipes and recreates the demo account.
 //
 // Run: npm run db:seed -w apps/api
+import { randomUUID } from 'node:crypto';
+import { createStorageAdapter } from '../src/integrations/factory';
 import {
   addDays,
   addMonthsToPeriod,
@@ -11,7 +13,9 @@ import {
   startOfUtcDay,
   trailingPeriods,
 } from '../src/lib/dates';
+import { renderPdfPlaceholder } from '../src/lib/pdf';
 import { prisma } from '../src/lib/prisma';
+import { sanitizeFilename } from '../src/services/document.service';
 import * as insightService from '../src/services/insight.service';
 import {
   AVG_TRAILING_NET_CENTS,
@@ -26,9 +30,11 @@ import {
   EXPENSES_MTD_CENTS,
   OKAFOR_DAYS_LATE,
   PARK_DAYS_LATE,
+  OKAFOR_NAME,
   RENT_ROLL_CENTS,
   REVIEW_QUEUE_ITEMS,
   SEED_CATEGORIES,
+  SEED_DOCUMENTS,
   SEED_PROPERTIES,
   TOTAL_UNITS,
   TRAILING_EXPENSE_TOTALS_CENTS,
@@ -291,6 +297,43 @@ async function main(): Promise<void> {
       data: { accountId: account.id, type, name, status: 'mock', scopesJson: '[]' },
     });
   }
+
+  // ── documents (2 placeholder PDFs through the storage adapter)
+  // Wiping the account cascade-deletes the Document rows, but storage keys
+  // embed each row's cuid (new every seed) — so old mock files accumulate in
+  // uploads/ across re-seeds. Harmless (gitignored locally; x-upsert covers
+  // real Supabase overwrites) — never a re-run failure.
+  const storage = createStorageAdapter();
+  const createSeedDocument = async (
+    spec: { name: string; type: string },
+    entityType: string,
+    entityId: string,
+  ) => {
+    const bytes = renderPdfPlaceholder(spec.name, [`Seed document — attached to ${entityType}.`]);
+    const row = await prisma.document.create({
+      data: {
+        accountId: account.id,
+        entityType,
+        entityId,
+        type: spec.type,
+        name: spec.name,
+        // Placeholder unique key first — the real key embeds the row's cuid.
+        storageKey: `pending/${randomUUID()}`,
+        mimeType: 'application/pdf',
+        sizeBytes: bytes.length,
+        uploadedByActor: 'user', // seed data represents the demo user's uploads
+      },
+    });
+    const storageKey = `${account.id}/${row.id}/${sanitizeFilename(spec.name)}`;
+    await prisma.document.update({ where: { id: row.id }, data: { storageKey } });
+    await storage.put(storageKey, bytes, 'application/pdf');
+  };
+  const firstPropertyId = propertyIdByKey.get(SEED_PROPERTIES[0]!.key);
+  if (!firstPropertyId) throw new Error('seed: first property missing');
+  await createSeedDocument(SEED_DOCUMENTS.insurancePolicy, 'property', firstPropertyId);
+  const okaforLease = leases.find((l) => l.tenantName === OKAFOR_NAME);
+  if (!okaforLease) throw new Error('seed: Okafor lease missing');
+  await createSeedDocument(SEED_DOCUMENTS.signedLease, 'lease', okaforLease.leaseId);
 
   // ── insights (via the real rules) + last month's monthly review
   const created = await insightService.generateInsights(account.id);

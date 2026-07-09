@@ -13,6 +13,7 @@ import {
   useTenantDetail,
   useTerminateLease,
 } from '../api/queries';
+import { DocumentsCard } from '../components/documents/DocumentsCard';
 import { LeaseFormModal } from '../components/forms/LeaseFormModal';
 import { LeaseTenantsModal } from '../components/forms/LeaseTenantsModal';
 import { TenantFormModal } from '../components/forms/TenantFormModal';
@@ -283,23 +284,11 @@ export function TenantDetail() {
             })
           )}
 
-          <Card>
-            <h2 className="mb-2 text-sm font-semibold text-ink">Documents</h2>
-            {documents.length === 0 ? (
-              <p className="text-sm text-ink-muted">No documents on file.</p>
-            ) : (
-              <ul className="flex flex-col gap-1.5 text-sm">
-                {documents.map((doc) => (
-                  <li key={doc.id}>
-                    <a href={doc.url} className="text-ink hover:text-brand">
-                      {doc.name}
-                    </a>
-                    <span className="text-xs text-ink-muted"> · {formatDate(doc.createdAt)}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
+          <DocumentsCard
+            filter={{ tenantId: tenant.id }}
+            uploadTarget={{ entityType: 'tenant', entityId: tenant.id }}
+            prependedDocs={documents}
+          />
         </div>
       </div>
 

@@ -9,6 +9,7 @@ import {
   useCreateTransaction,
   useProperties,
   useScanReceipt,
+  useUploadDocument,
 } from '../api/queries';
 import { AiChip } from '../components/ai/AiChip';
 import { PageHeader } from '../components/shell/PageHeader';
@@ -39,6 +40,7 @@ export function AddTransaction() {
   const properties = useProperties();
   const create = useCreateTransaction();
   const scan = useScanReceipt();
+  const uploadDocument = useUploadDocument();
 
   const [amount, setAmount] = useState('');
   const [type, setType] = useState<TransactionType>('expense');
@@ -50,6 +52,9 @@ export function AddTransaction() {
   const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
   const [errors, setErrors] = useState<{ amount?: string; description?: string }>({});
   const [dragging, setDragging] = useState(false);
+  // The picked receipt image — attached to the transaction as a document on
+  // save (kept even when the scan itself fails).
+  const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const typeCategories = useMemo(
@@ -62,6 +67,7 @@ export function AddTransaction() {
 
   const handleFile = (file: File | undefined) => {
     if (!file) return;
+    setReceiptFile(file);
     const form = new FormData();
     form.append('file', file);
     scan.mutate(form, {
@@ -111,9 +117,31 @@ export function AddTransaction() {
         categoryId: categoryId || undefined,
       },
       {
-        onSuccess: () => {
-          toast('Transaction saved.', 'positive');
-          navigate('/money');
+        onSuccess: (txn) => {
+          if (!receiptFile) {
+            toast('Transaction saved.', 'positive');
+            navigate('/money');
+            return;
+          }
+          // Attach the receipt to the saved transaction. A failed upload never
+          // blocks the flow — the transaction is already saved. Text fields
+          // must precede the file part (the server reads them off the first
+          // file part).
+          const form = new FormData();
+          form.append('entityType', 'transaction');
+          form.append('entityId', txn.id);
+          form.append('type', 'receipt');
+          form.append('file', receiptFile);
+          uploadDocument.mutate(form, {
+            onSuccess: () => {
+              toast('Transaction saved.', 'positive');
+              navigate('/money');
+            },
+            onError: () => {
+              toast('Transaction saved; receipt attachment failed.', 'neutral');
+              navigate('/money');
+            },
+          });
         },
         onError: () => toast('Could not save the transaction. Try again.', 'danger'),
       },
@@ -263,7 +291,7 @@ export function AddTransaction() {
             <Button variant="ghost" onClick={() => navigate('/money')}>
               Cancel
             </Button>
-            <Button type="submit" busy={create.isPending}>
+            <Button type="submit" busy={create.isPending || uploadDocument.isPending}>
               Save transaction
             </Button>
           </div>

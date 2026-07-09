@@ -23,6 +23,9 @@ import type {
   DashboardInsightResponse,
   DashboardKpisResponse,
   DismissAllReviewResponse,
+  Document,
+  DocumentListQuery,
+  DocumentListResponse,
   EsignEnvelopeResponse,
   ExpenseBreakdownResponse,
   GenerateReportInput,
@@ -62,6 +65,7 @@ import type {
   TransactionListResponse,
   Unit,
   UpdateAccountSettingsInput,
+  UpdateDocumentInput,
   UpdateLeaseInput,
   UpdatePropertyInput,
   UpdateTenantInput,
@@ -479,6 +483,55 @@ export function useImportTransactions() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['transactions'] });
     },
+  });
+}
+
+// ---------------------------------------------------------------- documents
+
+export function useDocuments(query: DocumentListQuery = {}) {
+  return useQuery({
+    queryKey: ['documents', query],
+    queryFn: () =>
+      api.get<DocumentListResponse>(
+        `/documents${toQuery(query as Record<string, string | number | undefined>)}`,
+      ),
+    staleTime: STALE_SHORT,
+  });
+}
+
+function invalidateDocuments(qc: ReturnType<typeof useQueryClient>) {
+  void qc.invalidateQueries({ queryKey: ['documents'] });
+}
+
+/** POST /documents — multipart FormData: file + entityType/entityId/type/name?. */
+export function useUploadDocument() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (form: FormData) => api.postForm<Document>('/documents', form),
+    onSuccess: (_doc, form) => {
+      invalidateDocuments(qc);
+      // A receipt upload sets the transaction's receiptUrl server-side.
+      if (form.get('entityType') === 'transaction') {
+        void qc.invalidateQueries({ queryKey: ['transactions'] });
+      }
+    },
+  });
+}
+
+export function useUpdateDocument() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...input }: UpdateDocumentInput & { id: string }) =>
+      api.patch<Document>(`/documents/${id}`, input),
+    onSuccess: () => invalidateDocuments(qc),
+  });
+}
+
+export function useDeleteDocument() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete(`/documents/${id}`),
+    onSuccess: () => invalidateDocuments(qc),
   });
 }
 

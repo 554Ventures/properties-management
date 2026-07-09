@@ -41,6 +41,15 @@ export interface DocusignAdapter {
   advanceStatus(current: EsignStatus | null): EsignStatus;
 }
 
+export interface StorageAdapter {
+  /** Write (or overwrite) the object at `key`. */
+  put(key: string, data: Buffer, contentType: string): Promise<void>;
+  /** Read the object at `key`; resolves null when it doesn't exist. */
+  get(key: string): Promise<Buffer | null>;
+  /** Delete the object at `key` (best-effort: idempotent, missing keys are fine). */
+  delete(key: string): Promise<void>;
+}
+
 export interface EmailMessage {
   to: string;
   subject: string;

@@ -126,6 +126,14 @@ export type IntegrationListResponse = z.infer<typeof s.IntegrationListResponseSc
 export type LinkTokenResponse = z.infer<typeof s.LinkTokenResponseSchema>;
 export type ExchangePublicTokenInput = z.infer<typeof s.ExchangePublicTokenInputSchema>;
 
+// Documents
+export type Document = z.infer<typeof s.DocumentSchema>;
+export type CreateDocumentFields = z.infer<typeof s.CreateDocumentFieldsSchema>;
+export type UpdateDocumentInput = z.infer<typeof s.UpdateDocumentInputSchema>;
+export type DocumentListQuery = z.infer<typeof s.DocumentListQuerySchema>;
+export type DocumentListRow = z.infer<typeof s.DocumentListRowSchema>;
+export type DocumentListResponse = z.infer<typeof s.DocumentListResponseSchema>;
+
 // Chat content blocks
 export type ColorRole = z.infer<typeof s.ColorRoleSchema>;
 export type TextBlock = z.infer<typeof s.TextBlockSchema>;

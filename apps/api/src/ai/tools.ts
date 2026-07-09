@@ -9,6 +9,8 @@ import {
   ConfirmTransactionInputSchema,
   CreateTransactionInputSchema,
   DataTableBlockSchema,
+  DocumentEntityTypeSchema,
+  DocumentTypeSchema,
   GenerateReportInputSchema,
   InsightScopeSchema,
   LeaseStatusSchema,
@@ -25,6 +27,7 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import { currentPeriod, yearRange } from '../lib/dates';
 import * as categoryService from '../services/category.service';
 import * as dashboardService from '../services/dashboard.service';
+import * as documentService from '../services/document.service';
 import * as insightService from '../services/insight.service';
 import * as leaseService from '../services/lease.service';
 import * as propertyService from '../services/property.service';
@@ -217,6 +220,26 @@ export const serviceTools: ServiceToolDef[] = [
     write: false,
     execute: (accountId, input) =>
       reportService.getById(accountId, (input as { reportId: string }).reportId),
+  },
+  {
+    name: 'list_documents',
+    description:
+      'List uploaded documents. Filter by the entity they are attached to (entityType + entityId), by property or tenant (includes documents attached to their related units, leases and transactions), by document type, or by a name search.',
+    inputSchema: z.object({
+      entityType: DocumentEntityTypeSchema.optional(),
+      entityId: z.string().optional(),
+      propertyId: z.string().optional(),
+      tenantId: z.string().optional(),
+      type: DocumentTypeSchema.optional(),
+      query: z.string().optional(),
+    }),
+    write: false,
+    execute: (accountId, input) => {
+      const { query, ...filters } = input as {
+        query?: string;
+      } & Parameters<typeof documentService.list>[1];
+      return documentService.list(accountId, { ...filters, q: query });
+    },
   },
   // ── write tools — side effects stated plainly ───────────────────────────────
   {

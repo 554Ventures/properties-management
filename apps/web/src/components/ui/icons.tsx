@@ -90,6 +90,13 @@ export const IconX = (p: IconProps) => (
   </svg>
 );
 
+export const IconTrash = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14" />
+    <path d="M10 11v6M14 11v6" />
+  </svg>
+);
+
 export const IconCheck = (p: IconProps) => (
   <svg {...base(p)}>
     <path d="M4.5 12.5l5 5 10-11" />

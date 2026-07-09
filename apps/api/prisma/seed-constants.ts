@@ -246,6 +246,14 @@ export const SEED_CATEGORIES: Array<{
   { name: 'Travel', type: 'expense', irsScheduleELine: 'Line 6 – Auto and travel' },
 ];
 
+// ── seeded documents (names/types pinned; asserted by documents.test.ts) ─────
+export const SEED_DOCUMENTS = {
+  /** Attached to the first seeded property (SEED_PROPERTIES[0], 'maple'). */
+  insurancePolicy: { name: 'Insurance policy — 2026.pdf', type: 'insurance' },
+  /** Attached to the Okafor lease (esignEnvelopeId 'env_mock_seed_okafor'). */
+  signedLease: { name: 'Signed lease agreement.pdf', type: 'lease' },
+} as const;
+
 // ── expected insight dedupeKeys for the current period ───────────────────────
 export function expectedInsightDedupeKeys(period: string): {
   lateRent: string;

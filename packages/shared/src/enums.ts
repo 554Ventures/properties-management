@@ -67,3 +67,25 @@ export type ChatRole = z.infer<typeof ChatRoleSchema>;
 
 export const ChatSessionStatusSchema = z.enum(['idle', 'running', 'awaiting_user']);
 export type ChatSessionStatus = z.infer<typeof ChatSessionStatusSchema>;
+
+// The single entity a Document attaches to; display context (e.g. a lease doc
+// appearing on its tenants and property) is derived, never stored.
+export const DocumentEntityTypeSchema = z.enum([
+  'property',
+  'unit',
+  'tenant',
+  'lease',
+  'transaction',
+]);
+export type DocumentEntityType = z.infer<typeof DocumentEntityTypeSchema>;
+
+export const DocumentTypeSchema = z.enum([
+  'lease',
+  'insurance',
+  'receipt',
+  'inspection',
+  'notice',
+  'tax',
+  'other',
+]);
+export type DocumentType = z.infer<typeof DocumentTypeSchema>;
