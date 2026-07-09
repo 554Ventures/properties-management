@@ -13,6 +13,10 @@ export type AccountSettings = z.infer<typeof s.AccountSettingsSchema>;
 export type UpdateAccountSettingsInput = z.infer<typeof s.UpdateAccountSettingsInputSchema>;
 export type RequestAccountDeletionResponse = z.infer<typeof s.RequestAccountDeletionResponseSchema>;
 
+// Privacy Policy / ToS consent capture
+export type RecordConsentInput = z.infer<typeof s.RecordConsentInputSchema>;
+export type PolicyConsentStatus = z.infer<typeof s.PolicyConsentStatusSchema>;
+
 // Properties
 export type Property = z.infer<typeof s.PropertySchema>;
 export type CreatePropertyInput = z.infer<typeof s.CreatePropertyInputSchema>;

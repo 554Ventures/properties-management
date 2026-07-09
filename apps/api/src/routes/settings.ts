@@ -1,15 +1,18 @@
 import {
   ExchangePublicTokenInputSchema,
   IntegrationTypeSchema,
+  RecordConsentInputSchema,
   UpdateAccountSettingsInputSchema,
   type AccountSettings,
 } from '@hearth/shared';
 import type { Account as DbAccount } from '@prisma/client';
 import type { FastifyInstance } from 'fastify';
 import { iso, isoOrNull } from '../lib/dates';
+import { BadRequestError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { parseBody } from '../plugins/zod-validation';
 import * as accountService from '../services/account.service';
+import * as authService from '../services/auth.service';
 import * as integrationService from '../services/integration.service';
 
 function toApiAccount(a: DbAccount): AccountSettings {
@@ -50,6 +53,20 @@ export async function settingsRoutes(app: FastifyInstance): Promise<void> {
   app.delete('/settings/account/deletion', async (req, reply) => {
     await accountService.cancelDeletion(req.accountId);
     return reply.code(204).send();
+  });
+
+  // Consent capture (docs/SECURITY_PRIVACY_AUDIT.md §B5): the frontend calls
+  // this once, right after a successful Supabase signup, when the user has
+  // checked the required Privacy Policy / ToS acceptance box. Per-identity
+  // (User), not per-Account — only meaningful in Supabase mode, since demo
+  // mode has no signup flow and no User row to attach it to.
+  app.post('/settings/consent', async (req, reply) => {
+    if (!req.userId) {
+      throw new BadRequestError('Consent capture requires Supabase auth mode.');
+    }
+    const input = parseBody(RecordConsentInputSchema, req.body);
+    const status = await authService.recordPolicyConsent(req.userId, input.policyVersion);
+    return reply.code(201).send(status);
   });
 
   app.get('/integrations', async (req) => integrationService.list(req.accountId));

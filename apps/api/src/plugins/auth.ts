@@ -16,6 +16,10 @@ import { DEMO_EMAIL } from '../../prisma/seed-constants';
 declare module 'fastify' {
   interface FastifyRequest {
     accountId: string;
+    // Set only in Supabase mode (the User row this identity resolved to) —
+    // used for per-identity records like policy-consent acceptance. Absent
+    // in demo mode, where there is no User row at all.
+    userId: string | null;
   }
 }
 
@@ -65,6 +69,7 @@ function unauthorized(reply: FastifyReply, message: string): FastifyReply {
 
 export function registerAuth(app: FastifyInstance): void {
   app.decorateRequest('accountId', '');
+  app.decorateRequest('userId', null);
   app.addHook('onRequest', async (req, reply) => {
     if (req.url.startsWith('/api/v1/healthz')) return;
     // Internal automation endpoints authenticate with their own shared secret
@@ -84,7 +89,9 @@ export function registerAuth(app: FastifyInstance): void {
       }
       if (!payload.sub) return unauthorized(reply, 'Token has no subject');
       const email = typeof payload.email === 'string' ? payload.email : undefined;
-      req.accountId = await resolveAccountForIdentity(payload.sub, email);
+      const identity = await resolveAccountForIdentity(payload.sub, email);
+      req.accountId = identity.accountId;
+      req.userId = identity.userId;
       return;
     }
 
@@ -93,5 +100,6 @@ export function registerAuth(app: FastifyInstance): void {
       return unauthorized(reply, 'Missing or invalid bearer token');
     }
     req.accountId = await getDemoAccountId();
+    req.userId = null;
   });
 }

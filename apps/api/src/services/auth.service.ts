@@ -11,15 +11,22 @@
 //   3. Otherwise create a fresh Account + User. System categories are ensured
 //      first, since production databases never run the demo seed.
 import { Prisma } from '@prisma/client';
+import type { PolicyConsentStatus } from '@hearth/shared';
 import { SEED_CATEGORIES } from '../../prisma/seed-constants';
+import { isoOrNull } from '../lib/dates';
 import { HttpError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 
-const accountIdBySub = new Map<string, string>();
+export interface ResolvedIdentity {
+  accountId: string;
+  userId: string;
+}
+
+const identityBySub = new Map<string, ResolvedIdentity>();
 
 /** Test helper: forget cached identity→account mappings. */
 export function resetAuthServiceCache(): void {
-  accountIdBySub.clear();
+  identityBySub.clear();
 }
 
 /** "sam.landlord@x.com" → "Sam Landlord" (best-effort display name). */
@@ -42,14 +49,15 @@ async function ensureSystemCategories(tx: Prisma.TransactionClient): Promise<voi
 export async function resolveAccountForIdentity(
   supabaseUserId: string,
   email: string | undefined,
-): Promise<string> {
-  const cached = accountIdBySub.get(supabaseUserId);
+): Promise<ResolvedIdentity> {
+  const cached = identityBySub.get(supabaseUserId);
   if (cached) return cached;
 
   const existing = await prisma.user.findUnique({ where: { supabaseUserId } });
   if (existing) {
-    accountIdBySub.set(supabaseUserId, existing.accountId);
-    return existing.accountId;
+    const resolved = { accountId: existing.accountId, userId: existing.id };
+    identityBySub.set(supabaseUserId, resolved);
+    return resolved;
   }
 
   // Tokens for email-less identities (e.g. phone auth) still need a unique
@@ -57,7 +65,7 @@ export async function resolveAccountForIdentity(
   const resolvedEmail = email ?? `${supabaseUserId}@users.hearth.invalid`;
 
   try {
-    const accountId = await prisma.$transaction(async (tx) => {
+    const resolved = await prisma.$transaction(async (tx) => {
       await ensureSystemCategories(tx);
       const byEmail = await tx.account.findUnique({
         where: { email: resolvedEmail },
@@ -75,23 +83,53 @@ export async function resolveAccountForIdentity(
         (await tx.account.create({
           data: { name: nameFromEmail(resolvedEmail), email: resolvedEmail },
         }));
-      await tx.user.create({
+      const user = await tx.user.create({
         data: { accountId: account.id, supabaseUserId, email: resolvedEmail },
       });
-      return account.id;
+      return { accountId: account.id, userId: user.id };
     });
-    accountIdBySub.set(supabaseUserId, accountId);
-    return accountId;
+    identityBySub.set(supabaseUserId, resolved);
+    return resolved;
   } catch (err) {
     // P2002 on User.supabaseUserId: a concurrent first request won the race —
     // re-read and use its mapping.
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
       const raced = await prisma.user.findUnique({ where: { supabaseUserId } });
       if (raced) {
-        accountIdBySub.set(supabaseUserId, raced.accountId);
-        return raced.accountId;
+        const resolved = { accountId: raced.accountId, userId: raced.id };
+        identityBySub.set(supabaseUserId, resolved);
+        return resolved;
       }
     }
     throw err;
   }
+}
+
+function toConsentStatus(row: {
+  policyConsentAcceptedAt: Date | null;
+  policyConsentVersion: string | null;
+}): PolicyConsentStatus {
+  return {
+    accepted: Boolean(row.policyConsentAcceptedAt),
+    acceptedAt: isoOrNull(row.policyConsentAcceptedAt),
+    policyVersion: row.policyConsentVersion,
+  };
+}
+
+/** Records Privacy Policy / ToS acceptance for the given User (identity) —
+ *  called once, right after signup, from the frontend's consent checkbox. */
+export async function recordPolicyConsent(
+  userId: string,
+  policyVersion: string,
+): Promise<PolicyConsentStatus> {
+  const row = await prisma.user.update({
+    where: { id: userId },
+    data: { policyConsentAcceptedAt: new Date(), policyConsentVersion: policyVersion },
+  });
+  return toConsentStatus(row);
+}
+
+export async function getPolicyConsent(userId: string): Promise<PolicyConsentStatus> {
+  const row = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+  return toConsentStatus(row);
 }

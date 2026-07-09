@@ -7,8 +7,10 @@
 // update_password (set a new one after following the link — AuthGate mounts us
 // in this mode when a recovery session is active).
 import { useState, type FormEvent } from 'react';
+import { Link } from 'react-router-dom';
 import { Button } from '../components/ui/Button';
 import { FormField, Input } from '../components/ui/FormField';
+import { CURRENT_POLICY_VERSION, markConsentPending } from '../lib/consent';
 import { supabase } from '../lib/supabase';
 import { usePageTitle } from '../lib/usePageTitle';
 import { useAuth } from '../state/auth';
@@ -62,13 +64,18 @@ export function Login({ initialMode = 'sign_in' }: { initialMode?: Mode }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [agreedToPolicies, setAgreedToPolicies] = useState(false);
   usePageTitle(TITLES[mode]);
 
+  // Required before creating an account (docs/SECURITY_PRIVACY_AUDIT.md §B5).
+  const consentRequired = mode === 'sign_up' && !agreedToPolicies;
+
   const signInWithGoogle = async () => {
-    if (!supabase || busy) return;
+    if (!supabase || busy || consentRequired) return;
     setError(null);
     setNotice(null);
     setBusy(true);
+    if (mode === 'sign_up') markConsentPending(CURRENT_POLICY_VERSION);
     const { error: err } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: { redirectTo: `${window.location.origin}/` },
@@ -86,11 +93,12 @@ export function Login({ initialMode = 'sign_in' }: { initialMode?: Mode }) {
     setNotice(null);
     setPassword('');
     setConfirm('');
+    setAgreedToPolicies(false);
   };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!supabase || busy) return;
+    if (!supabase || busy || consentRequired) return;
     setError(null);
     setNotice(null);
     setBusy(true);
@@ -100,6 +108,11 @@ export function Login({ initialMode = 'sign_in' }: { initialMode?: Mode }) {
         if (err) setError(err.message);
         // Success: onAuthStateChange flips the session and AuthGate unmounts us.
       } else if (mode === 'sign_up') {
+        // Stashed before the call: signUp() may return a session immediately
+        // (email confirmation off) or not (confirmation required, session
+        // arrives later after the user clicks the email link and signs in) —
+        // AuthProvider records it server-side as soon as a session appears.
+        markConsentPending(CURRENT_POLICY_VERSION);
         const { data, error: err } = await supabase.auth.signUp({ email, password });
         if (err) {
           setError(err.message);
@@ -226,7 +239,41 @@ export function Login({ initialMode = 'sign_in' }: { initialMode?: Mode }) {
               />
             </FormField>
           )}
-          <Button type="submit" busy={busy}>
+          {mode === 'sign_up' && (
+            <label className="flex items-start gap-2 text-sm text-ink">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={agreedToPolicies}
+                onChange={(e) => setAgreedToPolicies(e.target.checked)}
+                aria-describedby="consent-hint"
+                required
+              />
+              <span id="consent-hint">
+                I agree to the{' '}
+                <Link
+                  to="/privacy"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-medium text-brand underline"
+                >
+                  Privacy Policy
+                </Link>{' '}
+                and{' '}
+                <Link
+                  to="/terms"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-medium text-brand underline"
+                >
+                  Terms of Service
+                </Link>
+                .
+              </span>
+            </label>
+          )}
+
+          <Button type="submit" busy={busy} disabled={consentRequired}>
             {submitLabel}
           </Button>
 
@@ -241,6 +288,7 @@ export function Login({ initialMode = 'sign_in' }: { initialMode?: Mode }) {
                 type="button"
                 variant="secondary"
                 busy={busy}
+                disabled={consentRequired}
                 onClick={() => void signInWithGoogle()}
               >
                 <GoogleIcon />

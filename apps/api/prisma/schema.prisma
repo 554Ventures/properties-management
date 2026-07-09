@@ -65,6 +65,12 @@ model User {
   email          String
   role           String   @default("owner") // UserRole (@hearth/shared): owner
   createdAt      DateTime @default(now())
+  // Consent capture (docs/SECURITY_PRIVACY_AUDIT.md §B5): recorded when this
+  // identity accepts the Privacy Policy + Terms of Service at signup.
+  // policyConsentVersion identifies *which* version was accepted, since the
+  // documents will change over time.
+  policyConsentAcceptedAt DateTime?
+  policyConsentVersion    String?
 
   account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
 }

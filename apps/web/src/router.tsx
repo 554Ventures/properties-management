@@ -7,6 +7,7 @@ import { Insights } from './pages/Insights';
 import { Money } from './pages/Money';
 import { MoneyReview } from './pages/MoneyReview';
 import { NotFound } from './pages/NotFound';
+import { PrivacyPolicy } from './pages/PrivacyPolicy';
 import { PropertiesList } from './pages/PropertiesList';
 import { PropertyDetail } from './pages/PropertyDetail';
 import { RentTracker } from './pages/RentTracker';
@@ -15,13 +16,27 @@ import { ReportViewer } from './pages/ReportViewer';
 import { Settings } from './pages/Settings';
 import { TenantDetail } from './pages/TenantDetail';
 import { TenantsList } from './pages/TenantsList';
+import { TermsOfService } from './pages/TermsOfService';
+import { AuthGate } from './state/auth';
 
 // Routes per ARCHITECTURE §8. The chat drawer is layout state (?chat=open),
 // not a route — added in build-order task 9.
+//
+// /privacy and /terms are top-level siblings of the app tree, deliberately
+// OUTSIDE <AuthGate> — they must render for signed-out visitors (the Google
+// OAuth consent screen, app-store listings, and email footers all link here
+// directly). AuthGate wraps only AppShell now, not the whole router, so the
+// app's own routes are unaffected.
 export const router = createBrowserRouter([
+  { path: '/privacy', element: <PrivacyPolicy /> },
+  { path: '/terms', element: <TermsOfService /> },
   {
     path: '/',
-    element: <AppShell />,
+    element: (
+      <AuthGate>
+        <AppShell />
+      </AuthGate>
+    ),
     children: [
       { index: true, element: <Dashboard /> },
       { path: 'properties', element: <PropertiesList /> },

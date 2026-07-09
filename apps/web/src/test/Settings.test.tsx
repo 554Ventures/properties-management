@@ -178,3 +178,26 @@ describe('Settings integrations', () => {
     });
   });
 });
+
+describe('Settings legal section', () => {
+  it('links to the canonical /privacy and /terms pages, not a duplicated modal', async () => {
+    vi.stubGlobal(
+      'fetch',
+      makeFetch([
+        { method: 'GET', path: '/api/v1/settings/account', body: account },
+        { method: 'GET', path: '/api/v1/integrations', body: [] },
+      ]),
+    );
+    renderWithProviders(<Settings />);
+
+    const legal = (await screen.findByRole('heading', { name: 'Legal' })).closest('section')!;
+    expect(within(legal).getByRole('link', { name: 'Privacy Policy' })).toHaveAttribute(
+      'href',
+      '/privacy',
+    );
+    expect(within(legal).getByRole('link', { name: 'Terms of Service' })).toHaveAttribute(
+      'href',
+      '/terms',
+    );
+  });
+});

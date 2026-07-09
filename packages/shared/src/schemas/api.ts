@@ -14,6 +14,9 @@ export const ApiErrorSchema = z.object({
 // Settings / account
 export * from './account';
 
+// Privacy Policy / ToS consent capture
+export * from './consent';
+
 // Properties (incl. PnL shapes, PropertyWithStats, detail composites)
 export * from './property';
 

@@ -165,6 +165,66 @@ describe('supabase mode: provisioning', () => {
   });
 });
 
+describe('policy consent capture (docs/SECURITY_PRIVACY_AUDIT.md §B5)', () => {
+  it('records acceptance with a timestamp and policy version for the current identity', async () => {
+    const token = await signToken('sub-consent-user', 'consent.user@authtest.example');
+    // First sight provisions the Account + User (mirrors real signup: the
+    // frontend calls the consent endpoint right after the first authed call).
+    await app.inject({
+      method: 'GET',
+      url: '/api/v1/properties',
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/settings/consent',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { policyVersion: '2026-07-09' },
+    });
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body.accepted).toBe(true);
+    expect(body.policyVersion).toBe('2026-07-09');
+    expect(body.acceptedAt).toBeTruthy();
+
+    const user = await prisma.user.findUnique({ where: { supabaseUserId: 'sub-consent-user' } });
+    expect(user?.policyConsentVersion).toBe('2026-07-09');
+    expect(user?.policyConsentAcceptedAt).not.toBeNull();
+  });
+
+  it('400s in demo mode (no User row to attach consent to)', async () => {
+    delete process.env.SUPABASE_JWT_SECRET;
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/settings/consent',
+        payload: { policyVersion: '2026-07-09' },
+      });
+      expect(res.statusCode).toBe(400);
+    } finally {
+      process.env.SUPABASE_JWT_SECRET = TEST_SECRET;
+    }
+  });
+
+  it('400s on a missing policyVersion', async () => {
+    const token = await signToken('sub-consent-invalid', 'consent.invalid@authtest.example');
+    await app.inject({
+      method: 'GET',
+      url: '/api/v1/properties',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/settings/consent',
+      headers: { authorization: `Bearer ${token}` },
+      payload: {},
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('validation_error');
+  });
+});
+
 describe('internal cron endpoint', () => {
   it('401s when CRON_SECRET is unset', async () => {
     delete process.env.CRON_SECRET;

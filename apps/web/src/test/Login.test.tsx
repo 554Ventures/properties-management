@@ -3,6 +3,7 @@
 // merge-blocking axe check.
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import axe from 'axe-core';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const signInWithPassword = vi.fn();
@@ -35,21 +36,37 @@ vi.mock('../lib/supabase', () => ({
   getAccessToken: async () => undefined,
 }));
 
+import { peekPendingConsentVersion, resetConsentStateForTests } from '../lib/consent';
 import { Login } from '../pages/Login';
+
+// Login now links to /privacy and /terms (react-router <Link>), which needs
+// a Router context to render at all.
+function renderLogin(props?: Parameters<typeof Login>[0]) {
+  return render(
+    <MemoryRouter>
+      <Login {...props} />
+    </MemoryRouter>,
+  );
+}
 
 function fillCredentials(email: string, password: string): void {
   fireEvent.change(screen.getByLabelText(/email/i), { target: { value: email } });
   fireEvent.change(screen.getByLabelText(/password/i), { target: { value: password } });
 }
 
+function agreeToPolicies(): void {
+  fireEvent.click(screen.getByRole('checkbox'));
+}
+
 describe('Login', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetConsentStateForTests();
   });
 
   it('signs in with the entered credentials', async () => {
     signInWithPassword.mockResolvedValueOnce({ error: null });
-    render(<Login />);
+    renderLogin();
 
     fillCredentials('sam@example.com', 'hunter2hunter2');
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
@@ -65,7 +82,7 @@ describe('Login', () => {
 
   it('surfaces sign-in errors as an alert', async () => {
     signInWithPassword.mockResolvedValueOnce({ error: { message: 'Invalid login credentials' } });
-    render(<Login />);
+    renderLogin();
 
     fillCredentials('sam@example.com', 'wrong');
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
@@ -74,23 +91,62 @@ describe('Login', () => {
     expect(alert).toHaveTextContent('Invalid login credentials');
   });
 
-  it('shows the confirmation notice after sign-up without a session', async () => {
+  it('shows the confirmation notice after sign-up without a session, and stashes consent for later', async () => {
     signUp.mockResolvedValueOnce({ data: { session: null }, error: null });
-    render(<Login />);
+    renderLogin();
 
     fireEvent.click(screen.getByRole('button', { name: /create an account/i }));
     fillCredentials('new@example.com', 'longenoughpw');
+    agreeToPolicies();
     fireEvent.click(screen.getByRole('button', { name: 'Create account' }));
 
     const notice = await screen.findByRole('status');
     expect(notice).toHaveTextContent(/check your email/i);
     // Flips back to sign-in so the confirmed user can log in directly.
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument();
+    // signUp() returned no session (email confirmation on) — the consent
+    // version is stashed for AuthProvider to record once a session appears.
+    expect(peekPendingConsentVersion()).toBeTruthy();
+  });
+
+  it('disables account creation until the Privacy Policy / ToS checkbox is checked', async () => {
+    renderLogin();
+    fireEvent.click(screen.getByRole('button', { name: /create an account/i }));
+    fillCredentials('new@example.com', 'longenoughpw');
+
+    expect(screen.getByRole('button', { name: 'Create account' })).toBeDisabled();
+    expect(signUp).not.toHaveBeenCalled();
+
+    agreeToPolicies();
+    expect(screen.getByRole('button', { name: 'Create account' })).toBeEnabled();
+  });
+
+  it('links the sign-up checkbox to the canonical /privacy and /terms pages, opened in a new tab', async () => {
+    renderLogin();
+    fireEvent.click(screen.getByRole('button', { name: /create an account/i }));
+
+    const privacyLink = screen.getByRole('link', { name: 'Privacy Policy' });
+    expect(privacyLink).toHaveAttribute('href', '/privacy');
+    expect(privacyLink).toHaveAttribute('target', '_blank');
+    expect(privacyLink).toHaveAttribute('rel', expect.stringContaining('noopener'));
+
+    const termsLink = screen.getByRole('link', { name: 'Terms of Service' });
+    expect(termsLink).toHaveAttribute('href', '/terms');
+    expect(termsLink).toHaveAttribute('target', '_blank');
+  });
+
+  it('also gates Google sign-up on the consent checkbox', async () => {
+    renderLogin();
+    fireEvent.click(screen.getByRole('button', { name: /create an account/i }));
+
+    expect(screen.getByRole('button', { name: /continue with google/i })).toBeDisabled();
+    agreeToPolicies();
+    expect(screen.getByRole('button', { name: /continue with google/i })).toBeEnabled();
   });
 
   it('starts the Google OAuth flow', async () => {
     signInWithOAuth.mockResolvedValueOnce({ error: null });
-    render(<Login />);
+    renderLogin();
 
     fireEvent.click(screen.getByRole('button', { name: /continue with google/i }));
 
@@ -105,7 +161,7 @@ describe('Login', () => {
 
   it('surfaces Google OAuth errors as an alert', async () => {
     signInWithOAuth.mockResolvedValueOnce({ error: { message: 'OAuth is misconfigured' } });
-    render(<Login />);
+    renderLogin();
 
     fireEvent.click(screen.getByRole('button', { name: /continue with google/i }));
 
@@ -115,7 +171,7 @@ describe('Login', () => {
 
   it('requests a reset link from the forgot-password flow', async () => {
     resetPasswordForEmail.mockResolvedValueOnce({ error: null });
-    render(<Login />);
+    renderLogin();
 
     fireEvent.click(screen.getByRole('button', { name: /forgot your password/i }));
     fireEvent.change(screen.getByLabelText(/email/i), { target: { value: 'sam@example.com' } });
@@ -135,7 +191,7 @@ describe('Login', () => {
 
   it('sets a new password in recovery mode', async () => {
     updateUser.mockResolvedValueOnce({ error: null });
-    render(<Login initialMode="update_password" />);
+    renderLogin({ initialMode: "update_password" });
 
     fireEvent.change(screen.getByLabelText(/^new password/i), { target: { value: 'brandnewpw1' } });
     fireEvent.change(screen.getByLabelText(/confirm new password/i), {
@@ -147,7 +203,7 @@ describe('Login', () => {
   });
 
   it('rejects mismatched passwords in recovery mode without calling Supabase', async () => {
-    render(<Login initialMode="update_password" />);
+    renderLogin({ initialMode: "update_password" });
 
     fireEvent.change(screen.getByLabelText(/^new password/i), { target: { value: 'brandnewpw1' } });
     fireEvent.change(screen.getByLabelText(/confirm new password/i), {
@@ -161,7 +217,7 @@ describe('Login', () => {
   });
 
   it('has no axe violations', async () => {
-    const { container } = render(<Login />);
+    const { container } = renderLogin();
     const results = await axe.run(container, {
       rules: {
         // jsdom does not lay out or paint — color-contrast can't be computed.

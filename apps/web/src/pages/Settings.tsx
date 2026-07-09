@@ -3,6 +3,7 @@
 // docs/WHATS_NEXT.md §3), and plain copy about MCP access.
 import { useEffect, useState, type FormEvent } from 'react';
 import { usePlaidLink } from 'react-plaid-link';
+import { Link } from 'react-router-dom';
 import type { AccountSettings, Integration, IntegrationType } from '@hearth/shared';
 import {
   useCreatePlaidLinkToken,
@@ -99,6 +100,24 @@ export function Settings() {
                 </code>
                 , and every write is recorded in the audit log.
               </p>
+            </Card>
+          </section>
+
+          <section aria-label="Legal">
+            <Card>
+              <h2 className="mb-3 text-sm font-semibold text-ink">Legal</h2>
+              <ul className="flex flex-col gap-2 text-sm">
+                <li>
+                  <Link to="/privacy" className="font-medium text-brand underline">
+                    Privacy Policy
+                  </Link>
+                </li>
+                <li>
+                  <Link to="/terms" className="font-medium text-brand underline">
+                    Terms of Service
+                  </Link>
+                </li>
+              </ul>
             </Card>
           </section>
 

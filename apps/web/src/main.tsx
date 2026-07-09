@@ -4,7 +4,10 @@ import { createRoot } from 'react-dom/client';
 import { RouterProvider } from 'react-router-dom';
 import { ToastProvider } from './components/ui/Toast';
 import { router } from './router';
-import { AuthGate, AuthProvider } from './state/auth';
+// AuthGate now wraps only the app route tree (router.tsx) — /privacy and
+// /terms are top-level siblings that must render whether or not there's a
+// session, so it can't wrap the whole RouterProvider anymore.
+import { AuthProvider } from './state/auth';
 import './styles/tokens.css';
 import './styles/index.css';
 
@@ -26,9 +29,7 @@ createRoot(container).render(
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
         <AuthProvider>
-          <AuthGate>
-            <RouterProvider router={router} />
-          </AuthGate>
+          <RouterProvider router={router} />
         </AuthProvider>
       </ToastProvider>
     </QueryClientProvider>
