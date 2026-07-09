@@ -82,8 +82,15 @@ export async function dismiss(
 
 const SEVERITY_RANK: Record<string, number> = { warning: 3, info: 2, positive: 1 };
 
-/** The dashboard's single card: highest severity active, newest first. */
+/** The dashboard's single card: highest severity active, newest first.
+ *  Refreshes insights against the account's current data first — previously
+ *  this only happened once a day (the scheduler's runDailyJobs), so the card
+ *  could sit stale all day regardless of new transactions/rent payments/
+ *  lease changes. generateInsights is idempotent (dedupeKey-guarded) and
+ *  read-only from the caller's perspective, so calling it on every dashboard
+ *  load is safe and keeps the card live. */
 export async function getDashboardInsight(accountId: string): Promise<Insight | null> {
+  await generateInsights(accountId);
   const rows = await prisma.insight.findMany({
     where: { accountId, status: 'active' },
     orderBy: { createdAt: 'desc' },
