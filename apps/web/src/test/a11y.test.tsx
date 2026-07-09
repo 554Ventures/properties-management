@@ -11,7 +11,7 @@ import type {
 } from '@hearth/shared';
 import type { LeaseDetailResponse } from '@hearth/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import axe from 'axe-core';
 import type { ReactNode } from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -24,6 +24,7 @@ import { TransactionEditModal } from '../components/forms/TransactionEditModal';
 import { UnitFormModal } from '../components/forms/UnitFormModal';
 import { AppShell } from '../components/shell/AppShell';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
+import { MultiSelect } from '../components/ui/MultiSelect';
 import { ToastProvider } from '../components/ui/Toast';
 import { Dashboard } from '../pages/Dashboard';
 import { MoneyReview } from '../pages/MoneyReview';
@@ -360,6 +361,32 @@ describe('CRUD modal accessibility', () => {
       </Providers>,
     );
     await expectNoModalViolations();
+  });
+
+  it('MultiSelect (open dropdown) has no axe violations', async () => {
+    render(
+      <Providers>
+        <MultiSelect
+          label="Tenants"
+          placeholder="Search tenants…"
+          options={[
+            { value: 't1', label: 'Alex Primary', description: 'alex@example.com' },
+            { value: 't2', label: 'Jordan Cotenant' },
+          ]}
+          value={['t1']}
+          onChange={() => {}}
+        />
+      </Providers>,
+    );
+    // Open the portaled listbox before auditing (options live outside any dialog).
+    fireEvent.focus(screen.getByRole('combobox'));
+    await screen.findByRole('listbox');
+    // Audit the whole body (the listbox is portaled out of the control). The
+    // page-level 'region' landmark rule doesn't apply to an isolated component.
+    const results = await axe.run(document.body, {
+      rules: { 'color-contrast': { enabled: false }, region: { enabled: false } },
+    });
+    expect(results.violations.map((v) => v.id)).toEqual([]);
   });
 });
 

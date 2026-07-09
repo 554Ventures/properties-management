@@ -16,6 +16,7 @@ import { Modal } from '../ui/Modal';
 import { Select } from '../ui/Select';
 import { Skeleton } from '../ui/Skeleton';
 import { useToast } from '../ui/Toast';
+import { InlineNewTenant } from './InlineNewTenant';
 
 export interface LeaseTenantsModalProps {
   open: boolean;
@@ -43,11 +44,10 @@ export function LeaseTenantsModal({ open, onClose, leaseId }: LeaseTenantsModalP
   const currentIds = new Set(current.map((t) => t.id));
   const available = (tenants.data ?? []).filter((t) => !currentIds.has(t.id));
 
-  const add = () => {
-    if (!pick) return;
+  const addToLease = (tenantId: string) => {
     setInlineError(undefined);
     addTenant.mutate(
-      { leaseId, tenantId: pick },
+      { leaseId, tenantId },
       {
         onSuccess: () => {
           toast('Tenant added to the lease.', 'positive');
@@ -60,6 +60,11 @@ export function LeaseTenantsModal({ open, onClose, leaseId }: LeaseTenantsModalP
         },
       },
     );
+  };
+
+  const add = () => {
+    if (!pick) return;
+    addToLease(pick);
   };
 
   const remove = (tenantId: string, name: string) => {
@@ -126,6 +131,8 @@ export function LeaseTenantsModal({ open, onClose, leaseId }: LeaseTenantsModalP
             Add
           </Button>
         </div>
+
+        <InlineNewTenant onCreated={(tenant) => addToLease(tenant.id)} />
 
         <div className="flex justify-end">
           <Button variant="ghost" onClick={onClose}>

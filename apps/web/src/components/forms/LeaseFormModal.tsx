@@ -8,7 +8,9 @@ import { fromDateInputValue, toDateInputValue } from '../../lib/format';
 import { Button } from '../ui/Button';
 import { FormField, Input } from '../ui/FormField';
 import { Modal } from '../ui/Modal';
+import { MultiSelect } from '../ui/MultiSelect';
 import { useToast } from '../ui/Toast';
+import { InlineNewTenant } from './InlineNewTenant';
 
 type Mode = 'create' | 'edit';
 
@@ -77,9 +79,6 @@ export function LeaseFormModal({
 
   const set = (key: keyof FormState) => (event: FormEvent<HTMLInputElement>) =>
     setForm((prev) => ({ ...prev, [key]: (event.target as HTMLInputElement).value }));
-
-  const toggleTenant = (id: string) =>
-    setTenantIds((prev) => (prev.includes(id) ? prev.filter((t) => t !== id) : [...prev, id]));
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -151,34 +150,32 @@ export function LeaseFormModal({
     <Modal open={open} onClose={onClose} title={title}>
       <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
         {mode === 'create' && (
-          <fieldset className="flex flex-col gap-2">
-            <legend className="text-sm font-medium text-ink">Tenants</legend>
-            {tenants.isPending ? (
-              <p className="text-sm text-ink-muted">Loading tenants…</p>
-            ) : (tenants.data ?? []).length === 0 ? (
-              <p className="text-sm text-ink-muted">
-                No tenants yet — add a tenant first from Tenants &amp; Leases.
-              </p>
-            ) : (
-              <div className="flex max-h-40 flex-col gap-1.5 overflow-y-auto rounded-md border border-border p-2">
-                {(tenants.data ?? []).map((t) => (
-                  <label key={t.id} className="flex items-center gap-2 text-sm text-ink">
-                    <input
-                      type="checkbox"
-                      checked={tenantIds.includes(t.id)}
-                      onChange={() => toggleTenant(t.id)}
-                    />
-                    {t.fullName}
-                  </label>
-                ))}
-              </div>
-            )}
-            {errors.tenants && (
-              <p className="text-xs font-medium text-danger" role="alert">
-                {errors.tenants}
-              </p>
-            )}
-          </fieldset>
+          <div className="flex flex-col gap-2">
+            <MultiSelect
+              label="Tenants"
+              options={(tenants.data ?? []).map((t) => ({
+                value: t.id,
+                label: t.fullName,
+                description: t.email ?? undefined,
+              }))}
+              value={tenantIds}
+              onChange={setTenantIds}
+              loading={tenants.isPending}
+              placeholder={
+                (tenants.data ?? []).length === 0
+                  ? 'No tenants yet — add one below'
+                  : 'Search tenants…'
+              }
+              emptyMessage="No matching tenants."
+              error={errors.tenants}
+              required
+            />
+            <InlineNewTenant
+              onCreated={(tenant) =>
+                setTenantIds((prev) => (prev.includes(tenant.id) ? prev : [...prev, tenant.id]))
+              }
+            />
+          </div>
         )}
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
