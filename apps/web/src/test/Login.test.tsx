@@ -9,6 +9,7 @@ const signInWithPassword = vi.fn();
 const signUp = vi.fn();
 const resetPasswordForEmail = vi.fn();
 const updateUser = vi.fn();
+const signInWithOAuth = vi.fn();
 
 vi.mock('../lib/supabase', () => ({
   authEnabled: true,
@@ -25,6 +26,9 @@ vi.mock('../lib/supabase', () => ({
       },
       get updateUser() {
         return updateUser;
+      },
+      get signInWithOAuth() {
+        return signInWithOAuth;
       },
     },
   },
@@ -82,6 +86,31 @@ describe('Login', () => {
     expect(notice).toHaveTextContent(/check your email/i);
     // Flips back to sign-in so the confirmed user can log in directly.
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument();
+  });
+
+  it('starts the Google OAuth flow', async () => {
+    signInWithOAuth.mockResolvedValueOnce({ error: null });
+    render(<Login />);
+
+    fireEvent.click(screen.getByRole('button', { name: /continue with google/i }));
+
+    await waitFor(() =>
+      expect(signInWithOAuth).toHaveBeenCalledWith({
+        provider: 'google',
+        options: { redirectTo: expect.stringContaining('/') },
+      }),
+    );
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('surfaces Google OAuth errors as an alert', async () => {
+    signInWithOAuth.mockResolvedValueOnce({ error: { message: 'OAuth is misconfigured' } });
+    render(<Login />);
+
+    fireEvent.click(screen.getByRole('button', { name: /continue with google/i }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('OAuth is misconfigured');
   });
 
   it('requests a reset link from the forgot-password flow', async () => {
