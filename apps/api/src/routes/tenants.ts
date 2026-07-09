@@ -29,4 +29,11 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { id: string } }>('/tenants/:id/restore', async (req) =>
     tenantService.restore(req.accountId, req.params.id),
   );
+
+  // Data erasure (docs/SECURITY_PRIVACY_AUDIT.md §B2): irreversible PII
+  // anonymization, distinct from the soft-archive DELETE above — financial/
+  // lease history is retained, only contact info + PII-bearing documents go.
+  app.post<{ Params: { id: string } }>('/tenants/:id/erase-pii', async (req) =>
+    tenantService.erasePii(req.accountId, req.params.id),
+  );
 }

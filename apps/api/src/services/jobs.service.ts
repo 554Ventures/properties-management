@@ -6,23 +6,29 @@
 // (routes/internal.ts). One account's failure never blocks the others.
 import { addMonthsToPeriod, currentPeriod, monthStart } from '../lib/dates';
 import { prisma } from '../lib/prisma';
+import { processScheduledDeletions } from './account.service';
 import * as insightService from './insight.service';
 
 export interface DailyJobsResult {
   accountsProcessed: number;
   monthlyReviewsCreated: number;
   insightsCreated: number;
+  accountsDeleted: number;
   errors: Array<{ accountId: string; message: string }>;
 }
 
 export async function runDailyJobs(): Promise<DailyJobsResult> {
   const period = addMonthsToPeriod(currentPeriod(), -1);
+  // Deletions first: an account past its grace period shouldn't get a fresh
+  // monthly review/insight refresh moments before being hard-deleted.
+  const deletions = await processScheduledDeletions();
   const accounts = await prisma.account.findMany({ select: { id: true } });
   const result: DailyJobsResult = {
     accountsProcessed: accounts.length,
     monthlyReviewsCreated: 0,
     insightsCreated: 0,
-    errors: [],
+    accountsDeleted: deletions.deleted,
+    errors: [...deletions.errors],
   };
   for (const { id: accountId } of accounts) {
     try {

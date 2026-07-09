@@ -11,6 +11,7 @@ import { addDays, iso, isoOrNull } from '../lib/dates';
 import { ConflictError, NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { writeAudit, type AuditActor } from './audit.service';
+import * as documentService from './document.service';
 import { toApiLease } from './lease.service';
 import { deriveRentStatus } from './rent.service';
 
@@ -222,5 +223,48 @@ export async function restore(
   if (!existing) throw new NotFoundError('tenant', id);
   const row = await prisma.tenant.update({ where: { id }, data: { archivedAt: null } });
   await writeAudit(accountId, { actor, action: 'restore', entityType: 'tenant', entityId: id });
+  return toApiTenant(row);
+}
+
+/**
+ * Data erasure (docs/SECURITY_PRIVACY_AUDIT.md §B2): irreversibly anonymizes
+ * a tenant's PII in place — the row, id, and every Lease/LeaseTenant/
+ * RentPayment/Transaction it's linked to stay intact, since those are
+ * financial/accounting records (tax/tenant-ledger reports) with a legal
+ * retention basis independent of the erasure request. Only removes what's
+ * actually personal data: contact fields, this tenant's uploaded documents
+ * (real PII-bearing files, e.g. a lease or ID scan), and any Insight rows
+ * that reference them (cheap to regenerate; often embed the tenant's name in
+ * free text).
+ */
+export async function erasePii(
+  accountId: string,
+  id: string,
+  actor: AuditActor = 'user',
+): Promise<Tenant> {
+  const existing = await prisma.tenant.findFirst({ where: { id, accountId } });
+  if (!existing) throw new NotFoundError('tenant', id);
+
+  const documents = await prisma.document.findMany({
+    where: { accountId, entityType: 'tenant', entityId: id },
+    select: { id: true },
+  });
+  for (const doc of documents) {
+    await documentService.remove(accountId, doc.id, actor);
+  }
+  await prisma.insight.deleteMany({ where: { accountId, tenantId: id } });
+
+  const row = await prisma.tenant.update({
+    where: { id },
+    data: { fullName: 'Former Tenant (PII erased)', email: null, phone: null, notes: null },
+  });
+  await writeAudit(accountId, {
+    actor,
+    action: 'tenant.pii_erased',
+    entityType: 'tenant',
+    entityId: id,
+    // Counts only — the whole point is no PII survives in the audit trail either.
+    detail: { documentsRemoved: documents.length },
+  });
   return toApiTenant(row);
 }

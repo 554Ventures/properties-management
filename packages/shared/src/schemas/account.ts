@@ -9,6 +9,9 @@ export const AccountSchema = z.object({
   taxYearStartMonth: z.number().int().min(1).max(12),
   graceDays: z.number().int().min(0),
   createdAt: z.string().datetime(),
+  // Data erasure (docs/SECURITY_PRIVACY_AUDIT.md §B2): set while the account
+  // is in its post-request grace window, awaiting hard deletion.
+  deletionRequestedAt: z.string().datetime().nullable(),
 });
 
 // GET /settings/account — the account is the settings object in v1.
@@ -22,4 +25,11 @@ export const UpdateAccountSettingsInputSchema = z.object({
   taxRatePct: z.number().int().min(0).max(100).optional(),
   taxYearStartMonth: z.number().int().min(1).max(12).optional(),
   graceDays: z.number().int().min(0).optional(),
+});
+
+// POST /settings/account/deletion — request account deletion; the account
+// hard-deletes after ACCOUNT_DELETION_GRACE_DAYS unless cancelled first.
+export const RequestAccountDeletionResponseSchema = z.object({
+  deletionRequestedAt: z.string().datetime(),
+  scheduledDeletionAt: z.string().datetime(),
 });

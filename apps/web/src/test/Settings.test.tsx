@@ -32,6 +32,7 @@ const account: AccountSettings = {
   taxYearStartMonth: 1,
   graceDays: 0,
   createdAt: '2025-01-01T00:00:00.000Z',
+  deletionRequestedAt: null,
 };
 
 const connectedPlaidIntegration = {

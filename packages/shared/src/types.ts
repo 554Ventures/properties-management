@@ -11,6 +11,7 @@ export type ApiError = z.infer<typeof s.ApiErrorSchema>;
 export type Account = z.infer<typeof s.AccountSchema>;
 export type AccountSettings = z.infer<typeof s.AccountSettingsSchema>;
 export type UpdateAccountSettingsInput = z.infer<typeof s.UpdateAccountSettingsInputSchema>;
+export type RequestAccountDeletionResponse = z.infer<typeof s.RequestAccountDeletionResponseSchema>;
 
 // Properties
 export type Property = z.infer<typeof s.PropertySchema>;

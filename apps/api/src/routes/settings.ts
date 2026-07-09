@@ -6,9 +6,10 @@ import {
 } from '@hearth/shared';
 import type { Account as DbAccount } from '@prisma/client';
 import type { FastifyInstance } from 'fastify';
-import { iso } from '../lib/dates';
+import { iso, isoOrNull } from '../lib/dates';
 import { prisma } from '../lib/prisma';
 import { parseBody } from '../plugins/zod-validation';
+import * as accountService from '../services/account.service';
 import * as integrationService from '../services/integration.service';
 
 function toApiAccount(a: DbAccount): AccountSettings {
@@ -21,6 +22,7 @@ function toApiAccount(a: DbAccount): AccountSettings {
     taxYearStartMonth: a.taxYearStartMonth,
     graceDays: a.graceDays,
     createdAt: iso(a.createdAt),
+    deletionRequestedAt: isoOrNull(a.deletionRequestedAt),
   };
 }
 
@@ -34,6 +36,20 @@ export async function settingsRoutes(app: FastifyInstance): Promise<void> {
     const input = parseBody(UpdateAccountSettingsInputSchema, req.body);
     const account = await prisma.account.update({ where: { id: req.accountId }, data: input });
     return toApiAccount(account);
+  });
+
+  // Data erasure (docs/SECURITY_PRIVACY_AUDIT.md §B2): starts/cancels the
+  // grace-window deletion request. The actual hard delete only ever runs
+  // from the daily scheduler once the grace period elapses (accountService.
+  // processScheduledDeletions) — this endpoint never deletes anything itself.
+  app.post('/settings/account/deletion', async (req, reply) => {
+    const result = await accountService.requestDeletion(req.accountId);
+    return reply.code(202).send(result);
+  });
+
+  app.delete('/settings/account/deletion', async (req, reply) => {
+    await accountService.cancelDeletion(req.accountId);
+    return reply.code(204).send();
   });
 
   app.get('/integrations', async (req) => integrationService.list(req.accountId));

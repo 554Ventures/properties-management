@@ -37,6 +37,9 @@ if (!process.env.HEARTH_DISABLE_SCHEDULER) {
       if (result.insightsCreated > 0) {
         app.log.info(`generated ${result.insightsCreated} new insight(s)`);
       }
+      if (result.accountsDeleted > 0) {
+        app.log.info(`hard-deleted ${result.accountsDeleted} account(s) past their grace period`);
+      }
       for (const e of result.errors) {
         app.log.error({ accountId: e.accountId }, `daily jobs failed for account: ${e.message}`);
       }

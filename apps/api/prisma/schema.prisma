@@ -28,14 +28,19 @@ datasource db {
 }
 
 model Account {
-  id                String   @id @default(cuid())
-  name              String
-  email             String   @unique
-  timezone          String   @default("America/New_York")
-  taxRatePct        Int      @default(20)
-  taxYearStartMonth Int      @default(1)
-  graceDays         Int      @default(0)
-  createdAt         DateTime @default(now())
+  id                  String    @id @default(cuid())
+  name                String
+  email               String    @unique
+  timezone            String    @default("America/New_York")
+  taxRatePct          Int       @default(20)
+  taxYearStartMonth   Int       @default(1)
+  graceDays           Int       @default(0)
+  // Set when the account owner requests deletion (data erasure); the daily
+  // scheduler hard-deletes the account once ACCOUNT_DELETION_GRACE_DAYS have
+  // elapsed. Clearing this field (a "cancel deletion" action) recovers the
+  // account with no data loss during the grace window.
+  deletionRequestedAt DateTime?
+  createdAt           DateTime  @default(now())
 
   properties   Property[]
   tenants      Tenant[]
@@ -339,4 +344,19 @@ model Document {
 
   @@index([accountId, entityType, entityId])
   @@index([accountId, createdAt])
+}
+
+// Proof-of-erasure record (data erasure, docs/SECURITY_PRIVACY_AUDIT.md §B2).
+// Deliberately has NO relation to Account: it exists specifically to prove a
+// deletion happened *after* the Account row (and everything it cascaded) is
+// gone, so it cannot itself carry a foreign key to the thing it's attesting
+// was deleted.
+model DeletionLog {
+  id            String   @id @default(cuid())
+  accountId     String // the deleted account's id, kept as a plain string
+  accountEmail  String
+  requestedAt   DateTime // when the owner requested deletion (grace window start)
+  deletedAt     DateTime @default(now())
+
+  @@index([accountId])
 }
