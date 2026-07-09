@@ -13,7 +13,7 @@ import { currentPeriod, iso, isoOrNull, monthEndExclusive, monthStart } from '..
 import { ConflictError, NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { writeAudit, type AuditActor } from './audit.service';
-import { toApiInsight } from './insight.service';
+import { generateInsights, toApiInsight } from './insight.service';
 import { toApiLease } from './lease.service';
 import { deriveRentStatus } from './rent.service';
 import { toApiTenant } from './tenant.service';
@@ -148,6 +148,10 @@ export async function getDetail(accountId: string, id: string): Promise<Property
     id,
   );
 
+  // Same staleness fix as getDashboardInsight/list (insight.service.ts): the
+  // only other producer of new Insight rows is the once-a-day scheduler, so
+  // refresh against current data before reading this property's cards.
+  await generateInsights(accountId);
   const insights = await prisma.insight.findMany({
     where: { accountId, propertyId: id, status: 'active' },
     orderBy: { createdAt: 'desc' },

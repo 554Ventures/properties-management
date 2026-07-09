@@ -16,6 +16,7 @@ import {
   trailingPeriods,
 } from '../lib/dates';
 import { prisma } from '../lib/prisma';
+import { generateInsights } from './insight.service';
 import * as rentService from './rent.service';
 
 async function sumByType(
@@ -313,6 +314,11 @@ export async function getActivity(accountId: string, limit: number): Promise<Act
     });
   }
 
+  // Same staleness fix as insight.service.ts's getDashboardInsight/list: the
+  // only other producer of new Insight rows is the once-a-day scheduler, so
+  // refresh before reading — otherwise "New insight — ..." activity entries
+  // never appear same-day.
+  await generateInsights(accountId);
   const insights = await prisma.insight.findMany({
     where: { accountId, status: 'active' },
     orderBy: { createdAt: 'desc' },

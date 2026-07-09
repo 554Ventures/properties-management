@@ -8,6 +8,7 @@ import { buildApp } from '../app';
 import { addDays, currentPeriod } from '../lib/dates';
 import { prisma } from '../lib/prisma';
 import { getDemoAccountId } from '../plugins/auth';
+import * as dashboardService from '../services/dashboard.service';
 import * as insightService from '../services/insight.service';
 import * as leaseService from '../services/lease.service';
 import * as propertyService from '../services/property.service';
@@ -23,6 +24,49 @@ afterAll(async () => {
   await prisma.account.deleteMany({ where: { email: { endsWith: '@integrationtest.example' } } });
   await app.close();
 });
+
+/** Fresh account + property + unit + tenant + lease with dueDay:1, no
+ *  RentPayment rows yet — the shared fixture for the self-refresh regression
+ *  tests below. Mirrors what a real signup + first property looks like. */
+async function createLateRentFixture(emailSuffix: string, tenantName: string) {
+  const account = await prisma.account.create({
+    data: { name: `Stale Insight ${emailSuffix}`, email: `stale-insight-${emailSuffix}@integrationtest.example` },
+  });
+  const property = await propertyService.create(account.id, {
+    addressLine1: `1 Stale Insight Way ${emailSuffix}`,
+    city: 'Springfield',
+    state: 'IL',
+    zip: '62701',
+    units: [{ label: 'Unit A' }],
+  });
+  const detail = await propertyService.getDetail(account.id, property.id);
+  const unitId = detail.units[0]!.id;
+  const tenant = await tenantService.create(account.id, { fullName: tenantName });
+  const start = new Date(Date.now() - 1000 * 60 * 60 * 24 * 200);
+  const end = new Date(Date.now() + 1000 * 60 * 60 * 24 * 200);
+  const lease = await leaseService.create(account.id, {
+    unitId,
+    tenantIds: [tenant.id],
+    rentCents: 100000,
+    dueDay: 1,
+    startDate: start.toISOString(),
+    endDate: end.toISOString(),
+  });
+  return { accountId: account.id, propertyId: property.id, tenant, lease };
+}
+
+/** Materializes a >5-day-late RentPayment directly — no generateInsights call. */
+async function makeRentLate(leaseId: string): Promise<void> {
+  await prisma.rentPayment.create({
+    data: {
+      leaseId,
+      period: currentPeriod(),
+      dueDate: addDays(new Date(), -10),
+      amountCents: 100000,
+      status: 'due',
+    },
+  });
+}
 
 describe('insight generation rules', () => {
   it('seed produced exactly the 3 expected dedupeKeys, and re-running is a no-op', async () => {
@@ -79,53 +123,76 @@ describe('insight generation rules', () => {
     // never showed up on the dashboard until the next day. getDashboardInsight
     // must now surface this on its own, with no generateInsights call in this
     // test at all.
-    const account = await prisma.account.create({
-      data: { name: 'Stale Insight Regression', email: 'stale-insight@integrationtest.example' },
-    });
-    const property = await propertyService.create(account.id, {
-      addressLine1: '1 Stale Insight Way',
-      city: 'Springfield',
-      state: 'IL',
-      zip: '62701',
-      units: [{ label: 'Unit A' }],
-    });
-    const detail = await propertyService.getDetail(account.id, property.id);
-    const unitId = detail.units[0]!.id;
-    const tenant = await tenantService.create(account.id, { fullName: 'Late Payer' });
-    const start = new Date(Date.now() - 1000 * 60 * 60 * 24 * 200);
-    const end = new Date(Date.now() + 1000 * 60 * 60 * 24 * 200);
-    const lease = await leaseService.create(account.id, {
-      unitId,
-      tenantIds: [tenant.id],
-      rentCents: 100000,
-      dueDay: 1,
-      startDate: start.toISOString(),
-      endDate: end.toISOString(),
-    });
+    const { accountId, lease } = await createLateRentFixture('dashboard', 'Late Payer Dashboard');
 
     // Before: no Insight rows exist yet for this brand-new account. (A direct
     // count, not getDashboardInsight — calling that here would itself trigger
     // the same auto-materialization/generation this test is about to exercise
     // deliberately, via the lease's own dueDay.)
-    expect(await prisma.insight.count({ where: { accountId: account.id } })).toBe(0);
+    expect(await prisma.insight.count({ where: { accountId } })).toBe(0);
 
-    // Materialize an overdue RentPayment directly (mirrors what
-    // rentService.materializeExpectedPayments would create), 10 days late —
-    // past the >5-day late_rent threshold. No call to generateInsights here.
-    await prisma.rentPayment.create({
-      data: {
-        leaseId: lease.id,
-        period: currentPeriod(),
-        dueDate: addDays(new Date(), -10),
-        amountCents: 100000,
-        status: 'due',
-      },
-    });
+    await makeRentLate(lease.id);
 
-    const refreshed = await insightService.getDashboardInsight(account.id);
+    const refreshed = await insightService.getDashboardInsight(accountId);
     expect(refreshed?.type).toBe('late_rent');
-    expect(refreshed?.title).toContain('Late Payer');
+    expect(refreshed?.title).toContain('Late Payer Dashboard');
+  });
 
-    await prisma.account.deleteMany({ where: { id: account.id } });
+  it('list()/listActive() self-refreshes — same bug, different read path (GET /insights, chat/MCP list_insights, TenantsList banner)', async () => {
+    const { accountId, lease } = await createLateRentFixture('list', 'Late Payer List');
+    expect(await prisma.insight.count({ where: { accountId } })).toBe(0);
+
+    await makeRentLate(lease.id);
+
+    // No generateInsights call — list() must refresh on its own now.
+    const active = await insightService.listActive(accountId);
+    expect(active.map((i) => i.type)).toContain('late_rent');
+    expect(active.find((i) => i.type === 'late_rent')?.title).toContain('Late Payer List');
+  });
+
+  it("property.service.getDetail's embedded insights self-refresh (PropertyDetail page)", async () => {
+    const { accountId, propertyId, lease } = await createLateRentFixture('property', 'Late Payer Property');
+    expect(await prisma.insight.count({ where: { accountId } })).toBe(0);
+
+    await makeRentLate(lease.id);
+
+    // No generateInsights call — getDetail must refresh on its own now.
+    const detail = await propertyService.getDetail(accountId, propertyId);
+    expect(detail.insights.map((i) => i.type)).toContain('late_rent');
+  });
+
+  it("dashboard.service.getActivity's embedded insight entries self-refresh (Dashboard 'Recent activity' feed)", async () => {
+    const { accountId, lease } = await createLateRentFixture('activity', 'Late Payer Activity');
+    expect(await prisma.insight.count({ where: { accountId } })).toBe(0);
+
+    await makeRentLate(lease.id);
+
+    // No generateInsights call — getActivity must refresh on its own now.
+    const activity = await dashboardService.getActivity(accountId, 10);
+    const insightItems = activity.filter((a) => a.kind === 'insight');
+    expect(insightItems.some((a) => a.text.includes('Late Payer Activity'))).toBe(true);
+  });
+
+  it('concurrent self-refreshes for the same account race-safely (no unhandled unique-constraint error, exactly one row)', async () => {
+    // Regression test for the concurrency corollary of the fix above: a
+    // single Dashboard page load fires useDashboardInsight + useActivity (and
+    // others) in parallel, so two requests can now call generateInsights for
+    // the same account at nearly the same instant. Both would see "no
+    // existing row" for the same dedupeKey and race to create it — this must
+    // not surface as a 500 (Prisma P2002), and must not create a duplicate.
+    const { accountId, lease } = await createLateRentFixture('race', 'Late Payer Race');
+    await makeRentLate(lease.id);
+
+    const results = await Promise.allSettled([
+      insightService.getDashboardInsight(accountId),
+      insightService.listActive(accountId),
+      dashboardService.getActivity(accountId, 10),
+    ]);
+    expect(results.every((r) => r.status === 'fulfilled')).toBe(true);
+
+    const rows = await prisma.insight.findMany({
+      where: { accountId, type: 'late_rent' },
+    });
+    expect(rows).toHaveLength(1);
   });
 });

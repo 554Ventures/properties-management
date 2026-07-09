@@ -6,7 +6,7 @@ import {
   type InsightStatus,
   type Report,
 } from '@hearth/shared';
-import type { Insight as DbInsight } from '@prisma/client';
+import { Prisma, type Insight as DbInsight } from '@prisma/client';
 import {
   addDays,
   addMonthsToPeriod,
@@ -43,10 +43,15 @@ export function toApiInsight(i: DbInsight): Insight {
   };
 }
 
+/** The general insight list (GET /insights, the chat/MCP list_insights tool
+ *  via listActive, and the TenantsList portfolio-renewal banner) — refreshes
+ *  against current data first, for the same reason getDashboardInsight does:
+ *  the only other producer of new rows is the once-a-day scheduler. */
 export async function list(
   accountId: string,
   filter: { status?: InsightStatus; scope?: InsightScope } = {},
 ): Promise<Insight[]> {
+  await generateInsights(accountId);
   const rows = await prisma.insight.findMany({
     where: {
       accountId,
@@ -293,10 +298,20 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
       where: { accountId_dedupeKey: { accountId, dedupeKey: c.dedupeKey } },
     });
     if (existing) continue; // dedupe: dismissal sticks
-    const row = await prisma.insight.create({
-      data: { accountId, ...c, status: 'active' },
-    });
-    created.push(toApiInsight(row));
+    try {
+      const row = await prisma.insight.create({
+        data: { accountId, ...c, status: 'active' },
+      });
+      created.push(toApiInsight(row));
+    } catch (err) {
+      // Now that generateInsights runs on every read (not just the once-a-day
+      // scheduler), a page that fires several dashboard requests in parallel
+      // (e.g. useDashboardInsight + useActivity) can call this concurrently
+      // for the same account — trips @@unique([accountId, dedupeKey]) the
+      // same way concurrent rent materialization does (rent.service.ts).
+      // Someone else's request created it first; dedupe still holds.
+      if (!(err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002')) throw err;
+    }
   }
   return created;
 }
