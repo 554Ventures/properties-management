@@ -169,13 +169,13 @@ export function Login({ initialMode = 'sign_in' }: { initialMode?: Mode }) {
 
   return (
     <div className="flex min-h-screen flex-col bg-app lg:flex-row">
-      {/* Desktop (lg+): left 40%, full height. Mobile/tablet: remaining space
-          below the form, so the chicken still shows bottom-right of the
-          screen — kept as a stacked layout through tablet-portrait widths,
-          since a narrow-but-tall side panel there looked sparse/awkward. */}
-      <LoginArtPanel className="order-2 min-h-[240px] flex-1 lg:order-1 lg:min-h-0 lg:w-2/5 lg:flex-none" />
-
-      <div className="order-1 flex justify-center px-4 pb-6 pt-10 lg:order-2 lg:w-3/5 lg:flex-1 lg:items-center lg:py-4">
+      {/* Desktop (lg+): right 40%, full height, form on the left. Mobile/tablet:
+          remaining space below the form, so the chicken still shows
+          bottom-right of the screen — kept as a stacked layout through
+          tablet-portrait widths, since a narrow-but-tall side panel there
+          looked sparse/awkward. Order is order-2 (art) / order-1 (form) at
+          every breakpoint, so no responsive override is needed. */}
+      <div className="order-1 flex justify-center px-4 pb-6 pt-10 lg:w-3/5 lg:flex-1 lg:items-center lg:py-4">
         <div className="w-full max-w-sm">
           <div className="mb-8 flex items-center justify-center gap-3">
             <img src="/logo.svg" alt="" aria-hidden="true" className="h-11 w-11 rounded-lg" />
@@ -357,6 +357,8 @@ export function Login({ initialMode = 'sign_in' }: { initialMode?: Mode }) {
           </form>
         </div>
       </div>
+
+      <LoginArtPanel className="order-2 min-h-[240px] flex-1 lg:min-h-0 lg:w-2/5 lg:flex-none" />
     </div>
   );
 }
