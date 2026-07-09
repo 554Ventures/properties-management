@@ -8,6 +8,7 @@
 // in this mode when a recovery session is active).
 import { useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
+import { LoginArtPanel } from '../components/login/LoginArtPanel';
 import { Button } from '../components/ui/Button';
 import { FormField, Input } from '../components/ui/FormField';
 import { CURRENT_POLICY_VERSION, markConsentPending } from '../lib/consent';
@@ -167,182 +168,194 @@ export function Login({ initialMode = 'sign_in' }: { initialMode?: Mode }) {
           : 'Update password';
 
   return (
-    <div className="grid min-h-screen place-items-center bg-app px-4">
-      <div className="w-full max-w-sm">
-        <div className="mb-8 flex items-center justify-center gap-3">
-          <img src="/logo.svg" alt="" aria-hidden="true" className="h-11 w-11 rounded-lg" />
-          <span className="text-2xl font-semibold tracking-tight text-ink">554 Properties</span>
-        </div>
-        <form
-          onSubmit={submit}
-          className="flex flex-col gap-4 rounded-lg border border-border bg-surface p-6 shadow-card"
-          aria-labelledby="login-heading"
-        >
-          <h1 id="login-heading" className="text-lg font-semibold text-ink">
-            {HEADINGS[mode]}
-          </h1>
-          {mode === 'forgot' && (
-            <p className="text-sm text-ink-muted">
-              Enter your email and we&rsquo;ll send you a link to set a new password.
-            </p>
-          )}
-          {mode === 'update_password' && (
-            <p className="text-sm text-ink-muted">Choose a new password for your account.</p>
-          )}
-          {notice && (
-            <p role="status" className="rounded-md bg-surface-sunken px-3 py-2 text-sm text-ink">
-              {notice}
-            </p>
-          )}
-          {error && (
-            <p role="alert" className="rounded-md bg-danger-soft px-3 py-2 text-sm text-danger">
-              {error}
-            </p>
-          )}
-          {showEmail && (
-            <FormField label="Email" htmlFor="login-email" required>
-              <Input
-                type="email"
-                name="email"
-                autoComplete="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-            </FormField>
-          )}
-          {showPassword && (
-            <FormField
-              label={mode === 'update_password' ? 'New password' : 'Password'}
-              htmlFor="login-password"
-              required
-              hint={mode === 'sign_up' || mode === 'update_password' ? 'At least 8 characters.' : undefined}
-            >
-              <Input
-                type="password"
-                name="password"
-                autoComplete={mode === 'sign_in' ? 'current-password' : 'new-password'}
-                minLength={mode === 'sign_up' || mode === 'update_password' ? 8 : undefined}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </FormField>
-          )}
-          {mode === 'update_password' && (
-            <FormField label="Confirm new password" htmlFor="login-confirm" required>
-              <Input
-                type="password"
-                name="confirm"
-                autoComplete="new-password"
-                minLength={8}
-                value={confirm}
-                onChange={(e) => setConfirm(e.target.value)}
-              />
-            </FormField>
-          )}
-          {mode === 'sign_up' && (
-            <label className="flex items-start gap-2 text-sm text-ink">
-              <input
-                type="checkbox"
-                className="mt-0.5"
-                checked={agreedToPolicies}
-                onChange={(e) => setAgreedToPolicies(e.target.checked)}
-                aria-describedby="consent-hint"
+    <div className="flex min-h-screen flex-col bg-app lg:flex-row">
+      {/* Desktop (lg+): left 40%, full height. Mobile/tablet: remaining space
+          below the form, so the chicken still shows bottom-right of the
+          screen — kept as a stacked layout through tablet-portrait widths,
+          since a narrow-but-tall side panel there looked sparse/awkward. */}
+      <LoginArtPanel className="order-2 min-h-[240px] flex-1 lg:order-1 lg:min-h-0 lg:w-2/5 lg:flex-none" />
+
+      <div className="order-1 flex justify-center px-4 pb-6 pt-10 lg:order-2 lg:w-3/5 lg:flex-1 lg:items-center lg:py-4">
+        <div className="w-full max-w-sm">
+          <div className="mb-8 flex items-center justify-center gap-3">
+            <img src="/logo.svg" alt="" aria-hidden="true" className="h-11 w-11 rounded-lg" />
+            <span className="text-2xl font-semibold tracking-tight text-ink">554 Properties</span>
+          </div>
+          <form
+            onSubmit={submit}
+            className="flex flex-col gap-4 rounded-lg border border-border bg-surface p-6 shadow-card"
+            aria-labelledby="login-heading"
+          >
+            <h1 id="login-heading" className="text-lg font-semibold text-ink">
+              {HEADINGS[mode]}
+            </h1>
+            {mode === 'forgot' && (
+              <p className="text-sm text-ink-muted">
+                Enter your email and we&rsquo;ll send you a link to set a new password.
+              </p>
+            )}
+            {mode === 'update_password' && (
+              <p className="text-sm text-ink-muted">Choose a new password for your account.</p>
+            )}
+            {notice && (
+              <p role="status" className="rounded-md bg-surface-sunken px-3 py-2 text-sm text-ink">
+                {notice}
+              </p>
+            )}
+            {error && (
+              <p role="alert" className="rounded-md bg-danger-soft px-3 py-2 text-sm text-danger">
+                {error}
+              </p>
+            )}
+            {showEmail && (
+              <FormField label="Email" htmlFor="login-email" required>
+                <Input
+                  type="email"
+                  name="email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                />
+              </FormField>
+            )}
+            {showPassword && (
+              <FormField
+                label={mode === 'update_password' ? 'New password' : 'Password'}
+                htmlFor="login-password"
                 required
-              />
-              <span id="consent-hint">
-                I agree to the{' '}
-                <Link
-                  to="/privacy"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="font-medium text-brand underline"
-                >
-                  Privacy Policy
-                </Link>{' '}
-                and{' '}
-                <Link
-                  to="/terms"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="font-medium text-brand underline"
-                >
-                  Terms of Service
-                </Link>
-                .
-              </span>
-            </label>
-          )}
+                hint={
+                  mode === 'sign_up' || mode === 'update_password'
+                    ? 'At least 8 characters.'
+                    : undefined
+                }
+              >
+                <Input
+                  type="password"
+                  name="password"
+                  autoComplete={mode === 'sign_in' ? 'current-password' : 'new-password'}
+                  minLength={mode === 'sign_up' || mode === 'update_password' ? 8 : undefined}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+              </FormField>
+            )}
+            {mode === 'update_password' && (
+              <FormField label="Confirm new password" htmlFor="login-confirm" required>
+                <Input
+                  type="password"
+                  name="confirm"
+                  autoComplete="new-password"
+                  minLength={8}
+                  value={confirm}
+                  onChange={(e) => setConfirm(e.target.value)}
+                />
+              </FormField>
+            )}
+            {mode === 'sign_up' && (
+              <label className="flex items-start gap-2 text-sm text-ink">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={agreedToPolicies}
+                  onChange={(e) => setAgreedToPolicies(e.target.checked)}
+                  aria-describedby="consent-hint"
+                  required
+                />
+                <span id="consent-hint">
+                  I agree to the{' '}
+                  <Link
+                    to="/privacy"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-medium text-brand underline"
+                  >
+                    Privacy Policy
+                  </Link>{' '}
+                  and{' '}
+                  <Link
+                    to="/terms"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-medium text-brand underline"
+                  >
+                    Terms of Service
+                  </Link>
+                  .
+                </span>
+              </label>
+            )}
 
-          <Button type="submit" busy={busy} disabled={consentRequired}>
-            {submitLabel}
-          </Button>
+            <Button type="submit" busy={busy} disabled={consentRequired}>
+              {submitLabel}
+            </Button>
 
-          {(mode === 'sign_in' || mode === 'sign_up') && supabase && (
-            <>
-              <div className="flex items-center gap-3" role="presentation">
-                <div className="h-px flex-1 bg-border" />
-                <span className="text-xs text-ink-muted">or</span>
-                <div className="h-px flex-1 bg-border" />
+            {(mode === 'sign_in' || mode === 'sign_up') && supabase && (
+              <>
+                <div className="flex items-center gap-3" role="presentation">
+                  <div className="h-px flex-1 bg-border" />
+                  <span className="text-xs text-ink-muted">or</span>
+                  <div className="h-px flex-1 bg-border" />
+                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  busy={busy}
+                  disabled={consentRequired}
+                  onClick={() => void signInWithGoogle()}
+                >
+                  <GoogleIcon />
+                  Continue with Google
+                </Button>
+              </>
+            )}
+
+            {mode === 'sign_in' && (
+              <div className="flex flex-col gap-2">
+                <button
+                  type="button"
+                  className="text-left text-sm font-medium text-brand hover:underline"
+                  onClick={() => switchMode('forgot')}
+                >
+                  Forgot your password?
+                </button>
+                <button
+                  type="button"
+                  className="text-left text-sm font-medium text-brand hover:underline"
+                  onClick={() => switchMode('sign_up')}
+                >
+                  New to 554 Properties? Create an account
+                </button>
               </div>
-              <Button
-                type="button"
-                variant="secondary"
-                busy={busy}
-                disabled={consentRequired}
-                onClick={() => void signInWithGoogle()}
-              >
-                <GoogleIcon />
-                Continue with Google
-              </Button>
-            </>
-          )}
-
-          {mode === 'sign_in' && (
-            <div className="flex flex-col gap-2">
+            )}
+            {mode === 'sign_up' && (
               <button
                 type="button"
-                className="text-left text-sm font-medium text-brand hover:underline"
-                onClick={() => switchMode('forgot')}
+                className="text-sm font-medium text-brand hover:underline"
+                onClick={() => switchMode('sign_in')}
               >
-                Forgot your password?
+                Already have an account? Sign in
               </button>
+            )}
+            {mode === 'forgot' && (
               <button
                 type="button"
-                className="text-left text-sm font-medium text-brand hover:underline"
-                onClick={() => switchMode('sign_up')}
+                className="text-sm font-medium text-brand hover:underline"
+                onClick={() => switchMode('sign_in')}
               >
-                New to 554 Properties? Create an account
+                Back to sign in
               </button>
-            </div>
-          )}
-          {mode === 'sign_up' && (
-            <button
-              type="button"
-              className="text-sm font-medium text-brand hover:underline"
-              onClick={() => switchMode('sign_in')}
-            >
-              Already have an account? Sign in
-            </button>
-          )}
-          {mode === 'forgot' && (
-            <button
-              type="button"
-              className="text-sm font-medium text-brand hover:underline"
-              onClick={() => switchMode('sign_in')}
-            >
-              Back to sign in
-            </button>
-          )}
-          {mode === 'update_password' && (
-            <button
-              type="button"
-              className="text-sm font-medium text-brand hover:underline"
-              onClick={() => void signOut()}
-            >
-              Back to sign in
-            </button>
-          )}
-        </form>
+            )}
+            {mode === 'update_password' && (
+              <button
+                type="button"
+                className="text-sm font-medium text-brand hover:underline"
+                onClick={() => void signOut()}
+              >
+                Back to sign in
+              </button>
+            )}
+          </form>
+        </div>
       </div>
     </div>
   );

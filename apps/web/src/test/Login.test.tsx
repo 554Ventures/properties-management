@@ -216,6 +216,20 @@ describe('Login', () => {
     expect(updateUser).not.toHaveBeenCalled();
   });
 
+  it('renders the decorative chicken art panel as aria-hidden, out of the a11y tree and tab order', () => {
+    const { container } = renderLogin();
+    const art = container.querySelector('img[src="/login-art.svg"]');
+    expect(art).not.toBeNull();
+    expect(art).toHaveAttribute('alt', '');
+    // The whole panel (art + decorative circles), not just the <img>, must be
+    // hidden — none of it is informational content.
+    const panel = art?.closest('[aria-hidden="true"]');
+    expect(panel).not.toBeNull();
+    // Nothing inside the art panel should be reachable via the a11y tree —
+    // confirm no role/label leaks through (it's purely decorative circles + image).
+    expect(panel?.querySelectorAll('button, a, input, [tabindex]')).toHaveLength(0);
+  });
+
   it('has no axe violations', async () => {
     const { container } = renderLogin();
     const results = await axe.run(container, {
