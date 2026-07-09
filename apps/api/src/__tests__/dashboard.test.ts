@@ -1,10 +1,17 @@
 // (a) Dashboard KPIs equal the pinned seed constants exactly.
+import {
+  ExpenseBreakdownResponseSchema,
+  PropertyNoiResponseSchema,
+} from '@hearth/shared';
 import { describe, expect, it } from 'vitest';
 import {
+  COLLECTED_MTD_CENTS,
+  CURRENT_MONTH_EXPENSES,
   EXPENSES_MTD_CENTS,
   NET_CASHFLOW_MTD_CENTS,
   PAID_UNITS,
   RENT_COLLECTED_PCT,
+  SEED_PROPERTIES,
   TAX_SET_ASIDE_CURRENT_CENTS,
   TAX_SET_ASIDE_TARGET_CENTS,
   TOTAL_UNITS,
@@ -34,5 +41,58 @@ describe('dashboardService.getKpis (seed constants)', () => {
     const first = series[0];
     expect(first?.incomeCents).toBe(1369500);
     expect(first?.expenseCents).toBeGreaterThan(0);
+  });
+});
+
+describe('dashboardService.getExpenseBreakdown (seed constants)', () => {
+  it('decomposes the MTD expense KPI by category', async () => {
+    const accountId = await getDemoAccountId();
+    const result = await dashboardService.getExpenseBreakdown(accountId);
+    ExpenseBreakdownResponseSchema.parse(result);
+
+    // Total must reconcile with the pinned "Expenses (MTD)" KPI.
+    expect(result.totalCents).toBe(EXPENSES_MTD_CENTS); // 311000
+    const sliceSum = result.slices.reduce((s, x) => s + x.amountCents, 0);
+    expect(sliceSum).toBe(EXPENSES_MTD_CENTS);
+
+    // Slices are sorted descending and cover every current-month category.
+    const byCategory = new Map(result.slices.map((s) => [s.categoryName, s.amountCents]));
+    for (const e of CURRENT_MONTH_EXPENSES) {
+      expect(byCategory.get(e.categoryName)).toBe(e.amountCents);
+    }
+    const amounts = result.slices.map((s) => s.amountCents);
+    expect([...amounts].sort((a, b) => b - a)).toEqual(amounts);
+    expect(result.slices.some((s) => s.categoryName === 'Other')).toBe(false);
+  });
+});
+
+describe('dashboardService.getNoiByProperty (seed constants)', () => {
+  it('returns per-property operating income, sorted, excluding portfolio costs', async () => {
+    const accountId = await getDemoAccountId();
+    const result = await dashboardService.getNoiByProperty(accountId);
+    PropertyNoiResponseSchema.parse(result);
+
+    // One row per active seed property.
+    expect(result.properties).toHaveLength(SEED_PROPERTIES.length); // 9
+
+    // Attributed income = all collected rent; attributed expense = only the
+    // current-month expenses tagged to a property (portfolio-level lines drop).
+    const attributedExpense = CURRENT_MONTH_EXPENSES.filter((e) => e.propertyKey !== null).reduce(
+      (s, e) => s + e.amountCents,
+      0,
+    );
+    const sumIncome = result.properties.reduce((s, p) => s + p.incomeCents, 0);
+    const sumExpense = result.properties.reduce((s, p) => s + p.expenseCents, 0);
+    const sumNoi = result.properties.reduce((s, p) => s + p.noiCents, 0);
+    expect(sumIncome).toBe(COLLECTED_MTD_CENTS); // 1156000
+    expect(sumExpense).toBe(attributedExpense); // 233000 (Insurance excluded)
+    expect(sumNoi).toBe(COLLECTED_MTD_CENTS - attributedExpense);
+
+    // noi = income − expense for each row, sorted descending.
+    for (const p of result.properties) {
+      expect(p.noiCents).toBe(p.incomeCents - p.expenseCents);
+    }
+    const nois = result.properties.map((p) => p.noiCents);
+    expect([...nois].sort((a, b) => b - a)).toEqual(nois);
   });
 });

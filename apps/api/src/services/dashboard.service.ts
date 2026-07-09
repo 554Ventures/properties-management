@@ -2,7 +2,9 @@ import {
   formatUsdWhole,
   type ActivityItem,
   type DashboardKpisResponse,
+  type ExpenseBreakdownResponse,
   type IncomeExpenseSeriesResponse,
+  type PropertyNoiResponse,
 } from '@hearth/shared';
 import {
   addMonthsToPeriod,
@@ -122,6 +124,106 @@ export async function getIncomeExpenseSeries(
     out.push({ month: p, incomeCents: sums.incomeCents, expenseCents: sums.expenseCents });
   }
   return out;
+}
+
+// Top expense categories shown as their own donut slice; the rest fold into a
+// single "Other" bucket so the palette never exceeds its categorical slots.
+const EXPENSE_BREAKDOWN_TOP = 7;
+
+/** This month's confirmed expenses grouped by category (decomposes the MTD
+ * expense KPI). Mirrors the KPI's active-portfolio filter. */
+export async function getExpenseBreakdown(accountId: string): Promise<ExpenseBreakdownResponse> {
+  const period = currentPeriod();
+  const range = { from: monthStart(period), to: monthEndExclusive(period) };
+  const grouped = await prisma.transaction.groupBy({
+    by: ['categoryId'],
+    where: {
+      accountId,
+      status: 'confirmed',
+      type: 'expense',
+      date: { gte: range.from, lt: range.to },
+      // Match getKpis: active portfolio + account-level (unassigned) lines.
+      OR: [{ propertyId: null }, { property: { archivedAt: null } }],
+    },
+    _sum: { amountCents: true },
+  });
+
+  const categoryIds = grouped
+    .map((g) => g.categoryId)
+    .filter((id): id is string => id !== null);
+  const categories = await prisma.category.findMany({
+    where: { id: { in: categoryIds } },
+    select: { id: true, name: true },
+  });
+  const nameById = new Map(categories.map((c) => [c.id, c.name]));
+
+  const sorted = grouped
+    .map((g) => ({
+      categoryId: g.categoryId,
+      categoryName: g.categoryId ? (nameById.get(g.categoryId) ?? 'Uncategorized') : 'Uncategorized',
+      amountCents: g._sum.amountCents ?? 0,
+    }))
+    .filter((s) => s.amountCents > 0)
+    .sort((a, b) => b.amountCents - a.amountCents);
+
+  const totalCents = sorted.reduce((sum, s) => sum + s.amountCents, 0);
+
+  // Fold everything past the top N into one "Other" slice (only when it would
+  // actually shorten the list — a lone extra category stays as itself).
+  let slices = sorted;
+  if (sorted.length > EXPENSE_BREAKDOWN_TOP + 1) {
+    const head = sorted.slice(0, EXPENSE_BREAKDOWN_TOP);
+    const otherCents = sorted
+      .slice(EXPENSE_BREAKDOWN_TOP)
+      .reduce((sum, s) => sum + s.amountCents, 0);
+    slices = [...head, { categoryId: null, categoryName: 'Other', amountCents: otherCents }];
+  }
+
+  return { month: period, totalCents, slices };
+}
+
+/** This month's operating income per active property (directly-attributed
+ * income − expense). Portfolio-level lines can't be attributed to one property
+ * and are excluded. Sorted descending by NOI. */
+export async function getNoiByProperty(accountId: string): Promise<PropertyNoiResponse> {
+  const period = currentPeriod();
+  const range = { from: monthStart(period), to: monthEndExclusive(period) };
+
+  const properties = await prisma.property.findMany({
+    where: { accountId, archivedAt: null },
+    select: { id: true, nickname: true, addressLine1: true },
+  });
+
+  const grouped = await prisma.transaction.groupBy({
+    by: ['propertyId', 'type'],
+    where: {
+      accountId,
+      status: 'confirmed',
+      date: { gte: range.from, lt: range.to },
+      propertyId: { not: null },
+      property: { archivedAt: null },
+    },
+    _sum: { amountCents: true },
+  });
+
+  const cents = (propertyId: string, type: 'income' | 'expense') =>
+    grouped.find((g) => g.propertyId === propertyId && g.type === type)?._sum.amountCents ?? 0;
+
+  const rows = properties
+    .map((p) => {
+      const incomeCents = cents(p.id, 'income');
+      const expenseCents = cents(p.id, 'expense');
+      return {
+        propertyId: p.id,
+        label: p.nickname ?? p.addressLine1,
+        incomeCents,
+        expenseCents,
+        noiCents: incomeCents - expenseCents,
+      };
+    })
+    .sort((a, b) => b.noiCents - a.noiCents);
+
+  return { month: period, properties: rows };
 }
 
 export async function getActivity(accountId: string, limit: number): Promise<ActivityItem[]> {

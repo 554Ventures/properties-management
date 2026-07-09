@@ -18,6 +18,7 @@ import type {
   DashboardKpisResponse,
   DismissAllReviewResponse,
   EsignEnvelopeResponse,
+  ExpenseBreakdownResponse,
   GenerateReportInput,
   ImportTransactionsResponse,
   IncomeExpenseSeriesResponse,
@@ -32,6 +33,7 @@ import type {
   LinkTokenResponse,
   Property,
   PropertyDetailResponse,
+  PropertyNoiResponse,
   PropertyWithStats,
   ReceiptScanResponse,
   RecordRentPaymentInput,
@@ -81,6 +83,22 @@ export function useCashflowSeries(months = 6) {
     queryKey: ['dashboard', 'cashflow-series', months],
     queryFn: () =>
       api.get<IncomeExpenseSeriesResponse>(`/dashboard/cashflow-series${toQuery({ months })}`),
+    staleTime: STALE_SHORT,
+  });
+}
+
+export function useExpenseBreakdown() {
+  return useQuery({
+    queryKey: ['dashboard', 'expense-breakdown'],
+    queryFn: () => api.get<ExpenseBreakdownResponse>('/dashboard/expense-breakdown'),
+    staleTime: STALE_SHORT,
+  });
+}
+
+export function useNoiByProperty() {
+  return useQuery({
+    queryKey: ['dashboard', 'noi-by-property'],
+    queryFn: () => api.get<PropertyNoiResponse>('/dashboard/noi-by-property'),
     staleTime: STALE_SHORT,
   });
 }

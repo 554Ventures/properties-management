@@ -49,6 +49,28 @@ const series: IncomeExpenseSeriesResponse = [
   { month: '2026-07', incomeCents: 1156000, expenseCents: 311000 },
 ];
 
+const expenseBreakdown = {
+  month: '2026-07',
+  totalCents: 311000,
+  slices: [
+    { categoryId: 'c-ins', categoryName: 'Insurance', amountCents: 78000 },
+    { categoryId: 'c-util', categoryName: 'Utilities', amountCents: 64000 },
+    { categoryId: 'c-hoa', categoryName: 'HOA Fees', amountCents: 50000 },
+    { categoryId: 'c-rep', categoryName: 'Repairs', amountCents: 48000 },
+    { categoryId: 'c-land', categoryName: 'Landscaping', amountCents: 31000 },
+    { categoryId: 'c-clean', categoryName: 'Cleaning & Maintenance', amountCents: 22000 },
+    { categoryId: 'c-sup', categoryName: 'Supplies', amountCents: 18000 },
+  ],
+};
+
+const noiByProperty = {
+  month: '2026-07',
+  properties: [
+    { propertyId: 'p2', label: '88 Oak Ave', incomeCents: 265000, expenseCents: 48000, noiCents: 217000 },
+    { propertyId: 'p1', label: '12 Maple St', incomeCents: 125000, expenseCents: 31000, noiCents: 94000 },
+  ],
+};
+
 const activity: ActivityItem[] = [
   {
     id: 'a1',
@@ -108,6 +130,8 @@ const properties: PropertyWithStats[] = [
 const fixtures: Record<string, unknown> = {
   '/api/v1/dashboard/kpis': kpis,
   '/api/v1/dashboard/cashflow-series': series,
+  '/api/v1/dashboard/expense-breakdown': expenseBreakdown,
+  '/api/v1/dashboard/noi-by-property': noiByProperty,
   '/api/v1/dashboard/activity': activity,
   '/api/v1/dashboard/insight': insight,
   '/api/v1/properties': properties,

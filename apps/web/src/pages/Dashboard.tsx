@@ -7,11 +7,16 @@ import {
   useCashflowSeries,
   useDashboardInsight,
   useDashboardKpis,
+  useExpenseBreakdown,
+  useNoiByProperty,
   useProperties,
 } from '../api/queries';
 import { InsightCard } from '../components/ai/InsightCard';
 import { BarChart } from '../components/charts/BarChart';
 import { ChartContainer } from '../components/charts/ChartContainer';
+import { categoricalRole } from '../components/charts/chartTheme';
+import { DonutChart } from '../components/charts/DonutChart';
+import { HorizontalBarChart } from '../components/charts/HorizontalBarChart';
 import { PageHeader } from '../components/shell/PageHeader';
 import { buttonClasses } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
@@ -50,6 +55,8 @@ export function Dashboard() {
   usePageTitle('Dashboard');
   const kpis = useDashboardKpis();
   const series = useCashflowSeries(6);
+  const expenseBreakdown = useExpenseBreakdown();
+  const noiByProperty = useNoiByProperty();
   const activity = useActivity(10);
   const insight = useDashboardInsight();
   const properties = useProperties();
@@ -128,7 +135,7 @@ export function Dashboard() {
       </section>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-2">
+        <div className="flex flex-col gap-6 lg:col-span-2">
           {series.isPending ? (
             <Card>
               <Skeleton className="mb-4 h-5 w-48" />
@@ -173,6 +180,103 @@ export function Dashboard() {
               />
             </ChartContainer>
           )}
+
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+            {expenseBreakdown.isPending ? (
+              <Card>
+                <Skeleton className="mb-4 h-5 w-48" />
+                <Skeleton className="h-[260px] w-full" />
+              </Card>
+            ) : expenseBreakdown.isError ? (
+              <ErrorNotice
+                error={expenseBreakdown.error}
+                onRetry={() => void expenseBreakdown.refetch()}
+              />
+            ) : expenseBreakdown.data.slices.length === 0 ? (
+              <Card>
+                <h2 className="mb-1 text-sm font-semibold text-ink">Where expenses went</h2>
+                <p className="text-sm text-ink-muted">No expenses recorded this month yet.</p>
+              </Card>
+            ) : (
+              <ChartContainer
+                title="Where expenses went — this month"
+                description={`This month's ${formatUsdWhole(expenseBreakdown.data.totalCents)} in expenses by category. ${expenseBreakdown.data.slices
+                  .map((s) => `${s.categoryName}: ${formatUsdWhole(s.amountCents)}`)
+                  .join('; ')}.`}
+                headingLevel={2}
+                table={{
+                  columns: [
+                    { key: 'category', label: 'Category' },
+                    { key: 'amount', label: 'Amount', align: 'right', format: 'usd' },
+                  ],
+                  rows: expenseBreakdown.data.slices.map((s) => ({
+                    category: s.categoryName,
+                    amount: s.amountCents,
+                  })),
+                }}
+              >
+                <DonutChart
+                  data={expenseBreakdown.data.slices.map((s, i) => ({
+                    name: s.categoryName,
+                    value: s.amountCents,
+                    // "Other" (folded bucket, null id) reads as the neutral slot.
+                    role: s.categoryId === null ? 'neutral' : categoricalRole(i),
+                  }))}
+                />
+              </ChartContainer>
+            )}
+
+            {noiByProperty.isPending ? (
+              <Card>
+                <Skeleton className="mb-4 h-5 w-48" />
+                <Skeleton className="h-[260px] w-full" />
+              </Card>
+            ) : noiByProperty.isError ? (
+              <ErrorNotice
+                error={noiByProperty.error}
+                onRetry={() => void noiByProperty.refetch()}
+              />
+            ) : noiByProperty.data.properties.length === 0 ? (
+              <Card>
+                <h2 className="mb-1 text-sm font-semibold text-ink">
+                  Operating income by property
+                </h2>
+                <p className="text-sm text-ink-muted">
+                  Add a property to see per-property performance.
+                </p>
+              </Card>
+            ) : (
+              <ChartContainer
+                title="Operating income by property — this month"
+                description={`This month's operating income (rent collected minus directly-billed expenses) per property; portfolio-level costs are excluded. ${noiByProperty.data.properties
+                  .map((p) => `${p.label}: ${formatUsdWhole(p.noiCents)}`)
+                  .join('; ')}.`}
+                headingLevel={2}
+                table={{
+                  columns: [
+                    { key: 'label', label: 'Property' },
+                    { key: 'income', label: 'Income', align: 'right', format: 'usd' },
+                    { key: 'expense', label: 'Expenses', align: 'right', format: 'usd' },
+                    { key: 'noi', label: 'Net', align: 'right', format: 'usd' },
+                  ],
+                  rows: noiByProperty.data.properties.map((p) => ({
+                    label: p.label,
+                    income: p.incomeCents,
+                    expense: p.expenseCents,
+                    noi: p.noiCents,
+                  })),
+                }}
+              >
+                <HorizontalBarChart
+                  data={noiByProperty.data.properties.map((p) => ({
+                    label: p.label,
+                    value: p.noiCents,
+                  }))}
+                  valueLabel="Net operating income"
+                />
+              </ChartContainer>
+            )}
+          </div>
         </div>
 
         <div className="flex flex-col gap-6">

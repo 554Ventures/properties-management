@@ -16,7 +16,7 @@ export function Table({ caption, captionVisible = false, children, className }: 
     <div className="overflow-x-auto">
       <table className={cx('w-full border-collapse text-sm', className)}>
         <caption
-          className={captionVisible ? 'py-2 text-left text-sm font-semibold text-ink' : 'sr-only'}
+          className={captionVisible ? 'p-4 text-left text-sm font-semibold text-ink' : 'sr-only'}
         >
           {caption}
         </caption>

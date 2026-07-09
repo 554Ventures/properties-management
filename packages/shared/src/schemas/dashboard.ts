@@ -28,6 +28,38 @@ export const IncomeExpensePointSchema = z.object({
 
 export const IncomeExpenseSeriesResponseSchema = z.array(IncomeExpensePointSchema);
 
+// GET /dashboard/expense-breakdown — this month's confirmed expenses grouped
+// by category (decomposes the "Expenses (MTD)" KPI). Slices are sorted
+// descending; categories past the top few fold into a single "Other" bucket.
+export const ExpenseBreakdownSliceSchema = z.object({
+  categoryId: z.string().nullable(), // null = uncategorized, or the folded "Other" bucket
+  categoryName: z.string(),
+  amountCents: z.number().int(),
+});
+
+export const ExpenseBreakdownResponseSchema = z.object({
+  month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'expected "YYYY-MM"'),
+  totalCents: z.number().int(),
+  slices: z.array(ExpenseBreakdownSliceSchema),
+});
+
+// GET /dashboard/noi-by-property — this month's operating income per property
+// (directly-attributed confirmed income − expense). Portfolio-level (unassigned)
+// transactions are excluded since they can't be attributed to one property.
+// Sorted descending by noiCents.
+export const PropertyNoiSchema = z.object({
+  propertyId: z.string(),
+  label: z.string(), // nickname or addressLine1
+  incomeCents: z.number().int(),
+  expenseCents: z.number().int(),
+  noiCents: z.number().int(),
+});
+
+export const PropertyNoiResponseSchema = z.object({
+  month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'expected "YYYY-MM"'),
+  properties: z.array(PropertyNoiSchema),
+});
+
 // GET /dashboard/activity?limit=10
 export const ActivityKindSchema = z.enum([
   'transaction',

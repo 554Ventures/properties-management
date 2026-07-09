@@ -18,6 +18,14 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
     return dashboardService.getIncomeExpenseSeries(req.accountId, q.months ?? 6);
   });
 
+  app.get('/dashboard/expense-breakdown', async (req) =>
+    dashboardService.getExpenseBreakdown(req.accountId),
+  );
+
+  app.get('/dashboard/noi-by-property', async (req) =>
+    dashboardService.getNoiByProperty(req.accountId),
+  );
+
   app.get('/dashboard/activity', async (req) => {
     const q = parseQuery(
       ActivityQuerySchema,
