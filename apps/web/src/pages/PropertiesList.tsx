@@ -12,9 +12,9 @@ import { Card } from '../components/ui/Card';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorNotice } from '../components/ui/ErrorNotice';
+import { DataTable, type DataTableColumn } from '../components/ui/DataTable';
 import { Skeleton } from '../components/ui/Skeleton';
 import { StatusBadge, type BadgeTone } from '../components/ui/StatusBadge';
-import { Table, Td, Th, Tr } from '../components/ui/Table';
 import { useToast } from '../components/ui/Toast';
 import { IconBuilding, IconPlus } from '../components/ui/icons';
 import { usePageTitle } from '../lib/usePageTitle';
@@ -35,6 +35,75 @@ export function PropertiesList() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<PropertyWithStats | null>(null);
   const [archiving, setArchiving] = useState<PropertyWithStats | null>(null);
+
+  const columns: DataTableColumn<PropertyWithStats>[] = [
+    {
+      id: 'property',
+      header: 'Property',
+      sortAccessor: (p) => p.nickname ?? p.addressLine1,
+      filter: { kind: 'text', accessor: (p) => `${p.nickname ?? ''} ${p.addressLine1}` },
+      searchAccessor: (p) =>
+        `${p.nickname ?? ''} ${p.addressLine1} ${p.city} ${p.state} ${p.zip}`,
+      cell: (p) => (
+        <>
+          <Link
+            to={`/properties/${p.id}`}
+            className="font-medium text-ink transition-colors duration-fast hover:text-brand"
+          >
+            {p.nickname ?? p.addressLine1}
+          </Link>
+          <p className="mt-0.5 text-xs text-ink-muted">
+            {p.nickname ? `${p.addressLine1} · ` : ''}
+            {p.city}, {p.state} {p.zip}
+          </p>
+        </>
+      ),
+    },
+    {
+      id: 'units',
+      header: 'Units',
+      sortAccessor: (p) => p.unitCount,
+      filter: { kind: 'number', accessor: (p) => p.unitCount },
+      cell: (p) => p.unitCount,
+    },
+    {
+      id: 'occupancy',
+      header: 'Occupancy',
+      sortAccessor: (p) => (p.unitCount === 0 ? 0 : p.occupiedCount / p.unitCount),
+      cell: (p) => `${p.occupiedCount}/${p.unitCount} occupied`,
+    },
+    {
+      id: 'rent',
+      header: 'Rent / mo',
+      align: 'right',
+      sortAccessor: (p) => p.monthlyRentCents,
+      filter: { kind: 'number', accessor: (p) => p.monthlyRentCents / 100, unit: '$' },
+      cell: (p) => formatUsdWhole(p.monthlyRentCents),
+    },
+    {
+      id: 'status',
+      header: 'Status',
+      sortAccessor: (p) => p.statusLabel,
+      filter: { kind: 'select', accessor: (p) => p.statusLabel },
+      cell: (p) => <StatusBadge tone={statusTone(p.statusLabel)}>{p.statusLabel}</StatusBadge>,
+    },
+    {
+      id: 'actions',
+      header: <span className="sr-only">Actions</span>,
+      align: 'right',
+      stickyRight: true,
+      cell: (p) => (
+        <div className="flex justify-end gap-1">
+          <Button variant="ghost" size="sm" onClick={() => setEditing(p)}>
+            Edit
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => setArchiving(p)}>
+            Archive
+          </Button>
+        </div>
+      ),
+    },
+  ];
 
   const confirmArchive = () => {
     if (!archiving) return;
@@ -83,58 +152,15 @@ export function PropertiesList() {
         </Card>
       ) : (
         <Card flush>
-          <Table caption="Properties — address, units, occupancy, monthly rent, and status">
-            <thead>
-              <tr>
-                <Th>Property</Th>
-                <Th>Units</Th>
-                <Th>Occupancy</Th>
-                <Th align="right">Rent / mo</Th>
-                <Th>Status</Th>
-                <Th align="right" stickyRight>
-                  <span className="sr-only">Actions</span>
-                </Th>
-              </tr>
-            </thead>
-            <tbody>
-              {properties.data.map((property) => (
-                <Tr key={property.id} hover>
-                  <Td>
-                    <Link
-                      to={`/properties/${property.id}`}
-                      className="font-medium text-ink transition-colors duration-fast hover:text-brand"
-                    >
-                      {property.nickname ?? property.addressLine1}
-                    </Link>
-                    <p className="mt-0.5 text-xs text-ink-muted">
-                      {property.nickname ? `${property.addressLine1} · ` : ''}
-                      {property.city}, {property.state} {property.zip}
-                    </p>
-                  </Td>
-                  <Td>{property.unitCount}</Td>
-                  <Td>
-                    {property.occupiedCount}/{property.unitCount} occupied
-                  </Td>
-                  <Td align="right">{formatUsdWhole(property.monthlyRentCents)}</Td>
-                  <Td>
-                    <StatusBadge tone={statusTone(property.statusLabel)}>
-                      {property.statusLabel}
-                    </StatusBadge>
-                  </Td>
-                  <Td align="right" stickyRight>
-                    <div className="flex justify-end gap-1">
-                      <Button variant="ghost" size="sm" onClick={() => setEditing(property)}>
-                        Edit
-                      </Button>
-                      <Button variant="ghost" size="sm" onClick={() => setArchiving(property)}>
-                        Archive
-                      </Button>
-                    </div>
-                  </Td>
-                </Tr>
-              ))}
-            </tbody>
-          </Table>
+          <DataTable
+            caption="Properties — address, units, occupancy, monthly rent, and status"
+            columns={columns}
+            data={properties.data}
+            rowKey={(p) => p.id}
+            searchPlaceholder="Search properties"
+            pageSize={20}
+            itemNoun={{ one: 'property', other: 'properties' }}
+          />
         </Card>
       )}
 

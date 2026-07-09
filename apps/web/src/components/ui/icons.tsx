@@ -180,3 +180,43 @@ export const IconBell = (p: IconProps) => (
     <path d="M10 20a2.2 2.2 0 0 0 4 0" />
   </svg>
 );
+
+export const IconSearch = (p: IconProps) => (
+  <svg {...base(p)}>
+    <circle cx="11" cy="11" r="7" />
+    <path d="m20 20-3.5-3.5" />
+  </svg>
+);
+
+export const IconChevronLeft = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M15 5l-7 7 7 7" />
+  </svg>
+);
+
+// A neutral (unsorted) indicator: a stacked up/down chevron.
+export const IconChevronUpDown = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M8 9l4-4 4 4M8 15l4 4 4-4" />
+  </svg>
+);
+
+export const IconArrowUp = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M12 20V5M6 11l6-6 6 6" />
+  </svg>
+);
+
+export const IconArrowDown = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M12 4v15M6 13l6 6 6-6" />
+  </svg>
+);
+
+// A filter funnel — a "dot" fill state signals an active filter (paired with
+// text, never color alone).
+export const IconFilter = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M3 5h18l-7 8v5l-4 2v-7z" />
+  </svg>
+);

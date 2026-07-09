@@ -29,7 +29,7 @@ export async function transactionsRoutes(app: FastifyInstance): Promise<void> {
   app.get('/transactions', async (req) => {
     const q = parseQuery(
       TransactionListQuerySchema,
-      coerceNumbers(req.query as Record<string, unknown>, ['limit']),
+      coerceNumbers(req.query as Record<string, unknown>, ['limit', 'offset']),
     );
     return transactionService.list(req.accountId, q);
   });

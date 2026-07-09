@@ -1,8 +1,16 @@
-// Money — transactions ledger with filters, review-queue link with pending
-// count, and mock bank import (PRD §5.4).
+// Money — transactions ledger with per-header sort/filter, a description/vendor
+// search, and numbered server-side pagination (PRD §5.4). All searching,
+// filtering, sorting, and paging run on the server via the DataTable `manual`
+// mode; the review-queue link shows the pending count.
 import { useMemo, useState } from 'react';
 import { formatUsd } from '@hearth/shared';
-import type { Transaction, TransactionStatus, TransactionType } from '@hearth/shared';
+import type {
+  Transaction,
+  TransactionListQuery,
+  TransactionSortField,
+  TransactionStatus,
+  TransactionType,
+} from '@hearth/shared';
 import { Link } from 'react-router-dom';
 import { ApiClientError } from '../api/client';
 import {
@@ -17,30 +25,81 @@ import { TransactionEditModal } from '../components/forms/TransactionEditModal';
 import { PageHeader } from '../components/shell/PageHeader';
 import { Button, buttonClasses } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
+import {
+  DataTable,
+  emptyDataTableState,
+  type DataTableColumn,
+  type DataTableState,
+  type FilterValue,
+} from '../components/ui/DataTable';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorNotice } from '../components/ui/ErrorNotice';
-import { Select } from '../components/ui/Select';
 import { Skeleton } from '../components/ui/Skeleton';
 import { StatusBadge } from '../components/ui/StatusBadge';
-import { Table, Td, Th, Tr } from '../components/ui/Table';
 import { useToast } from '../components/ui/Toast';
 import { IconDollar, IconDownload, IconPlus } from '../components/ui/icons';
 import { cx } from '../lib/cx';
 import { formatDate } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
 
+const PAGE_SIZE = 20;
+
+// Column id → server sort field. Only these columns show a sort control.
+const SORT_FIELD: Record<string, TransactionSortField> = {
+  date: 'date',
+  description: 'description',
+  amount: 'amountCents',
+  status: 'status',
+};
+
+const TYPE_OPTIONS = [
+  { value: 'income', label: 'Income' },
+  { value: 'expense', label: 'Expenses' },
+];
+const STATUS_OPTIONS = [
+  { value: 'confirmed', label: 'Confirmed' },
+  { value: 'pending_review', label: 'Needs review' },
+  { value: 'dismissed', label: 'Dismissed' },
+];
+
+// The single selected value of a select filter (server params are single-value).
+function selected(filters: Record<string, FilterValue>, id: string): string | undefined {
+  const f = filters[id];
+  return f?.kind === 'select' && f.values.length > 0 ? f.values[0] : undefined;
+}
+
+function hasCriteria(state: DataTableState): boolean {
+  if (state.search.trim() !== '') return true;
+  return Object.values(state.filters).some((f) =>
+    f.kind === 'text'
+      ? f.text.trim() !== ''
+      : f.kind === 'select'
+        ? f.values.length > 0
+        : f.min.trim() !== '' || f.max.trim() !== '',
+  );
+}
+
 export function Money() {
   usePageTitle('Money');
-  const [propertyId, setPropertyId] = useState('');
-  const [type, setType] = useState<'' | TransactionType>('');
-  const [status, setStatus] = useState<'' | TransactionStatus>('');
+  const [state, setState] = useState<DataTableState>(emptyDataTableState);
   const [editing, setEditing] = useState<Transaction | null>(null);
 
-  const transactions = useTransactions({
-    propertyId: propertyId || undefined,
-    type: type || undefined,
-    status: status || undefined,
-  });
+  const query: TransactionListQuery = useMemo(() => {
+    const sortField = state.sort ? SORT_FIELD[state.sort.columnId] : undefined;
+    return {
+      q: state.search.trim() || undefined,
+      propertyId: selected(state.filters, 'property'),
+      categoryId: selected(state.filters, 'category'),
+      type: selected(state.filters, 'amount') as TransactionType | undefined,
+      status: selected(state.filters, 'status') as TransactionStatus | undefined,
+      sort: sortField,
+      dir: sortField ? state.sort?.dir : undefined,
+      limit: PAGE_SIZE,
+      offset: state.page * PAGE_SIZE,
+    };
+  }, [state]);
+
+  const transactions = useTransactions(query);
   const review = useReviewQueue();
   const categories = useCategories();
   const properties = useProperties();
@@ -56,8 +115,113 @@ export function Money() {
     () => new Map((properties.data ?? []).map((p) => [p.id, p.nickname ?? p.addressLine1])),
     [properties.data],
   );
+  const propertyOptions = useMemo(
+    () => (properties.data ?? []).map((p) => ({ value: p.id, label: p.nickname ?? p.addressLine1 })),
+    [properties.data],
+  );
+  const categoryOptions = useMemo(
+    () => (categories.data ?? []).map((c) => ({ value: c.id, label: c.name })),
+    [categories.data],
+  );
 
   const pendingCount = review.data?.pages[0]?.total ?? 0;
+
+  const columns: DataTableColumn<Transaction>[] = [
+    {
+      id: 'date',
+      header: 'Date',
+      sortable: true,
+      cellClassName: 'whitespace-nowrap',
+      cell: (txn) => formatDate(txn.date),
+    },
+    {
+      id: 'description',
+      header: 'Description',
+      sortable: true,
+      cell: (txn) => (
+        <>
+          <span className="font-medium text-ink">{txn.description}</span>
+          {txn.vendor && <p className="mt-0.5 text-xs text-ink-muted">{txn.vendor}</p>}
+        </>
+      ),
+    },
+    {
+      id: 'property',
+      header: 'Property',
+      filter: {
+        kind: 'select',
+        single: true,
+        accessor: (txn) => txn.propertyId ?? '',
+        options: propertyOptions,
+      },
+      cell: (txn) =>
+        txn.propertyId ? (
+          (propertyName.get(txn.propertyId) ?? '—')
+        ) : (
+          <span className="text-ink-muted">Portfolio</span>
+        ),
+    },
+    {
+      id: 'category',
+      header: 'Category',
+      filter: {
+        kind: 'select',
+        single: true,
+        accessor: (txn) => txn.categoryId ?? '',
+        options: categoryOptions,
+      },
+      cell: (txn) => (txn.categoryId ? (categoryName.get(txn.categoryId) ?? '—') : '—'),
+    },
+    {
+      id: 'amount',
+      header: 'Amount',
+      align: 'right',
+      sortable: true,
+      filterLabel: 'Type',
+      filter: {
+        kind: 'select',
+        single: true,
+        accessor: (txn) => txn.type,
+        options: TYPE_OPTIONS,
+      },
+      cell: (txn) => (
+        <span className={cx('font-medium', txn.type === 'income' ? 'text-positive' : 'text-ink')}>
+          {txn.type === 'income' ? '+' : '−'}
+          {formatUsd(txn.amountCents)}
+        </span>
+      ),
+    },
+    {
+      id: 'status',
+      header: 'Status',
+      sortable: true,
+      filter: {
+        kind: 'select',
+        single: true,
+        accessor: (txn) => txn.status,
+        options: STATUS_OPTIONS,
+      },
+      cell: (txn) =>
+        txn.status === 'confirmed' ? (
+          <StatusBadge tone="positive">Confirmed</StatusBadge>
+        ) : txn.status === 'dismissed' ? (
+          <StatusBadge tone="neutral">Dismissed</StatusBadge>
+        ) : (
+          <StatusBadge tone="warning">Needs review</StatusBadge>
+        ),
+    },
+    {
+      id: 'actions',
+      header: <span className="sr-only">Actions</span>,
+      stickyRight: true,
+      cell: (txn) => (
+        <Button variant="ghost" onClick={() => setEditing(txn)}>
+          Edit
+          <span className="sr-only"> “{txn.description}”</span>
+        </Button>
+      ),
+    },
+  ];
 
   return (
     <div className="flex flex-col gap-6">
@@ -119,69 +283,18 @@ export function Money() {
         }
       />
 
-      <Card className="p-4">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor="filter-property" className="text-xs font-medium text-ink-muted">
-              Property
-            </label>
-            <Select
-              id="filter-property"
-              value={propertyId}
-              onChange={(e) => setPropertyId(e.target.value)}
-            >
-              <option value="">All properties</option>
-              {(properties.data ?? []).map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.nickname ?? p.addressLine1}
-                </option>
-              ))}
-            </Select>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor="filter-type" className="text-xs font-medium text-ink-muted">
-              Type
-            </label>
-            <Select
-              id="filter-type"
-              value={type}
-              onChange={(e) => setType(e.target.value as '' | TransactionType)}
-            >
-              <option value="">Income & expenses</option>
-              <option value="income">Income</option>
-              <option value="expense">Expenses</option>
-            </Select>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor="filter-status" className="text-xs font-medium text-ink-muted">
-              Status
-            </label>
-            <Select
-              id="filter-status"
-              value={status}
-              onChange={(e) => setStatus(e.target.value as '' | TransactionStatus)}
-            >
-              <option value="">Any status</option>
-              <option value="confirmed">Confirmed</option>
-              <option value="pending_review">Needs review</option>
-              <option value="dismissed">Dismissed</option>
-            </Select>
-          </div>
-        </div>
-      </Card>
-
       {transactions.isPending ? (
         <Card flush className="p-4">
           <Skeleton className="h-64 w-full" />
         </Card>
       ) : transactions.isError ? (
         <ErrorNotice error={transactions.error} onRetry={() => void transactions.refetch()} />
-      ) : transactions.data.items.length === 0 ? (
+      ) : transactions.data.total === 0 && !hasCriteria(state) ? (
         <Card flush>
           <EmptyState
             icon={<IconDollar size={28} />}
-            title="No transactions found"
-            body="Try widening the filters, or add your first transaction."
+            title="No transactions yet"
+            body="Import from your bank or add your first transaction to start tracking income and expenses."
             action={
               <Link to="/money/new" className={buttonClasses('primary')}>
                 <IconPlus size={16} />
@@ -192,60 +305,22 @@ export function Money() {
         </Card>
       ) : (
         <Card flush>
-          <Table caption="Transactions — date, description, property, category, amount, status, and actions">
-            <thead>
-              <tr>
-                <Th>Date</Th>
-                <Th>Description</Th>
-                <Th>Property</Th>
-                <Th>Category</Th>
-                <Th align="right">Amount</Th>
-                <Th>Status</Th>
-                <Th stickyRight>
-                  <span className="sr-only">Actions</span>
-                </Th>
-              </tr>
-            </thead>
-            <tbody>
-              {transactions.data.items.map((txn) => (
-                <Tr key={txn.id}>
-                  <Td className="whitespace-nowrap">{formatDate(txn.date)}</Td>
-                  <Td>
-                    <span className="font-medium text-ink">{txn.description}</span>
-                    {txn.vendor && <p className="mt-0.5 text-xs text-ink-muted">{txn.vendor}</p>}
-                  </Td>
-                  <Td>
-                    {txn.propertyId ? (propertyName.get(txn.propertyId) ?? '—') : (
-                      <span className="text-ink-muted">Portfolio</span>
-                    )}
-                  </Td>
-                  <Td>{txn.categoryId ? (categoryName.get(txn.categoryId) ?? '—') : '—'}</Td>
-                  <Td
-                    align="right"
-                    className={cx('font-medium', txn.type === 'income' ? 'text-positive' : 'text-ink')}
-                  >
-                    {txn.type === 'income' ? '+' : '−'}
-                    {formatUsd(txn.amountCents)}
-                  </Td>
-                  <Td>
-                    {txn.status === 'confirmed' ? (
-                      <StatusBadge tone="positive">Confirmed</StatusBadge>
-                    ) : txn.status === 'dismissed' ? (
-                      <StatusBadge tone="neutral">Dismissed</StatusBadge>
-                    ) : (
-                      <StatusBadge tone="warning">Needs review</StatusBadge>
-                    )}
-                  </Td>
-                  <Td stickyRight>
-                    <Button variant="ghost" onClick={() => setEditing(txn)}>
-                      Edit
-                      <span className="sr-only"> “{txn.description}”</span>
-                    </Button>
-                  </Td>
-                </Tr>
-              ))}
-            </tbody>
-          </Table>
+          <DataTable
+            caption="Transactions — date, description, property, category, amount, status, and actions"
+            columns={columns}
+            data={transactions.data.items}
+            rowKey={(txn) => txn.id}
+            searchPlaceholder="Search description or vendor"
+            pageSize={PAGE_SIZE}
+            itemNoun={{ one: 'transaction', other: 'transactions' }}
+            emptyState="No transactions match your search and filters."
+            manual={{
+              total: transactions.data.total,
+              loading: transactions.isFetching,
+              state,
+              onStateChange: setState,
+            }}
+          />
         </Card>
       )}
 

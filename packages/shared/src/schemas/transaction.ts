@@ -54,8 +54,14 @@ export const ConfirmTransactionInputSchema = z.object({
   unitId: z.string().optional(),
 });
 
+// Ledger sort fields (whitelist — maps to DB columns server-side).
+export const TransactionSortFieldSchema = z.enum(['date', 'amountCents', 'description', 'status']);
+
+export const SortDirectionSchema = z.enum(['asc', 'desc']);
+
 // GET /transactions query filters — also reused verbatim by the MCP
-// `list_transactions` tool (ARCHITECTURE §7).
+// `list_transactions` tool (ARCHITECTURE §7). Supports two pagination modes:
+// `cursor` (infinite scroll) or `offset` (numbered pages); pass one, not both.
 export const TransactionListQuerySchema = z.object({
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional(),
@@ -63,13 +69,18 @@ export const TransactionListQuerySchema = z.object({
   type: TransactionTypeSchema.optional(),
   status: TransactionStatusSchema.optional(),
   categoryId: z.string().optional(),
+  q: z.string().optional(), // case-insensitive match on description or vendor
+  sort: TransactionSortFieldSchema.optional(), // default: date desc
+  dir: SortDirectionSchema.optional(),
   cursor: z.string().optional(),
+  offset: z.number().int().min(0).optional(),
   limit: z.number().int().min(1).max(100).optional(),
 });
 
 export const TransactionListResponseSchema = z.object({
   items: z.array(TransactionSchema),
   nextCursor: z.string().nullable(),
+  total: z.number().int(), // items matching the filter across all pages
 });
 
 // Heuristic rent match computed at review time (never stored, never

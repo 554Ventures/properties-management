@@ -9,6 +9,7 @@ import {
   DismissAllReviewResponseSchema,
   ReceiptScanResponseSchema,
   ReviewQueueResponseSchema,
+  TransactionListResponseSchema,
   TransactionSchema,
 } from '@hearth/shared';
 import { OKAFOR_NAME, OKAFOR_RENT_CENTS } from '../../prisma/seed-constants';
@@ -559,6 +560,100 @@ describe('GET /transactions/review — search, filters, and paging', () => {
     expect(second.nextCursor).toBeNull();
     const ids = [...first.items, ...second.items].map((i) => i.id);
     expect(new Set(ids).size).toBe(3); // no overlap across pages
+  });
+});
+
+// ── ledger list: search / sort / offset pagination ──────────────────────────
+// Rows are marked ZZLEDGER so the query never touches the seeded ledger figures
+// other test files pin. createQueueRow handles cleanup via createdIds.
+
+describe('GET /transactions — ledger search, sort, and offset paging', () => {
+  beforeAll(async () => {
+    const accountId = await getDemoAccountId();
+    await createQueueRow(accountId, {
+      description: 'ZZLEDGER ALPHA',
+      amountCents: 5000,
+      type: 'expense',
+      status: 'confirmed',
+    });
+    await createQueueRow(accountId, {
+      description: 'ZZLEDGER BRAVO',
+      amountCents: 3000,
+      type: 'expense',
+      status: 'dismissed',
+    });
+    await createQueueRow(accountId, {
+      description: 'ZZLEDGER CHARLIE',
+      amountCents: 7000,
+      type: 'income',
+      status: 'confirmed',
+    });
+  });
+
+  it('searches description/vendor and reports the filtered total', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/v1/transactions?q=zzledger' });
+    expect(res.statusCode).toBe(200);
+    const ledger = TransactionListResponseSchema.parse(res.json());
+    expect(ledger.total).toBe(3);
+    expect(ledger.items).toHaveLength(3);
+    expect(ledger.nextCursor).toBeNull(); // 3 ≤ default limit
+  });
+
+  it('sorts by a whitelisted column and direction', async () => {
+    const asc = TransactionListResponseSchema.parse(
+      (
+        await app.inject({
+          method: 'GET',
+          url: '/api/v1/transactions?q=zzledger&sort=amountCents&dir=asc',
+        })
+      ).json(),
+    );
+    expect(asc.items.map((i) => i.amountCents)).toEqual([3000, 5000, 7000]);
+
+    const desc = TransactionListResponseSchema.parse(
+      (
+        await app.inject({
+          method: 'GET',
+          url: '/api/v1/transactions?q=zzledger&sort=amountCents&dir=desc',
+        })
+      ).json(),
+    );
+    expect(desc.items.map((i) => i.amountCents)).toEqual([7000, 5000, 3000]);
+  });
+
+  it('pages by offset with a stable total and no cursor', async () => {
+    const base = '/api/v1/transactions?q=zzledger&sort=amountCents&dir=asc&limit=2';
+    const first = TransactionListResponseSchema.parse(
+      (await app.inject({ method: 'GET', url: `${base}&offset=0` })).json(),
+    );
+    expect(first.items.map((i) => i.amountCents)).toEqual([3000, 5000]);
+    expect(first.total).toBe(3);
+    expect(first.nextCursor).toBeNull(); // offset mode doesn't emit a cursor
+
+    const second = TransactionListResponseSchema.parse(
+      (await app.inject({ method: 'GET', url: `${base}&offset=2` })).json(),
+    );
+    expect(second.items.map((i) => i.amountCents)).toEqual([7000]);
+    expect(second.total).toBe(3);
+
+    const ids = [...first.items, ...second.items].map((i) => i.id);
+    expect(new Set(ids).size).toBe(3); // disjoint pages
+  });
+
+  it('combines the search with type and status filters', async () => {
+    const income = TransactionListResponseSchema.parse(
+      (await app.inject({ method: 'GET', url: '/api/v1/transactions?q=zzledger&type=income' })).json(),
+    );
+    expect(income.total).toBe(1);
+    expect(income.items[0]?.description).toBe('ZZLEDGER CHARLIE');
+
+    const dismissed = TransactionListResponseSchema.parse(
+      (
+        await app.inject({ method: 'GET', url: '/api/v1/transactions?q=zzledger&status=dismissed' })
+      ).json(),
+    );
+    expect(dismissed.total).toBe(1);
+    expect(dismissed.items[0]?.description).toBe('ZZLEDGER BRAVO');
   });
 });
 

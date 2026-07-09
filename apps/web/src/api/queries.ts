@@ -1,6 +1,12 @@
 // TanStack Query hooks — one per ARCHITECTURE §3 endpoint the web app
 // consumes. All shapes come from @hearth/shared; nothing is redeclared here.
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  keepPreviousData,
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import type {
   AcceptRenewalInput,
   AccountSettings,
@@ -52,9 +58,8 @@ import type {
   TenantDetailResponse,
   TenantListRow,
   Transaction,
+  TransactionListQuery,
   TransactionListResponse,
-  TransactionStatus,
-  TransactionType,
   Unit,
   UpdateAccountSettingsInput,
   UpdateLeaseInput,
@@ -364,24 +369,17 @@ export function useSendEsign() {
 
 // ------------------------------------------------------------- transactions
 
-export interface TransactionFilters {
-  propertyId?: string;
-  type?: TransactionType;
-  status?: TransactionStatus;
-  categoryId?: string;
-  from?: string;
-  to?: string;
-  limit?: number;
-}
-
-export function useTransactions(filters: TransactionFilters = {}) {
+export function useTransactions(query: TransactionListQuery = {}) {
   return useQuery({
-    queryKey: ['transactions', 'list', filters],
+    queryKey: ['transactions', 'list', query],
     queryFn: () =>
       api.get<TransactionListResponse>(
-        `/transactions${toQuery({ limit: 100, ...filters })}`,
+        `/transactions${toQuery(query as Record<string, string | number | undefined>)}`,
       ),
     staleTime: STALE_SHORT,
+    // Keep the current page visible while the next server page loads so paging
+    // and filtering don't flash an empty table.
+    placeholderData: keepPreviousData,
   });
 }
 

@@ -354,29 +354,29 @@ export function TenantDetail() {
             <Table caption="Proposed renewal terms">
               <tbody>
                 <Tr>
-                  <Th scope="row" className="normal-case tracking-normal">Current rent</Th>
+                  <Th scope="row">Current rent</Th>
                   <Td align="right">{formatUsd(draft.currentRentCents)}/mo</Td>
                 </Tr>
                 <Tr>
-                  <Th scope="row" className="normal-case tracking-normal">Suggested rent</Th>
+                  <Th scope="row">Suggested rent</Th>
                   <Td align="right" className="font-semibold">
                     {formatUsd(draft.suggestedRentCents)}/mo
                   </Td>
                 </Tr>
                 {draft.marketRentCents != null && (
                   <Tr>
-                    <Th scope="row" className="normal-case tracking-normal">Market rent</Th>
+                    <Th scope="row">Market rent</Th>
                     <Td align="right">{formatUsd(draft.marketRentCents)}/mo</Td>
                   </Tr>
                 )}
                 <Tr>
-                  <Th scope="row" className="normal-case tracking-normal">Proposed term</Th>
+                  <Th scope="row">Proposed term</Th>
                   <Td align="right">
                     {formatDate(draft.proposedStartDate)} – {formatDate(draft.proposedEndDate)}
                   </Td>
                 </Tr>
                 <Tr>
-                  <Th scope="row" className="normal-case tracking-normal">Rent due day</Th>
+                  <Th scope="row">Rent due day</Th>
                   <Td align="right">{draft.dueDay}</Td>
                 </Tr>
               </tbody>

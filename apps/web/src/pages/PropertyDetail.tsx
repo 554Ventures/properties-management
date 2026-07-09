@@ -201,17 +201,17 @@ export function PropertyDetail() {
             </thead>
             <tbody>
               <Tr>
-                <Th scope="row" className="normal-case tracking-normal">Income</Th>
+                <Th scope="row">Income</Th>
                 <Td align="right">{formatUsd(pnl.mtd.incomeCents)}</Td>
                 <Td align="right">{formatUsd(pnl.ytd.incomeCents)}</Td>
               </Tr>
               <Tr>
-                <Th scope="row" className="normal-case tracking-normal">Expenses</Th>
+                <Th scope="row">Expenses</Th>
                 <Td align="right">{formatUsd(pnl.mtd.expenseCents)}</Td>
                 <Td align="right">{formatUsd(pnl.ytd.expenseCents)}</Td>
               </Tr>
               <Tr className="font-semibold">
-                <Th scope="row" className="normal-case tracking-normal">Net</Th>
+                <Th scope="row">Net</Th>
                 <Td align="right">{formatUsd(pnl.mtd.netCents)}</Td>
                 <Td align="right">{formatUsd(pnl.ytd.netCents)}</Td>
               </Tr>

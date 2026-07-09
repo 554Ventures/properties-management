@@ -59,17 +59,34 @@ export function toApiTransaction(t: DbTransaction): Transaction {
 
 const DEFAULT_LIMIT = 50;
 
+// Whitelisted sort fields → DB columns (guards against arbitrary orderBy).
+const SORT_COLUMNS = {
+  date: 'date',
+  amountCents: 'amountCents',
+  description: 'description',
+  status: 'status',
+} as const;
+
 export async function list(
   accountId: string,
   query: TransactionListQuery,
 ): Promise<TransactionListResponse> {
   const limit = query.limit ?? DEFAULT_LIMIT;
+  const q = query.q?.trim();
   const where: Prisma.TransactionWhereInput = {
     accountId,
     ...(query.propertyId ? { propertyId: query.propertyId } : {}),
     ...(query.type ? { type: query.type } : {}),
     ...(query.status ? { status: query.status } : {}),
     ...(query.categoryId ? { categoryId: query.categoryId } : {}),
+    ...(q
+      ? {
+          OR: [
+            { description: { contains: q, mode: 'insensitive' } },
+            { vendor: { contains: q, mode: 'insensitive' } },
+          ],
+        }
+      : {}),
     ...(query.from || query.to
       ? {
           date: {
@@ -79,18 +96,35 @@ export async function list(
         }
       : {}),
   };
-  const rows = await prisma.transaction.findMany({
-    where,
-    orderBy: [{ date: 'desc' }, { id: 'desc' }],
-    take: limit + 1,
-    ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
-  });
+
+  // Sort by the requested column (tie-broken by id for a stable page order),
+  // defaulting to newest-first.
+  const orderBy: Prisma.TransactionOrderByWithRelationInput[] = query.sort
+    ? [{ [SORT_COLUMNS[query.sort]]: query.dir ?? 'asc' }, { id: 'desc' }]
+    : [{ date: 'desc' }, { id: 'desc' }];
+
+  // `offset` selects numbered-page mode; otherwise fall back to cursor mode.
+  const useOffset = query.offset != null;
+  const rowsPromise = useOffset
+    ? prisma.transaction.findMany({ where, orderBy, skip: query.offset, take: limit })
+    : prisma.transaction.findMany({
+        where,
+        orderBy,
+        take: limit + 1,
+        ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
+      });
+  const [rows, total] = await Promise.all([rowsPromise, prisma.transaction.count({ where })]);
+
+  if (useOffset) {
+    return { items: rows.map(toApiTransaction), nextCursor: null, total };
+  }
   const hasMore = rows.length > limit;
   const items = hasMore ? rows.slice(0, limit) : rows;
   const last = items[items.length - 1];
   return {
     items: items.map(toApiTransaction),
     nextCursor: hasMore && last ? last.id : null,
+    total,
   };
 }
 

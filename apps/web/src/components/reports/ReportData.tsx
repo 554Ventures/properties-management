@@ -115,7 +115,7 @@ export function ReportData({ data, caption = 'Report data', level = 2 }: ReportD
           <tbody>
             {primitives.map(([key, v]) => (
               <Tr key={key}>
-                <Th scope="row" className="w-1/2 normal-case tracking-normal">
+                <Th scope="row" className="w-1/2">
                   {humanizeKey(key)}
                 </Th>
                 <Td align={typeof v === 'number' ? 'right' : 'left'}>{formatValue(key, v)}</Td>
