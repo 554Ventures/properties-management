@@ -77,6 +77,76 @@ describe('Plaid connect flow (mock mode)', () => {
   });
 });
 
+describe('integration writes are audited (security remediation)', () => {
+  it('connectMock writes a connect AuditLog row', async () => {
+    const account = await prisma.account.create({
+      data: { name: 'Integration Audit', email: 'integration-audit@integrationtest.example' },
+    });
+    const integration = await integrationService.connectMock(account.id, 'stripe');
+
+    const logs = await prisma.auditLog.findMany({ where: { accountId: account.id } });
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatchObject({
+      actor: 'user',
+      action: 'connect',
+      entityType: 'integration',
+      entityId: integration.id,
+    });
+    expect(JSON.parse(logs[0]!.detailJson!)).toMatchObject({ type: 'stripe', mock: true });
+  });
+
+  it('exchangePublicToken writes a connect AuditLog row without leaking the access token', async () => {
+    const account = await prisma.account.create({
+      data: { name: 'Integration Audit Plaid', email: 'integration-audit-plaid@integrationtest.example' },
+    });
+    const integration = await integrationService.exchangePublicToken(account.id, 'mock-public-token');
+
+    const logs = await prisma.auditLog.findMany({ where: { accountId: account.id } });
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatchObject({
+      actor: 'user',
+      action: 'connect',
+      entityType: 'integration',
+      entityId: integration.id,
+    });
+    const detail = JSON.parse(logs[0]!.detailJson!);
+    expect(detail).toMatchObject({ type: 'plaid', itemId: 'mock_item_id' });
+    expect(JSON.stringify(detail)).not.toMatch(/mock-public-token|accessToken/i);
+  });
+
+  it('disconnect writes a disconnect AuditLog row', async () => {
+    const account = await prisma.account.create({
+      data: { name: 'Integration Audit Disconnect', email: 'integration-audit-disconnect@integrationtest.example' },
+    });
+    const integration = await integrationService.connectMock(account.id, 'docusign');
+    await integrationService.disconnect(account.id, integration.id);
+
+    const logs = await prisma.auditLog.findMany({
+      where: { accountId: account.id, action: 'disconnect' },
+    });
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatchObject({
+      actor: 'user',
+      action: 'disconnect',
+      entityType: 'integration',
+      entityId: integration.id,
+    });
+    expect(JSON.parse(logs[0]!.detailJson!)).toMatchObject({ type: 'docusign' });
+  });
+
+  it('actor defaults to "user" but honors an explicit system actor (MCP/model-invoked writes)', async () => {
+    const account = await prisma.account.create({
+      data: { name: 'Integration Audit System Actor', email: 'integration-audit-system@integrationtest.example' },
+    });
+    const integration = await integrationService.connectMock(account.id, 'email', 'system');
+
+    const logs = await prisma.auditLog.findMany({ where: { accountId: account.id } });
+    expect(logs).toHaveLength(1);
+    expect(logs[0]!.actor).toBe('system');
+    void integration;
+  });
+});
+
 describe('disconnect is best-effort when the stored token is unreadable', () => {
   it('disconnects a mock-mode (plaintext) Plaid row even after INTEGRATION_ENCRYPTION_KEY is set', async () => {
     // Reproduces the production bug: Connect ran in mock mode (no encryption

@@ -1,5 +1,13 @@
 import { buildApp } from './app';
+import { assertProductionConfig } from './lib/boot-guards';
 import { runDailyJobs } from './services/jobs.service';
+
+try {
+  assertProductionConfig();
+} catch (err) {
+  console.error((err as Error).message);
+  process.exit(1);
+}
 
 const port = Number(process.env.PORT ?? 3001);
 // Local-only by default; set HOST=0.0.0.0 explicitly to expose the server.

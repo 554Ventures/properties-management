@@ -7,8 +7,9 @@ import {
   UpdateTransactionInputSchema,
 } from '@hearth/shared';
 import type { FastifyInstance } from 'fastify';
-import { isReceiptImageMimetype } from '../ai/receipt';
+import { isReceiptImageMimetype, RECEIPT_IMAGE_MIMETYPES, type ReceiptImageMimetype } from '../ai/receipt';
 import { BadRequestError } from '../lib/errors';
+import { UnverifiableFileTypeError, verifyFileContentType } from '../lib/file-sniff';
 import { coerceNumbers, parseBody, parseQuery } from '../plugins/zod-validation';
 import * as transactionService from '../services/transaction.service';
 
@@ -71,7 +72,18 @@ export async function transactionsRoutes(app: FastifyInstance): Promise<void> {
     if (image.length > RECEIPT_MAX_BYTES) {
       throw new BadRequestError('Image too large — use a photo under 5 MB.');
     }
-    return transactionService.scanReceipt(req.accountId, image, file.mimetype, (data, message) =>
+    // Verify actual image bytes — the declared Content-Type above is only a
+    // fast pre-filter and is client-controlled (docs/SECURITY_PRIVACY_AUDIT.md §A11).
+    let mimetype: ReceiptImageMimetype;
+    try {
+      mimetype = (await verifyFileContentType(image, RECEIPT_IMAGE_MIMETYPES)) as ReceiptImageMimetype;
+    } catch (err) {
+      if (err instanceof UnverifiableFileTypeError) {
+        throw new BadRequestError('Unsupported image type — upload a JPEG, PNG, WebP, or GIF photo.');
+      }
+      throw err;
+    }
+    return transactionService.scanReceipt(req.accountId, image, mimetype, (data, message) =>
       req.log.info(data, message),
     );
   });

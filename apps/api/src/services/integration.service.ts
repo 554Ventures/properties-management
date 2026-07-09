@@ -5,6 +5,7 @@ import { decrypt, encrypt } from '../lib/crypto';
 import { iso } from '../lib/dates';
 import { BadRequestError, NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
+import { writeAudit, type AuditActor } from './audit.service';
 
 interface PlaidConfig {
   accessTokenEncrypted: string;
@@ -56,6 +57,7 @@ export async function list(accountId: string): Promise<Integration[]> {
 export async function connectMock(
   accountId: string,
   type: IntegrationType,
+  actor: AuditActor = 'user',
 ): Promise<Integration> {
   if (type === 'plaid') {
     throw new BadRequestError(
@@ -78,6 +80,13 @@ export async function connectMock(
           scopesJson: '[]',
         },
       });
+  await writeAudit(accountId, {
+    actor,
+    action: 'connect',
+    entityType: 'integration',
+    entityId: row.id,
+    detail: { type, mock: true },
+  });
   return toApiIntegration(row);
 }
 
@@ -90,6 +99,7 @@ export async function createLinkToken(
 export async function exchangePublicToken(
   accountId: string,
   publicToken: string,
+  actor: AuditActor = 'user',
 ): Promise<Integration> {
   const { accessToken, itemId } = await createPlaidAdapter().exchangePublicToken(publicToken);
   const config: PlaidConfig = {
@@ -114,6 +124,14 @@ export async function exchangePublicToken(
           configJson: JSON.stringify(config),
         },
       });
+  // Never write the token (encrypted or not) to the audit trail's detailJson.
+  await writeAudit(accountId, {
+    actor,
+    action: 'connect',
+    entityType: 'integration',
+    entityId: row.id,
+    detail: { type: 'plaid', itemId },
+  });
   return toApiIntegration(row);
 }
 
@@ -153,7 +171,11 @@ export async function persistPlaidCursor(
   });
 }
 
-export async function disconnect(accountId: string, id: string): Promise<void> {
+export async function disconnect(
+  accountId: string,
+  id: string,
+  actor: AuditActor = 'user',
+): Promise<void> {
   const existing = await prisma.integration.findFirst({ where: { id, accountId } });
   if (!existing) throw new NotFoundError('integration', id);
 
@@ -175,5 +197,12 @@ export async function disconnect(accountId: string, id: string): Promise<void> {
   await prisma.integration.update({
     where: { id },
     data: { status: 'disconnected', externalRef: null, configJson: '{}' },
+  });
+  await writeAudit(accountId, {
+    actor,
+    action: 'disconnect',
+    entityType: 'integration',
+    entityId: id,
+    detail: { type: existing.type },
   });
 }

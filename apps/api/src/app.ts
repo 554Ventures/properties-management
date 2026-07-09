@@ -1,4 +1,5 @@
 import cors from '@fastify/cors';
+import helmet from '@fastify/helmet';
 import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -29,6 +30,22 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
     .map((s) => s.trim())
     .filter(Boolean);
   await app.register(cors, { origin: corsOrigins });
+
+  // Security headers (docs/SECURITY_PRIVACY_AUDIT.md §A5). This process only
+  // ever returns JSON or document downloads (PDF/CSV/image/receipt) — never
+  // HTML — so a maximally strict CSP costs nothing and closes the
+  // stored-content-spoofing risk on the document-download route. CORP is
+  // explicitly 'cross-origin' (not helmet's 'same-origin' default) because
+  // CORS_ORIGIN above is the real access-control gate here — local dev calls
+  // this API cross-origin (web on :5173, API on :3001) and must keep working.
+  await app.register(helmet, {
+    contentSecurityPolicy: {
+      directives: { defaultSrc: ["'none'"], frameAncestors: ["'none'"], objectSrc: ["'none'"] },
+    },
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+    hsts: { maxAge: 15552000, includeSubDomains: true },
+  });
+
   await app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 } });
 
   registerErrorHandler(app);

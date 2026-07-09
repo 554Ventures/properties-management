@@ -157,6 +157,37 @@ describe('POST /documents', () => {
     expect(res.json().error.message).toMatch(/Unsupported file type/);
   });
 
+  it('rejects a file whose content does not match its declared (spoofed) Content-Type', async () => {
+    // A polyglot-style attack: label an HTML/script payload as a PDF so it
+    // clears the client-declared-mimetype check, hoping it's trusted and
+    // later served back inline. Magic-byte verification must catch this even
+    // though the declared Content-Type says application/pdf.
+    const { property } = await seededEntities();
+    const htmlPayload = Buffer.from('<html><body><script>alert(1)</script></body></html>', 'utf-8');
+    const res = await upload(
+      { entityType: 'property', entityId: property.id, type: 'other' },
+      { filename: 'spoofed.pdf', contentType: 'application/pdf', content: htmlPayload },
+    );
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('bad_request');
+    expect(res.json().error.message).toMatch(/Unsupported file type/);
+  });
+
+  it('persists the content-sniffed mimeType, not the client-declared one', async () => {
+    // A real PNG's bytes labeled (incorrectly, but not maliciously) as PDF —
+    // the stored/served mimeType must reflect verified content, not the label.
+    const { property } = await seededEntities();
+    const pngBytes = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+    const res = await upload(
+      { entityType: 'property', entityId: property.id, type: 'other' },
+      { filename: 'mislabeled.pdf', contentType: 'application/pdf', content: pngBytes },
+    );
+    expect(res.statusCode).toBe(201);
+    const doc = DocumentSchema.parse(res.json());
+    createdDocIds.push(doc.id);
+    expect(doc.mimeType).toBe('image/png');
+  });
+
   it('rejects a request with no file part with a 400', async () => {
     const form = new FormData();
     form.append('entityType', 'property');

@@ -5,6 +5,7 @@ import {
 } from '@hearth/shared';
 import type { FastifyInstance } from 'fastify';
 import { BadRequestError } from '../lib/errors';
+import { UnverifiableFileTypeError, verifyFileContentType } from '../lib/file-sniff';
 import { coerceNumbers, parseBody, parseQuery } from '../plugins/zod-validation';
 import * as documentService from '../services/document.service';
 import { sanitizeFilename } from '../services/document.service';
@@ -66,6 +67,21 @@ export async function documentsRoutes(app: FastifyInstance): Promise<void> {
     if (buffer.length > DOCUMENT_MAX_BYTES) {
       throw new BadRequestError('File too large — use a file under 10 MB.');
     }
+    // The declared Content-Type is client-controlled and already checked
+    // above only as a fast pre-filter; verify the actual bytes and persist
+    // *that* mimeType, so a spoofed Content-Type (e.g. an HTML/SVG polyglot
+    // labeled application/pdf) can never be accepted or served back later.
+    let mimeType: string;
+    try {
+      mimeType = await verifyFileContentType(buffer, ALLOWED_MIMETYPES);
+    } catch (err) {
+      if (err instanceof UnverifiableFileTypeError) {
+        throw new BadRequestError(
+          'Unsupported file type — upload a PDF, image (JPEG/PNG/WebP/GIF), or Word document.',
+        );
+      }
+      throw err;
+    }
     // Text fields ride alongside the file part; each is a { value } object.
     const rawFields: Record<string, unknown> = {};
     for (const [key, field] of Object.entries(file.fields)) {
@@ -79,7 +95,7 @@ export async function documentsRoutes(app: FastifyInstance): Promise<void> {
       type: fields.type,
       name: fields.name ?? file.filename,
       buffer,
-      mimeType: file.mimetype,
+      mimeType,
     });
     return reply.code(201).send(document);
   });

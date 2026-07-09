@@ -412,8 +412,10 @@ describe('POST /transactions/:id/confirm with rentPaymentId', () => {
 });
 
 describe('POST /transactions/receipt (mock mode)', () => {
-  // PNG magic bytes — content is irrelevant in mock mode (no model call).
-  const png = Buffer.from('89504e470d0a1a0a', 'hex');
+  // PNG signature + IHDR chunk header — enough for magic-byte sniffing to
+  // positively identify it as image/png (the bare 8-byte signature alone
+  // isn't); content is otherwise irrelevant in mock mode (no model call).
+  const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
 
   function receiptForm(contentType: string) {
     const form = new FormData();
@@ -447,6 +449,23 @@ describe('POST /transactions/receipt (mock mode)', () => {
 
   it('rejects a non-image upload with a 400', async () => {
     const form = receiptForm('text/plain');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/transactions/receipt',
+      payload: form.getBuffer(),
+      headers: form.getHeaders(),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('bad_request');
+    expect(res.json().error.message).toMatch(/JPEG, PNG, WebP, or GIF/);
+  });
+
+  it('rejects a file whose content does not match its declared (spoofed) image Content-Type', async () => {
+    const form = new FormData();
+    form.append('file', Buffer.from('not actually an image', 'utf-8'), {
+      filename: 'receipt.png',
+      contentType: 'image/png',
+    });
     const res = await app.inject({
       method: 'POST',
       url: '/api/v1/transactions/receipt',
