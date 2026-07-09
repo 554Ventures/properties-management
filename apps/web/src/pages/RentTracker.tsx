@@ -19,7 +19,7 @@ import { StatusBadge, type BadgeTone } from '../components/ui/StatusBadge';
 import { Table, Td, Th, Tr } from '../components/ui/Table';
 import { useToast } from '../components/ui/Toast';
 import { IconBell, IconCalendarCheck } from '../components/ui/icons';
-import { currentPeriod, formatDate, formatMonthLong } from '../lib/format';
+import { currentPeriod, formatDate, formatMonthLong, recentPeriods } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
 
 function statusInfo(row: RentTrackerRow): { tone: BadgeTone; label: string; clock?: boolean } {
@@ -122,13 +122,18 @@ export function RentTracker() {
             <label htmlFor="rent-period" className="text-sm font-medium text-ink-muted">
               Period
             </label>
-            <input
+            <Select
               id="rent-period"
-              type="month"
               value={period}
-              onChange={(e) => e.target.value && setPeriod(e.target.value)}
-              className="rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-ink"
-            />
+              onChange={(e) => setPeriod(e.target.value)}
+              className="w-auto py-1.5"
+            >
+              {recentPeriods().map((p) => (
+                <option key={p} value={p}>
+                  {formatMonthLong(p)}
+                </option>
+              ))}
+            </Select>
           </div>
         }
       />

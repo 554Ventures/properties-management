@@ -69,6 +69,20 @@ export function currentPeriod(): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 }
 
+/**
+ * Recent periods as "YYYY-MM", newest first: the current month and the
+ * preceding `count - 1` months. Used to populate the rent-period picker with a
+ * cross-browser <select> (native <input type="month"> is unsupported in Safari,
+ * where it silently degrades to a plain text field).
+ */
+export function recentPeriods(count = 12): string[] {
+  const now = new Date();
+  return Array.from({ length: count }, (_, i) => {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  });
+}
+
 /** Signed percent for trend text: 4.2 → "up 4.2%", -1.5 → "down 1.5%". */
 export function trendText(pct: number): string {
   const abs = Math.abs(pct);
