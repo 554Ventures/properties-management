@@ -1,6 +1,7 @@
 // Settings (PRD §5.9): account profile + tax rate, integrations (Plaid is a
 // real Sandbox/Production Link flow; Stripe/Docusign/Email stay mock —
-// docs/WHATS_NEXT.md §3), and plain copy about MCP access.
+// docs/WHATS_NEXT.md §3). MCP is stdio/local-only (no remote transport
+// exists yet — property-app-deployment-plan.md §8), so it has no UI here.
 import { useEffect, useState, type FormEvent } from 'react';
 import { usePlaidLink } from 'react-plaid-link';
 import { Link } from 'react-router-dom';
@@ -80,27 +81,6 @@ export function Settings() {
                   })}
                 </ul>
               )}
-            </Card>
-          </section>
-
-          <section aria-label="External AI access">
-            <Card>
-              <h2 className="mb-2 text-sm font-semibold text-ink">
-                External AI access (MCP)
-              </h2>
-              <p className="text-sm leading-relaxed text-ink-muted">
-                554 Properties exposes your portfolio to AI tools you run yourself — Claude Desktop, Claude
-                Code, or any MCP-aware client — through a built-in Model Context Protocol server.
-                Access is <strong className="font-medium text-ink">read-only by default</strong>:
-                external tools can view your portfolio summary, properties, rent status,
-                transactions, and reports. Write actions (sending reminders, categorizing
-                transactions, generating reports) are only available when the server is started
-                with{' '}
-                <code className="rounded bg-surface-sunken px-1.5 py-0.5 text-xs">
-                  HEARTH_MCP_ENABLE_WRITE=true
-                </code>
-                , and every write is recorded in the audit log.
-              </p>
             </Card>
           </section>
 
