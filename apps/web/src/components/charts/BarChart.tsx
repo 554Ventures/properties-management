@@ -12,7 +12,15 @@ import {
   YAxis,
 } from 'recharts';
 import { usePrefersReducedMotion } from '../../lib/useReducedMotion';
-import { chartColor, chartGridColor, chartTextColor, tooltipStyle, type ChartRole } from './chartTheme';
+import {
+  chartColor,
+  chartGridColor,
+  chartTextColor,
+  tooltipItemStyle,
+  tooltipLabelStyle,
+  tooltipStyle,
+  type ChartRole,
+} from './chartTheme';
 
 export interface BarSeries {
   key: string;
@@ -55,6 +63,8 @@ export function BarChart({ data, xKey, series, yFormat = 'usd' }: BarChartProps)
         <Tooltip
           cursor={{ fill: 'var(--color-surface-sunken)' }}
           contentStyle={tooltipStyle}
+          itemStyle={tooltipItemStyle}
+          labelStyle={tooltipLabelStyle}
           formatter={tooltipFormatter}
         />
         <Legend wrapperStyle={{ fontSize: 12 }} iconType="circle" iconSize={8} />

@@ -1,7 +1,13 @@
 import { formatUsd } from '@hearth/shared';
 import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
 import { usePrefersReducedMotion } from '../../lib/useReducedMotion';
-import { chartColor, tooltipStyle, type ChartRole } from './chartTheme';
+import {
+  chartColor,
+  tooltipItemStyle,
+  tooltipLabelStyle,
+  tooltipStyle,
+  type ChartRole,
+} from './chartTheme';
 
 export interface DonutSlice {
   name: string;
@@ -36,7 +42,12 @@ export function DonutChart({ data, format = 'usd' }: DonutChartProps) {
             <Cell key={slice.name} fill={chartColor(slice.role)} stroke="var(--color-surface)" />
           ))}
         </Pie>
-        <Tooltip contentStyle={tooltipStyle} formatter={tooltipFormatter} />
+        <Tooltip
+          contentStyle={tooltipStyle}
+          itemStyle={tooltipItemStyle}
+          labelStyle={tooltipLabelStyle}
+          formatter={tooltipFormatter}
+        />
         <Legend wrapperStyle={{ fontSize: 12 }} iconType="circle" iconSize={8} />
       </PieChart>
     </ResponsiveContainer>

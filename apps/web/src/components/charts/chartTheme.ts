@@ -77,3 +77,10 @@ export const tooltipStyle: CSSProperties = {
   fontSize: '0.75rem',
   boxShadow: '0 8px 20px -8px rgb(28 25 23 / 0.3)',
 };
+
+// Recharts' default tooltip paints item text in the series color — or #000
+// when the mark has no plain `fill` (custom shapes) — which is unreadable on
+// the dark surface. Tooltip text always wears the text token; the mark itself
+// carries the series identity.
+export const tooltipItemStyle: CSSProperties = { color: 'var(--color-text)' };
+export const tooltipLabelStyle: CSSProperties = { color: 'var(--color-text)' };

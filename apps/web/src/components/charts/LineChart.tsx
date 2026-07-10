@@ -9,7 +9,15 @@ import {
   YAxis,
 } from 'recharts';
 import { usePrefersReducedMotion } from '../../lib/useReducedMotion';
-import { chartColor, chartGridColor, chartTextColor, tooltipStyle, type ChartRole } from './chartTheme';
+import {
+  chartColor,
+  chartGridColor,
+  chartTextColor,
+  tooltipItemStyle,
+  tooltipLabelStyle,
+  tooltipStyle,
+  type ChartRole,
+} from './chartTheme';
 
 export interface LineSeries {
   key: string;
@@ -48,7 +56,12 @@ export function LineChart({ data, xKey, series, yFormat = 'usd' }: LineChartProp
           axisLine={false}
           tickFormatter={tickFormatter}
         />
-        <Tooltip contentStyle={tooltipStyle} formatter={tooltipFormatter} />
+        <Tooltip
+          contentStyle={tooltipStyle}
+          itemStyle={tooltipItemStyle}
+          labelStyle={tooltipLabelStyle}
+          formatter={tooltipFormatter}
+        />
         {series.map((s) => (
           <Line
             key={s.key}

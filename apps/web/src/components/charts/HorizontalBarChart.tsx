@@ -16,7 +16,14 @@ import {
   YAxis,
 } from 'recharts';
 import { usePrefersReducedMotion } from '../../lib/useReducedMotion';
-import { chartColor, chartGridColor, chartTextColor, tooltipStyle } from './chartTheme';
+import {
+  chartColor,
+  chartGridColor,
+  chartTextColor,
+  tooltipItemStyle,
+  tooltipLabelStyle,
+  tooltipStyle,
+} from './chartTheme';
 
 export interface HorizontalBarDatum {
   label: string;
@@ -130,6 +137,8 @@ export function HorizontalBarChart({
         <Tooltip
           cursor={{ fill: 'var(--color-surface-sunken)' }}
           contentStyle={tooltipStyle}
+          itemStyle={tooltipItemStyle}
+          labelStyle={tooltipLabelStyle}
           formatter={tooltipFormatter}
         />
         <Bar
