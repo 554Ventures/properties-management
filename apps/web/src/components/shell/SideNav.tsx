@@ -1,60 +1,8 @@
 // Desktop navigation spine (hidden below md; BottomTabBar takes over).
-import { NavLink } from 'react-router-dom';
 import { cx } from '../../lib/cx';
 import { useAuth } from '../../state/auth';
-import {
-  IconBuilding,
-  IconCalendarCheck,
-  IconDollar,
-  IconFileText,
-  IconGear,
-  IconHome,
-  IconSparkle,
-  IconUsers,
-  IconWrench,
-} from '../ui/icons';
-
-interface NavItem {
-  to: string;
-  label: string;
-  icon: (props: { size?: number }) => JSX.Element;
-  end?: boolean;
-  ai?: boolean;
-}
-
-const items: NavItem[] = [
-  { to: '/', label: 'Dashboard', icon: IconHome, end: true },
-  { to: '/properties', label: 'Properties', icon: IconBuilding },
-  { to: '/tenants', label: 'Tenants & Leases', icon: IconUsers },
-  { to: '/maintenance/contractors', label: 'Maintenance', icon: IconWrench },
-  { to: '/money', label: 'Money', icon: IconDollar },
-  { to: '/rent', label: 'Rent Collection', icon: IconCalendarCheck },
-  { to: '/documents', label: 'Documents', icon: IconFileText },
-  { to: '/reports', label: 'Reports & Tax', icon: IconFileText },
-  { to: '/insights', label: 'AI Insights', icon: IconSparkle, ai: true },
-];
-
-function navLinkClasses(isActive: boolean, ai?: boolean): string {
-  return cx(
-    'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors duration-fast',
-    isActive
-      ? 'bg-brand-soft text-brand'
-      : cx('text-ink-muted hover:bg-surface-sunken hover:text-ink', ai && 'text-ink-ai hover:text-ink-ai'),
-  );
-}
-
-function NavItemLink({ item }: { item: NavItem }) {
-  const Icon = item.icon;
-  return (
-    <NavLink to={item.to} end={item.end} className={({ isActive }) => navLinkClasses(isActive, item.ai)}>
-      <Icon size={18} />
-      <span>
-        {item.ai && <span aria-hidden="true">✦ </span>}
-        {item.label}
-      </span>
-    </NavLink>
-  );
-}
+import { navItems, settingsItem } from './navItems';
+import { NavItemLink, navLinkClasses } from './navLink';
 
 export function SideNav() {
   const { enabled, signOut } = useAuth();
@@ -68,7 +16,7 @@ export function SideNav() {
         <span className="text-[15px] font-semibold tracking-tight text-ink">554 Properties</span>
       </div>
       <ul className="flex flex-1 flex-col gap-1 px-3">
-        {items.map((item) => (
+        {navItems.map((item) => (
           <li key={item.to}>
             <NavItemLink item={item} />
           </li>
@@ -77,7 +25,7 @@ export function SideNav() {
       {/* Settings (and sign out, in auth mode) pinned to the bottom */}
       <ul className="border-t border-border px-3 py-3">
         <li>
-          <NavItemLink item={{ to: '/settings', label: 'Settings', icon: IconGear }} />
+          <NavItemLink item={settingsItem} />
         </li>
         {enabled && (
           <li>

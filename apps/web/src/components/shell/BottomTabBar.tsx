@@ -1,60 +1,116 @@
-// Mobile tab bar (< md): Home / Money / Add / Rent / Tax (PRD §5.8).
-import { NavLink } from 'react-router-dom';
+// Mobile tab bar (< md): Home / Money / Add / Rent / More. The first three
+// destinations are the MOBILE_PRIMARY paths from the shared nav list; "More"
+// opens a bottom sheet with every remaining destination (+ Settings/Sign out),
+// so nothing in the desktop sidebar is unreachable on mobile.
+import { useState } from 'react';
+import { NavLink, useLocation } from 'react-router-dom';
 import { cx } from '../../lib/cx';
-import {
-  IconCalendarCheck,
-  IconDollar,
-  IconFileText,
-  IconHome,
-  IconPlus,
-} from '../ui/icons';
+import { useAuth } from '../../state/auth';
+import { BottomSheet } from '../ui/BottomSheet';
+import { IconMore, IconPlus } from '../ui/icons';
+import { MOBILE_PRIMARY, navItems, settingsItem, type NavItem } from './navItems';
+import { NavItemLink, navLinkClasses } from './navLink';
 
-const tabs = [
-  { to: '/', label: 'Home', icon: IconHome, end: true },
-  { to: '/money', label: 'Money', icon: IconDollar, end: true },
-  { to: '/money/new', label: 'Add', icon: IconPlus, add: true },
-  { to: '/rent', label: 'Rent', icon: IconCalendarCheck },
-  { to: '/reports', label: 'Tax', icon: IconFileText },
+// Destinations surfaced directly as tabs, in bar order.
+const primaryTabs: NavItem[] = MOBILE_PRIMARY.map(
+  (path) => navItems.find((item) => item.to === path)!,
+);
+// Everything else lives behind "More" (Settings appended, matching the sidebar).
+const overflowItems: NavItem[] = [
+  ...navItems.filter((item) => !MOBILE_PRIMARY.includes(item.to)),
+  settingsItem,
 ];
 
+function tabClasses(isActive: boolean): string {
+  return cx(
+    'flex flex-col items-center gap-0.5 py-2 text-[0.6875rem] font-medium transition-colors duration-fast',
+    isActive ? 'text-brand' : 'text-ink-muted hover:text-ink',
+  );
+}
+
+function isPathActive(pathname: string, item: NavItem): boolean {
+  return item.end ? pathname === item.to : pathname === item.to || pathname.startsWith(`${item.to}/`);
+}
+
 export function BottomTabBar() {
+  const [moreOpen, setMoreOpen] = useState(false);
+  const { pathname } = useLocation();
+  const { enabled, signOut } = useAuth();
+
+  // "More" reflects the active route whenever you're on one of its destinations.
+  const overflowActive = overflowItems.some((item) => isPathActive(pathname, item));
+
   return (
-    <nav
-      aria-label="Main menu"
-      className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-surface pb-[env(safe-area-inset-bottom)] md:hidden"
-    >
-      <ul className="flex items-stretch justify-around">
-        {tabs.map((tab) => {
-          const Icon = tab.icon;
-          return (
-            <li key={tab.to} className="flex-1">
-              <NavLink
-                to={tab.to}
-                end={tab.end}
-                className={({ isActive }) =>
-                  cx(
-                    'flex flex-col items-center gap-0.5 py-2 text-[0.6875rem] font-medium transition-colors duration-fast',
-                    tab.add
-                      ? 'text-brand'
-                      : isActive
-                        ? 'text-brand'
-                        : 'text-ink-muted hover:text-ink',
-                  )
-                }
-              >
-                {tab.add ? (
-                  <span className="grid h-7 w-7 place-items-center rounded-full bg-brand text-ink-on-brand">
-                    <Icon size={16} />
-                  </span>
-                ) : (
-                  <Icon size={20} />
-                )}
-                {tab.label}
-              </NavLink>
+    <>
+      <nav
+        aria-label="Main menu"
+        className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-surface pb-[env(safe-area-inset-bottom)] md:hidden"
+      >
+        <ul className="flex items-stretch justify-around">
+          <TabLink item={primaryTabs[0]!} />
+          <TabLink item={primaryTabs[1]!} />
+          <li className="flex-1">
+            <NavLink
+              to="/money/new"
+              className={() => cx(tabClasses(false), 'text-brand')}
+            >
+              <span className="grid h-7 w-7 place-items-center rounded-full bg-brand text-ink-on-brand">
+                <IconPlus size={16} />
+              </span>
+              Add
+            </NavLink>
+          </li>
+          <TabLink item={primaryTabs[2]!} />
+          <li className="flex-1">
+            <button
+              type="button"
+              onClick={() => setMoreOpen(true)}
+              aria-haspopup="menu"
+              aria-expanded={moreOpen}
+              className={cx(tabClasses(overflowActive), 'w-full')}
+            >
+              <IconMore size={20} />
+              More
+            </button>
+          </li>
+        </ul>
+      </nav>
+
+      <BottomSheet open={moreOpen} onClose={() => setMoreOpen(false)} label="More menu" title="More">
+        <ul className="flex flex-col gap-1">
+          {overflowItems.map((item) => (
+            <li key={item.to}>
+              <NavItemLink item={item} onNavigate={() => setMoreOpen(false)} />
             </li>
-          );
-        })}
-      </ul>
-    </nav>
+          ))}
+          {enabled && (
+            <li className="mt-1 border-t border-border pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setMoreOpen(false);
+                  void signOut();
+                }}
+                className={cx(navLinkClasses(false), 'w-full')}
+              >
+                Sign out
+              </button>
+            </li>
+          )}
+        </ul>
+      </BottomSheet>
+    </>
+  );
+}
+
+function TabLink({ item }: { item: NavItem }) {
+  const Icon = item.icon;
+  return (
+    <li className="flex-1">
+      <NavLink to={item.to} end={item.end} className={({ isActive }) => tabClasses(isActive)}>
+        <Icon size={20} />
+        {item.shortLabel ?? item.label}
+      </NavLink>
+    </li>
   );
 }

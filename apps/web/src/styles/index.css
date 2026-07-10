@@ -76,3 +76,17 @@
 .animate-drawer-enter {
   animation: drawer-enter var(--motion-slow) var(--motion-ease) both;
 }
+
+/* Mobile "More" bottom sheet slide-up — zeroed by the reduced-motion override in tokens.css. */
+@keyframes sheet-enter {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: none;
+  }
+}
+
+.animate-sheet-enter {
+  animation: sheet-enter var(--motion-slow) var(--motion-ease) both;
+}

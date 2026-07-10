@@ -239,3 +239,13 @@ export const IconStar = (p: IconProps) => (
     <path d="M12 3l2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3l-5.6 2.9 1.1-6.2L3 9.6l6.2-.9z" />
   </svg>
 );
+
+// Overflow "More" affordance — a 2×2 grid (paired with the "More" label).
+export const IconMore = (p: IconProps) => (
+  <svg {...base(p)}>
+    <rect x="4" y="4" width="6" height="6" rx="1.5" />
+    <rect x="14" y="4" width="6" height="6" rx="1.5" />
+    <rect x="4" y="14" width="6" height="6" rx="1.5" />
+    <rect x="14" y="14" width="6" height="6" rx="1.5" />
+  </svg>
+);
