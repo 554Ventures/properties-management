@@ -4,7 +4,7 @@
 // exists yet — property-app-deployment-plan.md §8), so it has no UI here.
 import { useEffect, useState, type FormEvent } from 'react';
 import { usePlaidLink } from 'react-plaid-link';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import type { AccountSettings, Integration, IntegrationType } from '@hearth/shared';
 import {
   useCreatePlaidLinkToken,
@@ -41,6 +41,16 @@ export function Settings() {
   usePageTitle('Settings');
   const settings = useSettings();
   const integrations = useIntegrations();
+  const location = useLocation();
+
+  // createBrowserRouter doesn't scroll to a hash target on client-side
+  // navigation (no <ScrollRestoration>), so do it ourselves — used by the
+  // "Go to Settings" toast action on Money's bank-import error.
+  useEffect(() => {
+    if (!location.hash) return;
+    const target = document.getElementById(location.hash.slice(1));
+    target?.scrollIntoView({ block: 'start' });
+  }, [location.hash]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -63,7 +73,7 @@ export function Settings() {
         </section>
 
         <div className="flex flex-col gap-6">
-          <section aria-label="Integrations">
+          <section id="integrations" aria-label="Integrations">
             <Card>
               <h2 className="mb-3 text-sm font-semibold text-ink">Integrations</h2>
               {integrations.isPending ? (

@@ -12,7 +12,7 @@ import type {
   TransactionStatus,
   TransactionType,
 } from '@hearth/shared';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { ApiClientError } from '../api/client';
 import {
   useCategories,
@@ -138,6 +138,7 @@ export function Money() {
   const integrations = useIntegrations();
   const importBank = useImportTransactions();
   const { toast } = useToast();
+  const navigate = useNavigate();
 
   const categoryName = useMemo(
     () => new Map((categories.data ?? []).map((c) => [c.id, c.name])),
@@ -291,7 +292,10 @@ export function Money() {
                   },
                   onError: (err) => {
                     if (err instanceof ApiClientError && err.code === 'plaid_not_connected') {
-                      toast('Connect a bank account in Settings first.', 'danger');
+                      toast('Connect a bank account in Settings first.', 'danger', {
+                        label: 'Go to Settings',
+                        onClick: () => navigate('/settings#integrations'),
+                      });
                       return;
                     }
                     if (err instanceof ApiClientError && err.code === 'import_rate_limited') {

@@ -15,14 +15,20 @@ import { IconAlertCircle, IconCheck, IconDot, IconX } from './icons';
 
 export type ToastTone = 'positive' | 'danger' | 'neutral';
 
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 interface ToastItem {
   id: number;
   message: string;
   tone: ToastTone;
+  action?: ToastAction;
 }
 
 interface ToastContextValue {
-  toast: (message: string, tone?: ToastTone) => void;
+  toast: (message: string, tone?: ToastTone, action?: ToastAction) => void;
   toasts: ToastItem[];
   dismiss: (id: number) => void;
 }
@@ -38,10 +44,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const toast = useCallback(
-    (message: string, tone: ToastTone = 'neutral') => {
+    (message: string, tone: ToastTone = 'neutral', action?: ToastAction) => {
       const id = nextId.current++;
-      setToasts((prev) => [...prev, { id, message, tone }]);
-      window.setTimeout(() => dismiss(id), 6000);
+      setToasts((prev) => [...prev, { id, message, tone, action }]);
+      window.setTimeout(() => dismiss(id), action ? 10000 : 6000);
     },
     [dismiss],
   );
@@ -82,7 +88,21 @@ export function ToastViewport() {
             <span className={cx('mt-0.5 shrink-0', accent)}>
               <Icon size={14} />
             </span>
-            <p className="flex-1">{t.message}</p>
+            <div className="flex-1">
+              <p>{t.message}</p>
+              {t.action && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    t.action?.onClick();
+                    ctx.dismiss(t.id);
+                  }}
+                  className="mt-1 font-semibold text-brand underline transition-colors duration-fast hover:text-brand-strong"
+                >
+                  {t.action.label}
+                </button>
+              )}
+            </div>
             <button
               type="button"
               onClick={() => ctx.dismiss(t.id)}
