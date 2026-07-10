@@ -227,3 +227,15 @@ export const IconFilter = (p: IconProps) => (
     <path d="M3 5h18l-7 8v5l-4 2v-7z" />
   </svg>
 );
+
+export const IconWrench = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+  </svg>
+);
+
+export const IconStar = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M12 3l2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3l-5.6 2.9 1.1-6.2L3 9.6l6.2-.9z" />
+  </svg>
+);

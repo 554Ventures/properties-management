@@ -47,6 +47,17 @@ export type TenantDocument = z.infer<typeof s.TenantDocumentSchema>;
 export type TenantLease = z.infer<typeof s.TenantLeaseSchema>;
 export type TenantDetailResponse = z.infer<typeof s.TenantDetailResponseSchema>;
 
+// Contractors
+export type Contractor = z.infer<typeof s.ContractorSchema>;
+export type CreateContractorInput = z.infer<typeof s.CreateContractorInputSchema>;
+export type UpdateContractorInput = z.infer<typeof s.UpdateContractorInputSchema>;
+export type ContractorListRow = z.infer<typeof s.ContractorListRowSchema>;
+export type ContractorListResponse = z.infer<typeof s.ContractorListResponseSchema>;
+export type ContractorJobRow = z.infer<typeof s.ContractorJobRowSchema>;
+export type ContractorDetailResponse = z.infer<typeof s.ContractorDetailResponseSchema>;
+export type LogContractorJobInput = z.infer<typeof s.LogContractorJobInputSchema>;
+export type LogContractorJobResponse = z.infer<typeof s.LogContractorJobResponseSchema>;
+
 // Leases
 export type Lease = z.infer<typeof s.LeaseSchema>;
 export type LeaseListResponse = z.infer<typeof s.LeaseListResponseSchema>;

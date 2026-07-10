@@ -7,6 +7,7 @@ import { registerAuth } from './plugins/auth';
 import { registerErrorHandler } from './plugins/error-handler';
 import { categoriesRoutes } from './routes/categories';
 import { chatRoutes } from './routes/chat';
+import { contractorsRoutes } from './routes/contractors';
 import { dashboardRoutes } from './routes/dashboard';
 import { documentsRoutes } from './routes/documents';
 import { insightsRoutes } from './routes/insights';
@@ -71,6 +72,7 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
       await api.register(leasesRoutes);
       await api.register(transactionsRoutes);
       await api.register(categoriesRoutes);
+      await api.register(contractorsRoutes);
       await api.register(rentRoutes);
       await api.register(documentsRoutes);
       await api.register(reportsRoutes);

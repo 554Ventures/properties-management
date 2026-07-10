@@ -1,6 +1,7 @@
 // Every key seed figure lives here as a named constant, imported by BOTH
 // prisma/seed.ts and the tests (ARCHITECTURE "Risks": seed-number drift).
 // Change a number here and the dashboard tests change with it.
+import { addMonthsToPeriod, currentPeriod, monthStart } from '../src/lib/dates';
 import { slugify } from '../src/lib/strings';
 
 // ── demo account ─────────────────────────────────────────────────────────────
@@ -245,6 +246,66 @@ export const SEED_CATEGORIES: Array<{
   { name: 'Legal & Professional', type: 'expense', irsScheduleELine: 'Line 10 – Legal and other professional fees' },
   { name: 'Travel', type: 'expense', irsScheduleELine: 'Line 6 – Auto and travel' },
 ];
+
+// ── contractor directory (§10: 6 contractors + synthetic vendor history) ─────
+// Contractor usage stats (jobsCount/avgCostCents/lastUsedAt) are DERIVED from
+// confirmed expense transactions matched by vendor name (§4) — never stored.
+export interface SeedContractorSpec {
+  name: string;
+  trade: string;
+  rating: number;
+  /** Free-text bare domain (no scheme); null exercises the no-website path.
+   *  Cosmetic only — never affects the pinned derived stats. */
+  website: string | null;
+  /** Synthetic history txns (confirmed expense, Repairs, source 'manual',
+   *  vendor = the contractor name), dated one per month backwards from
+   *  contractorHistoryAnchor(). */
+  historyAmountsCents: number[];
+}
+
+export const CONTRACTOR_COUNT = 6;
+
+export const SEED_CONTRACTORS: SeedContractorSpec[] = [
+  { name: 'Rivera Plumbing', trade: 'Plumbing', rating: 4.9, website: 'riveraplumbing.com', historyAmountsCents: Array(23).fill(21000) },
+  // Name matches the existing M−1 "Summit Roofing" $1,200 roof repair in
+  // TRAILING_EXTRA_EXPENSES — together: 4 jobs, avg exactly 115000c, lastUsed
+  // in the previous month.
+  { name: 'Summit Roofing', trade: 'Roofing', rating: 4.8, website: 'summitroofingco.com', historyAmountsCents: [115000, 115000, 110000] },
+  { name: 'Diaz Painting', trade: 'Painting', rating: 4.7, website: 'diazpainting.com', historyAmountsCents: Array(9).fill(64000) },
+  // Deliberately does NOT match the existing "Apex Handyman" vendor rows —
+  // stats come only from the synthetic history.
+  { name: 'Apex Services', trade: 'Handyman', rating: 4.7, website: null, historyAmountsCents: Array(5).fill(18000) },
+  { name: 'QuickFix Home', trade: 'HVAC', rating: 4.4, website: null, historyAmountsCents: [18500] },
+  // No synthetic history: stats derive entirely from the existing
+  // "GreenScape Co." landscaping rows (6 trailing fixed + 1 current month).
+  { name: 'GreenScape Co.', trade: 'Landscaping', rating: 4.6, website: 'greenscapeco.com', historyAmountsCents: [] },
+];
+
+/**
+ * Anchor month for the synthetic contractor history: the earlier of
+ * (start of month 7 full months ago) and (Dec 1 of the previous calendar
+ * year). History txns go monthly BACKWARDS from here, so every one is both in
+ * a prior calendar year AND ≥7 full months back — outside the pinned MTD /
+ * trailing-6-month / current-tax-year figures and the insight-rule windows.
+ */
+export function contractorHistoryAnchor(now: Date = new Date()): Date {
+  const sevenMonthsBack = monthStart(addMonthsToPeriod(currentPeriod(now), -7));
+  const decPreviousYear = new Date(Date.UTC(now.getUTCFullYear() - 1, 11, 1));
+  return sevenMonthsBack <= decPreviousYear ? sevenMonthsBack : decPreviousYear;
+}
+
+/** Derived stats each seeded contractor must show (asserted by seed + tests). */
+export const CONTRACTOR_EXPECTED_STATS: Record<
+  string,
+  { jobsCount: number; avgCostCents: number | null }
+> = {
+  'Rivera Plumbing': { jobsCount: 23, avgCostCents: 21000 },
+  'Summit Roofing': { jobsCount: 4, avgCostCents: 115000 }, // 340000 history + 120000 M−1 roof repair
+  'Diaz Painting': { jobsCount: 9, avgCostCents: 64000 },
+  'Apex Services': { jobsCount: 5, avgCostCents: 18000 },
+  'QuickFix Home': { jobsCount: 1, avgCostCents: 18500 },
+  'GreenScape Co.': { jobsCount: 7, avgCostCents: 31000 }, // 6 trailing + 1 current month, all 31000
+};
 
 // ── seeded documents (names/types pinned; asserted by documents.test.ts) ─────
 export const SEED_DOCUMENTS = {

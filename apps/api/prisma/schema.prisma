@@ -53,6 +53,7 @@ model Account {
   auditLogs    AuditLog[]
   users        User[]
   documents    Document[]
+  contractors  Contractor[]
 }
 
 // Auth principal → Account mapping (deployment plan §4.1). One row per
@@ -228,6 +229,29 @@ model RentPayment {
 
   @@unique([leaseId, period])
   @@index([period])
+}
+
+// Contractor directory. Usage stats (jobsCount/avgCostCents/lastUsedAt) are
+// never stored — they derive at query time from confirmed expense Transactions
+// whose vendor matches the contractor name (case/whitespace-insensitive;
+// ARCHITECTURE §4).
+model Contractor {
+  id         String    @id @default(cuid())
+  accountId  String
+  name       String
+  trade      String
+  rating     Float? // user-entered 1–5, validated by @hearth/shared
+  phone      String?
+  email      String?
+  website    String? // free text — bare domains allowed; UI prefixes a scheme when linking
+  notes      String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  archivedAt DateTime?
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
 }
 
 model Report {

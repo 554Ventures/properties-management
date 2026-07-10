@@ -1,6 +1,8 @@
-import { createBrowserRouter } from 'react-router-dom';
+import { createBrowserRouter, Navigate } from 'react-router-dom';
 import { AppShell } from './components/shell/AppShell';
 import { AddTransaction } from './pages/AddTransaction';
+import { ContractorDetail } from './pages/ContractorDetail';
+import { ContractorsPage } from './pages/ContractorsPage';
 import { Dashboard } from './pages/Dashboard';
 import { DocumentsPage } from './pages/DocumentsPage';
 import { Insights } from './pages/Insights';
@@ -43,6 +45,11 @@ export const router = createBrowserRouter([
       { path: 'properties/:id', element: <PropertyDetail /> },
       { path: 'tenants', element: <TenantsList /> },
       { path: 'tenants/:id', element: <TenantDetail /> },
+      // Maintenance has one screen today; the index redirect keeps the
+      // "Maintenance" breadcrumb from 404ing.
+      { path: 'maintenance', element: <Navigate to="/maintenance/contractors" replace /> },
+      { path: 'maintenance/contractors', element: <ContractorsPage /> },
+      { path: 'maintenance/contractors/:id', element: <ContractorDetail /> },
       { path: 'money', element: <Money /> },
       { path: 'money/new', element: <AddTransaction /> },
       { path: 'money/review', element: <MoneyReview /> },

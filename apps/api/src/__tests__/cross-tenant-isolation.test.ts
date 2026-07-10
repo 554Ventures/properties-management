@@ -22,6 +22,7 @@ import { currentPeriod, iso } from '../lib/dates';
 import { prisma } from '../lib/prisma';
 import * as categoryService from '../services/category.service';
 import * as chatService from '../services/chat.service';
+import * as contractorService from '../services/contractor.service';
 import * as documentService from '../services/document.service';
 import * as insightService from '../services/insight.service';
 import * as integrationService from '../services/integration.service';
@@ -52,6 +53,7 @@ const fixture = {
   chatSessionId: '',
   integrationId: '',
   documentId: '',
+  contractorId: '',
 };
 
 const NOT_FOUND = { code: 'not_found' };
@@ -136,6 +138,12 @@ beforeAll(async () => {
 
   const integration = await integrationService.connectMock(accountAId.current, 'stripe');
   fixture.integrationId = integration.id;
+
+  const contractor = await contractorService.create(accountAId.current, {
+    name: 'Isolation Contractor',
+    trade: 'Plumbing',
+  });
+  fixture.contractorId = contractor.id;
 
   const document = await documentService.create(accountAId.current, {
     entityType: 'property',
@@ -283,6 +291,28 @@ describe('cross-tenant isolation: Account B can never read or write Account A da
     ).rejects.toMatchObject(NOT_FOUND);
   });
 
+  it('Contractor: detail/update/remove/restore refuse cross-account access', async () => {
+    await expect(
+      contractorService.detail(accountBId.current, fixture.contractorId),
+    ).rejects.toMatchObject(NOT_FOUND);
+    await expect(
+      contractorService.update(accountBId.current, fixture.contractorId, { name: 'Hijacked' }),
+    ).rejects.toMatchObject(NOT_FOUND);
+    await expect(
+      contractorService.remove(accountBId.current, fixture.contractorId),
+    ).rejects.toMatchObject(NOT_FOUND);
+    await expect(
+      contractorService.restore(accountBId.current, fixture.contractorId),
+    ).rejects.toMatchObject(NOT_FOUND);
+    await expect(
+      contractorService.logJob(accountBId.current, fixture.contractorId, {
+        date: iso(new Date()),
+        description: 'Hijacked job',
+        amountCents: 10000,
+      }),
+    ).rejects.toMatchObject(NOT_FOUND);
+  });
+
   it('Document: getForDownload/update/remove refuse cross-account access', async () => {
     await expect(
       documentService.getForDownload(accountBId.current, fixture.documentId),
@@ -307,6 +337,7 @@ describe('cross-tenant isolation: Account B can never read or write Account A da
       (await transactionService.list(accountBId.current, {})).items.map((t) => t.id),
     ).not.toContain(fixture.transactionId);
     expect(await insightService.listActive(accountBId.current)).toEqual([]);
+    expect(await contractorService.list(accountBId.current)).toEqual([]);
     expect((await chatService.listSessions(accountBId.current)).map((s) => s.id)).not.toContain(
       fixture.chatSessionId,
     );

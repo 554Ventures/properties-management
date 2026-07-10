@@ -15,6 +15,10 @@ import type {
   Category,
   ConfirmAllReviewResponse,
   ConfirmTransactionInput,
+  Contractor,
+  ContractorDetailResponse,
+  ContractorListRow,
+  CreateContractorInput,
   CreateLeaseInput,
   CreatePropertyInput,
   CreateTenantInput,
@@ -40,6 +44,8 @@ import type {
   LeaseDetailResponse,
   LeaseWithContext,
   LinkTokenResponse,
+  LogContractorJobInput,
+  LogContractorJobResponse,
   Property,
   PropertyDetailResponse,
   PropertyNoiResponse,
@@ -65,6 +71,7 @@ import type {
   TransactionListResponse,
   Unit,
   UpdateAccountSettingsInput,
+  UpdateContractorInput,
   UpdateDocumentInput,
   UpdateLeaseInput,
   UpdatePropertyInput,
@@ -73,6 +80,14 @@ import type {
   UpdateUnitInput,
 } from '@hearth/shared';
 import { api, toQuery } from './client';
+
+export type {
+  Contractor,
+  ContractorDetailResponse,
+  ContractorListRow,
+  CreateContractorInput,
+  UpdateContractorInput,
+};
 
 const STALE_SHORT = 30_000; // live financial data
 const STALE_LONG = 5 * 60_000; // near-static reference data
@@ -277,6 +292,80 @@ export function useRestoreTenant() {
   return useMutation({
     mutationFn: (id: string) => api.post<Tenant>(`/tenants/${id}/restore`),
     onSuccess: (_data, id) => invalidateTenant(qc, id),
+  });
+}
+
+// -------------------------------------------------------------- contractors
+
+export function useContractors() {
+  return useQuery({
+    queryKey: ['contractors'],
+    queryFn: () => api.get<ContractorListRow[]>('/contractors'),
+    staleTime: STALE_SHORT,
+  });
+}
+
+export function useContractor(id: string | undefined) {
+  return useQuery({
+    queryKey: ['contractors', id],
+    queryFn: () => api.get<ContractorDetailResponse>(`/contractors/${id}`),
+    enabled: Boolean(id),
+    staleTime: STALE_SHORT,
+  });
+}
+
+function invalidateContractors(qc: ReturnType<typeof useQueryClient>) {
+  void qc.invalidateQueries({ queryKey: ['contractors'] });
+}
+
+export function useCreateContractor() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateContractorInput) => api.post<Contractor>('/contractors', input),
+    onSuccess: () => invalidateContractors(qc),
+  });
+}
+
+export function useUpdateContractor() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...input }: UpdateContractorInput & { id: string }) =>
+      api.patch<Contractor>(`/contractors/${id}`, input),
+    onSuccess: () => invalidateContractors(qc),
+  });
+}
+
+export function useArchiveContractor() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete(`/contractors/${id}`),
+    onSuccess: () => invalidateContractors(qc),
+  });
+}
+
+// POST /contractors/:id/restore exists on the API for parity with tenants,
+// but no UI surface exposes archived contractors yet — add a restore hook
+// alongside that surface when it lands.
+
+// POST /contractors/:id/jobs — logs a manual job as a real confirmed expense
+// transaction. A `possible_duplicate` response created nothing server-side
+// (it's an advisory candidate list, mirroring the review queue's rent-match
+// suggestion), so only invalidate contractor data when the job was actually
+// `created`.
+export function useLogContractorJob() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ contractorId, ...input }: LogContractorJobInput & { contractorId: string }) =>
+      api.post<LogContractorJobResponse>(`/contractors/${contractorId}/jobs`, input),
+    onSuccess: (response) => {
+      // A created job is a real expense transaction, not just a contractor
+      // stat — refresh the surfaces that show it too.
+      if (response.status === 'created') {
+        invalidateContractors(qc);
+        void qc.invalidateQueries({ queryKey: ['transactions'] });
+        void qc.invalidateQueries({ queryKey: ['dashboard'] });
+      }
+    },
   });
 }
 

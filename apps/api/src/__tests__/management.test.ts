@@ -42,6 +42,20 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // Some tests below hit GET /properties/:id, which runs generateInsights as a
+  // side effect (property.service.ts → insight.service.ts) before this file's
+  // temp properties/tenants are archived — Insight→Property/Tenant is SetNull,
+  // not Cascade, so deleting them would leave the generated row behind,
+  // "active" forever with a null propertyId/tenantId, and leak into any other
+  // file's exact-dedupeKey assertions (insights.test.ts). Clean those up first.
+  await prisma.insight.deleteMany({
+    where: {
+      OR: [
+        { propertyId: { in: createdPropertyIds } },
+        { tenantId: { in: createdTenantIds } },
+      ],
+    },
+  });
   // Transactions first: Transaction→Property is SetNull, so deleting a property
   // would orphan its transactions as account-level rows and skew other files' KPIs.
   await prisma.transaction.deleteMany({ where: { id: { in: createdTransactionIds } } });

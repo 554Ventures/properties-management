@@ -10,18 +10,23 @@ import {
   addMonthsToPeriod,
   currentPeriod,
   monthStart,
+  periodOf,
   startOfUtcDay,
   trailingPeriods,
 } from '../src/lib/dates';
 import { renderPdfPlaceholder } from '../src/lib/pdf';
 import { prisma } from '../src/lib/prisma';
+import * as contractorService from '../src/services/contractor.service';
 import { sanitizeFilename } from '../src/services/document.service';
 import * as insightService from '../src/services/insight.service';
 import {
   AVG_TRAILING_NET_CENTS,
   BIRCH_UTILITIES_BY_MONTH_CENTS,
   COLLECTED_MTD_CENTS,
+  CONTRACTOR_COUNT,
+  CONTRACTOR_EXPECTED_STATS,
   CURRENT_MONTH_EXPENSES,
+  contractorHistoryAnchor,
   DEMO_EMAIL,
   DEMO_GRACE_DAYS,
   DEMO_NAME,
@@ -34,6 +39,7 @@ import {
   RENT_ROLL_CENTS,
   REVIEW_QUEUE_ITEMS,
   SEED_CATEGORIES,
+  SEED_CONTRACTORS,
   SEED_DOCUMENTS,
   SEED_PROPERTIES,
   TOTAL_UNITS,
@@ -212,6 +218,42 @@ async function main(): Promise<void> {
     });
   };
 
+  // ── contractor directory: 6 contractors + synthetic vendor history (§10).
+  // History txns run monthly BACKWARDS from contractorHistoryAnchor(now), so
+  // every one is in a prior calendar year AND ≥7 full months back — the pinned
+  // MTD / trailing-6-month / tax-target figures and insight rules never see
+  // them. "Summit Roofing" and "GreenScape Co." deliberately match existing
+  // vendor rows (M−1 roof repair; monthly grounds service) so their derived
+  // stats blend both; the existing "Apex Handyman" vendor deliberately does
+  // NOT match the "Apex Services" contractor.
+  const contractorAnchorPeriod = periodOf(contractorHistoryAnchor(now));
+  for (const spec of SEED_CONTRACTORS) {
+    await prisma.contractor.create({
+      data: {
+        accountId: account.id,
+        name: spec.name,
+        trade: spec.trade,
+        rating: spec.rating,
+        website: spec.website,
+      },
+    });
+    for (let i = 0; i < spec.historyAmountsCents.length; i++) {
+      await prisma.transaction.create({
+        data: {
+          accountId: account.id,
+          categoryId: categoryId('Repairs'),
+          date: addDays(monthStart(addMonthsToPeriod(contractorAnchorPeriod, -i)), 14),
+          amountCents: spec.historyAmountsCents[i] as number,
+          type: 'expense',
+          description: `${spec.trade} work — ${spec.name}`,
+          vendor: spec.name,
+          source: 'manual',
+          status: 'confirmed',
+        },
+      });
+    }
+  }
+
   // ── trailing 6 full months: full rent roll paid + pinned expense totals
   const trailing = trailingPeriods(period, 7).slice(0, 6); // M−6 … M−1
   for (let i = 0; i < trailing.length; i++) {
@@ -363,6 +405,14 @@ async function main(): Promise<void> {
     trailingNet += m.income - m.expense;
   }
   assertEq(Math.round(trailingNet / 6), AVG_TRAILING_NET_CENTS, 'avg trailing net');
+  const contractorRows = await contractorService.list(account.id);
+  assertEq(contractorRows.length, CONTRACTOR_COUNT, 'contractor count');
+  for (const row of contractorRows) {
+    const expected = CONTRACTOR_EXPECTED_STATS[row.name];
+    if (!expected) throw new Error(`Seed self-check failed: unexpected contractor ${row.name}`);
+    assertEq(row.jobsCount, expected.jobsCount, `${row.name} jobsCount`);
+    assertEq(row.avgCostCents ?? -1, expected.avgCostCents ?? -1, `${row.name} avgCostCents`);
+  }
   const keys = expectedInsightDedupeKeys(period);
   for (const key of Object.values(keys)) {
     const found = created.find((c) => c.dedupeKey === key);

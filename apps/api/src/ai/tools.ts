@@ -7,6 +7,7 @@ import {
   AskUserQuestionBlockSchema,
   ChartBlockSchema,
   ConfirmTransactionInputSchema,
+  CreateContractorInputSchema,
   CreateTransactionInputSchema,
   DataTableBlockSchema,
   DocumentEntityTypeSchema,
@@ -26,6 +27,7 @@ import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { currentPeriod, yearRange } from '../lib/dates';
 import * as categoryService from '../services/category.service';
+import * as contractorService from '../services/contractor.service';
 import * as dashboardService from '../services/dashboard.service';
 import * as documentService from '../services/document.service';
 import * as insightService from '../services/insight.service';
@@ -176,6 +178,14 @@ export const serviceTools: ServiceToolDef[] = [
     execute: (accountId) => transactionService.getReviewQueue(accountId),
   },
   {
+    name: 'list_contractors',
+    description:
+      'Contractor directory with usage stats derived from confirmed expense transactions matched by vendor name: jobsCount, avgCostCents and lastUsedAt per contractor. All amounts in integer cents.',
+    inputSchema: NoInputSchema,
+    write: false,
+    execute: (accountId) => contractorService.list(accountId),
+  },
+  {
     name: 'list_categories',
     description: 'All transaction categories (system IRS-aligned set plus custom ones).',
     inputSchema: NoInputSchema,
@@ -252,6 +262,15 @@ export const serviceTools: ServiceToolDef[] = [
       transactionService.create(accountId, input as z.infer<typeof CreateTransactionInputSchema>, {
         actor,
       }),
+  },
+  {
+    name: 'create_contractor',
+    description:
+      'WRITES: adds a contractor to the directory (name, trade, optional 1-5 rating, phone, email, website, notes). Usage stats then derive from expense transactions whose vendor matches the name.',
+    inputSchema: CreateContractorInputSchema,
+    write: true,
+    execute: (accountId, input, actor) =>
+      contractorService.create(accountId, input as z.infer<typeof CreateContractorInputSchema>, actor),
   },
   {
     name: 'confirm_transaction',

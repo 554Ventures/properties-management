@@ -11,6 +11,7 @@ import {
   IconHome,
   IconSparkle,
   IconUsers,
+  IconWrench,
 } from '../ui/icons';
 
 interface NavItem {
@@ -25,6 +26,7 @@ const items: NavItem[] = [
   { to: '/', label: 'Dashboard', icon: IconHome, end: true },
   { to: '/properties', label: 'Properties', icon: IconBuilding },
   { to: '/tenants', label: 'Tenants & Leases', icon: IconUsers },
+  { to: '/maintenance/contractors', label: 'Maintenance', icon: IconWrench },
   { to: '/money', label: 'Money', icon: IconDollar },
   { to: '/rent', label: 'Rent Collection', icon: IconCalendarCheck },
   { to: '/documents', label: 'Documents', icon: IconFileText },

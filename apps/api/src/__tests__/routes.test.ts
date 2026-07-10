@@ -5,6 +5,8 @@ import {
   AccountSettingsSchema,
   ActivityListResponseSchema,
   CategoryListResponseSchema,
+  ContractorDetailResponseSchema,
+  ContractorListResponseSchema,
   DashboardInsightResponseSchema,
   DashboardKpisResponseSchema,
   IncomeExpenseSeriesResponseSchema,
@@ -22,6 +24,7 @@ import {
   TransactionListResponseSchema,
 } from '@hearth/shared';
 import {
+  CONTRACTOR_COUNT,
   EXPENSES_MTD_CENTS,
   NET_CASHFLOW_MTD_CENTS,
   OKAFOR_DAYS_LATE,
@@ -102,6 +105,25 @@ describe('GET endpoints satisfy the shared response schemas', () => {
     const review = ReviewQueueResponseSchema.parse(await getJson('/api/v1/transactions/review'));
     expect(review.items).toHaveLength(3);
     expect(review.items.every((i) => i.aiSuggestedCategoryName !== null)).toBe(true);
+  });
+
+  it('/contractors — 6 rows with derived usage stats; /contractors/:id agrees', async () => {
+    const contractors = ContractorListResponseSchema.parse(await getJson('/api/v1/contractors'));
+    expect(contractors).toHaveLength(CONTRACTOR_COUNT);
+    // Stats derive from confirmed expense txns matched by vendor name (§4).
+    const summit = contractors.find((c) => c.name === 'Summit Roofing');
+    expect(summit?.jobsCount).toBe(4);
+    expect(summit?.avgCostCents).toBe(115000);
+    expect(summit?.website).toBe('summitroofingco.com');
+
+    // Detail derives from the same match — stats must equal the list row.
+    const detail = ContractorDetailResponseSchema.parse(
+      await getJson(`/api/v1/contractors/${summit!.id}`),
+    );
+    expect(detail.jobsCount).toBe(summit!.jobsCount);
+    expect(detail.avgCostCents).toBe(summit!.avgCostCents);
+    expect(detail.lastUsedAt).toBe(summit!.lastUsedAt);
+    expect(detail.jobs).toHaveLength(4);
   });
 
   it('/categories', async () => {

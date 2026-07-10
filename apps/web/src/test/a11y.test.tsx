@@ -11,11 +11,12 @@ import type {
 } from '@hearth/shared';
 import type { LeaseDetailResponse } from '@hearth/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import axe from 'axe-core';
 import type { ReactNode } from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ContractorFormModal } from '../components/forms/ContractorFormModal';
 import { LeaseFormModal } from '../components/forms/LeaseFormModal';
 import { LeaseTenantsModal } from '../components/forms/LeaseTenantsModal';
 import { PropertyFormModal } from '../components/forms/PropertyFormModal';
@@ -26,6 +27,8 @@ import { AppShell } from '../components/shell/AppShell';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { MultiSelect } from '../components/ui/MultiSelect';
 import { ToastProvider } from '../components/ui/Toast';
+import { ContractorDetail } from '../pages/ContractorDetail';
+import { ContractorsPage } from '../pages/ContractorsPage';
 import { Dashboard } from '../pages/Dashboard';
 import { MoneyReview } from '../pages/MoneyReview';
 
@@ -293,6 +296,16 @@ describe('CRUD modal accessibility', () => {
     await expectNoModalViolations();
   });
 
+  it('ContractorFormModal (create) has no axe violations', async () => {
+    vi.stubGlobal('fetch', vi.fn(modalFetch));
+    render(
+      <Providers>
+        <ContractorFormModal mode="create" open onClose={() => {}} />
+      </Providers>,
+    );
+    await expectNoModalViolations();
+  });
+
   it('TenantFormModal (create) has no axe violations', async () => {
     vi.stubGlobal('fetch', vi.fn(modalFetch));
     render(
@@ -495,5 +508,289 @@ describe('review queue accessibility', () => {
     expect(
       results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`),
     ).toEqual([]);
+  }, 20_000);
+});
+
+// --- Contractor directory ----------------------------------------------------
+
+describe('contractor directory accessibility', () => {
+  it('ContractorsPage with rows (incl. low-sample and no-history) has no axe violations', async () => {
+    const contractorFixtures: Record<string, unknown> = {
+      '/api/v1/contractors': [
+        {
+          id: 'c1',
+          name: 'Mario Rossi',
+          trade: 'Plumbing',
+          rating: 4.9,
+          jobsCount: 12,
+          avgCostCents: 21000,
+          lastUsedAt: '2026-06-15T00:00:00.000Z',
+        },
+        {
+          id: 'c2',
+          name: 'Ana Silva',
+          trade: 'Painting',
+          rating: 4.5,
+          jobsCount: 2, // < 3 jobs → muted rating + visible "low sample" text
+          avgCostCents: 89000,
+          lastUsedAt: '2026-03-02T00:00:00.000Z',
+        },
+        {
+          id: 'c3',
+          name: 'Ken Watts',
+          trade: 'HVAC',
+          rating: null,
+          jobsCount: 0,
+          avgCostCents: null,
+          lastUsedAt: null,
+        },
+      ],
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const path = String(input).replace(/^https?:\/\/[^/]+/, '').split('?')[0] ?? '';
+        const body = contractorFixtures[path];
+        return Promise.resolve(
+          new Response(JSON.stringify(body ?? { error: { code: 'not_found', message: path } }), {
+            status: body === undefined ? 404 : 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }),
+    );
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { container } = render(
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <MemoryRouter initialEntries={['/maintenance/contractors']}>
+            <Routes>
+              {/* Pages render inside AppShell's <main> in the app. */}
+              <Route
+                path="/maintenance/contractors"
+                element={
+                  <main>
+                    <ContractorsPage />
+                  </main>
+                }
+              />
+            </Routes>
+          </MemoryRouter>
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByText('Mario Rossi');
+    await screen.findByText('· low sample');
+
+    const results = await axe.run(container, {
+      rules: { 'color-contrast': { enabled: false } },
+    });
+    expect(
+      results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`),
+    ).toEqual([]);
+  }, 20_000);
+
+  it('ContractorDetail with website and job history has no axe violations', async () => {
+    const detailFixtures: Record<string, unknown> = {
+      '/api/v1/contractors/c1': {
+        contractor: {
+          id: 'c1',
+          accountId: 'a1',
+          name: 'Mario Rossi',
+          trade: 'Plumbing',
+          rating: 4.9,
+          phone: '555-0100',
+          email: 'mario@rossi.example',
+          website: 'rossiplumbing.com',
+          notes: 'Fast and tidy.',
+          createdAt: '2026-01-05T00:00:00.000Z',
+          archivedAt: null,
+        },
+        jobsCount: 12,
+        avgCostCents: 21000,
+        lastUsedAt: '2026-06-15T00:00:00.000Z',
+        jobs: [
+          {
+            id: 't1',
+            date: '2026-06-15T00:00:00.000Z',
+            description: 'Water heater replacement',
+            amountCents: 48500,
+            propertyLabel: 'Maple Duplex',
+          },
+          {
+            id: 't2',
+            date: '2026-05-02T00:00:00.000Z',
+            description: 'Leak repair',
+            amountCents: 18500,
+            propertyLabel: null, // renders the em-dash path
+          },
+        ],
+      },
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const path = String(input).replace(/^https?:\/\/[^/]+/, '').split('?')[0] ?? '';
+        const body = detailFixtures[path];
+        return Promise.resolve(
+          new Response(JSON.stringify(body ?? { error: { code: 'not_found', message: path } }), {
+            status: body === undefined ? 404 : 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }),
+    );
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { container } = render(
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <MemoryRouter initialEntries={['/maintenance/contractors/c1']}>
+            <Routes>
+              {/* Pages render inside AppShell's <main> in the app. */}
+              <Route
+                path="/maintenance/contractors/:id"
+                element={
+                  <main>
+                    <ContractorDetail />
+                  </main>
+                }
+              />
+            </Routes>
+          </MemoryRouter>
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByRole('heading', { name: 'Mario Rossi' });
+    await screen.findByText('Water heater replacement');
+
+    const results = await axe.run(container, {
+      rules: { 'color-contrast': { enabled: false } },
+    });
+    expect(
+      results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`),
+    ).toEqual([]);
+  }, 20_000);
+
+  // LogJobModal (opened from ContractorDetail): audits both steps of the
+  // "log a job manually" flow — the entry form, and the duplicate-review step
+  // a `possible_duplicate` response switches into.
+  function contractorJobFixtures(): Record<string, unknown> {
+    return {
+      '/api/v1/contractors/c1': {
+        contractor: {
+          id: 'c1',
+          accountId: 'a1',
+          name: 'Mario Rossi',
+          trade: 'Plumbing',
+          rating: 4.9,
+          phone: '555-0100',
+          email: 'mario@rossi.example',
+          website: null,
+          notes: null,
+          createdAt: '2026-01-05T00:00:00.000Z',
+          archivedAt: null,
+        },
+        jobsCount: 1,
+        avgCostCents: 18500,
+        lastUsedAt: '2026-06-15T00:00:00.000Z',
+        jobs: [
+          {
+            id: 't1',
+            date: '2026-06-15T00:00:00.000Z',
+            description: 'Leak repair',
+            amountCents: 18500,
+            propertyLabel: null,
+          },
+        ],
+      },
+      '/api/v1/properties': properties,
+    };
+  }
+
+  function stubContractorJobFetch(fixtures: Record<string, unknown>, postResponse?: unknown) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input).replace(/^https?:\/\/[^/]+/, '').split('?')[0] ?? '';
+        if (init?.method === 'POST' && path === '/api/v1/contractors/c1/jobs') {
+          return Promise.resolve(
+            new Response(JSON.stringify(postResponse ?? {}), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            }),
+          );
+        }
+        const body = fixtures[path];
+        return Promise.resolve(
+          new Response(JSON.stringify(body ?? { error: { code: 'not_found', message: path } }), {
+            status: body === undefined ? 404 : 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }),
+    );
+  }
+
+  function renderContractorDetail() {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <MemoryRouter initialEntries={['/maintenance/contractors/c1']}>
+            <Routes>
+              <Route
+                path="/maintenance/contractors/:id"
+                element={
+                  <main>
+                    <ContractorDetail />
+                  </main>
+                }
+              />
+            </Routes>
+          </MemoryRouter>
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+  }
+
+  it('LogJobModal entry form has no axe violations', async () => {
+    stubContractorJobFetch(contractorJobFixtures());
+    renderContractorDetail();
+
+    await screen.findByRole('heading', { name: 'Mario Rossi' });
+    fireEvent.click(screen.getByRole('button', { name: 'Log a job' }));
+    await expectNoModalViolations();
+  }, 20_000);
+
+  it('LogJobModal duplicate-review step has no axe violations', async () => {
+    stubContractorJobFetch(contractorJobFixtures(), {
+      status: 'possible_duplicate',
+      duplicates: [
+        {
+          id: 't1',
+          date: '2026-06-15T00:00:00.000Z',
+          description: 'Leak repair',
+          amountCents: 18500,
+          propertyLabel: null,
+        },
+      ],
+    });
+    renderContractorDetail();
+
+    await screen.findByRole('heading', { name: 'Mario Rossi' });
+    fireEvent.click(screen.getByRole('button', { name: 'Log a job' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.input(within(dialog).getByLabelText(/^Description/), {
+      target: { value: 'Leak repair' },
+    });
+    fireEvent.input(within(dialog).getByLabelText(/^Amount/), { target: { value: '185.00' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Log job' }));
+
+    await screen.findByText(/looks similar to 1 existing expense/);
+    await expectNoModalViolations();
   }, 20_000);
 });
