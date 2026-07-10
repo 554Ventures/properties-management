@@ -1,10 +1,11 @@
-// Report viewer: title/period header, snapshot data rendered as accessible
-// tables, CSV/PDF export, "Email accountant", and the persistent tax
-// disclaimer on tax surfaces (PRD §7.3 / §13.4).
+// Report viewer: title/period header, then a type-aware body that leads with
+// headline figures and callouts before the detail table (ReportBody), CSV/PDF
+// export, "Email accountant", and the persistent tax disclaimer on tax
+// surfaces (PRD §7.3 / §13.4).
 import { useParams } from 'react-router-dom';
 import { useReportDetail } from '../api/queries';
 import { EmailAccountantButton, ExportLinks } from '../components/reports/ReportActions';
-import { ReportData } from '../components/reports/ReportData';
+import { ReportBody } from '../components/reports/ReportBody';
 import { PageHeader } from '../components/shell/PageHeader';
 import { Card } from '../components/ui/Card';
 import { ErrorNotice } from '../components/ui/ErrorNotice';
@@ -65,9 +66,7 @@ export function ReportViewer() {
         }
       />
 
-      <Card>
-        <ReportData data={data.data} caption={data.title} />
-      </Card>
+      <ReportBody type={data.type} data={data.data} title={data.title} />
 
       {isTaxReport && (
         <Card className="bg-surface-sunken">

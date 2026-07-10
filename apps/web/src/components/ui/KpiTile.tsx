@@ -18,6 +18,9 @@ export interface KpiTileProps {
   /** Full value in accessible text, e.g. "Net cash flow, $8,450, up 4% vs last month". */
   ariaLabel: string;
   trend?: KpiTrend;
+  /** Colors the value as reinforcement only — the value text itself (e.g. a
+   * minus sign) must already carry the meaning. */
+  tone?: 'positive' | 'danger';
   /** Extra content (progress bar, disclaimer) — replaces the trend row space. */
   children?: ReactNode;
 }
@@ -25,11 +28,18 @@ export interface KpiTileProps {
 const tileClasses =
   'flex min-h-[7.5rem] flex-col justify-between gap-2 rounded-lg border border-border bg-surface p-5 shadow-card transition-shadow duration-fast';
 
-export function KpiTile({ label, value, ariaLabel, trend, children }: KpiTileProps) {
+export function KpiTile({ label, value, ariaLabel, trend, tone, children }: KpiTileProps) {
   return (
     <div role="group" tabIndex={0} aria-label={ariaLabel} className={tileClasses}>
       <p className="text-xs font-semibold uppercase tracking-wide text-ink-muted">{label}</p>
-      <p className="text-2xl font-semibold tabular-nums text-ink">{value}</p>
+      <p
+        className={cx(
+          'text-2xl font-semibold tabular-nums',
+          tone === 'danger' ? 'text-danger' : tone === 'positive' ? 'text-positive' : 'text-ink',
+        )}
+      >
+        {value}
+      </p>
       {trend ? <TrendRow trend={trend} /> : <div className="min-h-[1rem]">{children}</div>}
     </div>
   );
