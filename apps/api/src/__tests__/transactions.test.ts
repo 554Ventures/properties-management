@@ -415,6 +415,73 @@ describe('POST /transactions/:id/confirm with rentPaymentId', () => {
   });
 });
 
+describe('transaction attribution ownership', () => {
+  it('rejects unknown property/unit ids and unit-property mismatches', async () => {
+    const accountId = await getDemoAccountId();
+    const badPropertyRes = await app.inject({
+      method: 'POST',
+      url: '/api/v1/transactions',
+      payload: {
+        date: iso(new Date()),
+        amountCents: 1000,
+        type: 'expense',
+        description: 'TEST attribution',
+        propertyId: 'not-a-real-property',
+      },
+    });
+    expect(badPropertyRes.statusCode).toBe(404);
+
+    // A real unit paired with a different real property.
+    const unit = await prisma.unit.findFirstOrThrow({
+      where: { property: { accountId } },
+      select: { id: true, propertyId: true },
+    });
+    const otherProperty = await prisma.property.findFirstOrThrow({
+      where: { accountId, id: { not: unit.propertyId } },
+    });
+    const mismatchRes = await app.inject({
+      method: 'POST',
+      url: '/api/v1/transactions',
+      payload: {
+        date: iso(new Date()),
+        amountCents: 1000,
+        type: 'expense',
+        description: 'TEST attribution',
+        propertyId: otherProperty.id,
+        unitId: unit.id,
+      },
+    });
+    expect(mismatchRes.statusCode).toBe(400);
+    expect(mismatchRes.json().error.message).toMatch(/does not belong/);
+
+    // PATCH validates the effective pair: swapping the property away from the
+    // row's unit is rejected too.
+    const createRes = await app.inject({
+      method: 'POST',
+      url: '/api/v1/transactions',
+      payload: {
+        date: iso(new Date()),
+        amountCents: 1000,
+        type: 'expense',
+        description: 'TEST attribution ok',
+        propertyId: unit.propertyId,
+        unitId: unit.id,
+      },
+    });
+    expect(createRes.statusCode).toBe(201);
+    const txn = TransactionSchema.parse(createRes.json());
+    createdIds.push(txn.id);
+
+    const patchRes = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/transactions/${txn.id}`,
+      payload: { propertyId: otherProperty.id },
+    });
+    expect(patchRes.statusCode).toBe(400);
+    expect(patchRes.json().error.message).toMatch(/does not belong/);
+  });
+});
+
 // ── manual-income rent reconciliation (the non-bank path) ────────────────────
 
 describe('POST /transactions — manual income rent match and linked-row guard', () => {

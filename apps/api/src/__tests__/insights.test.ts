@@ -196,3 +196,33 @@ describe('insight generation rules', () => {
     expect(rows).toHaveLength(1);
   });
 });
+
+describe('expense_spike baseline guard', () => {
+  it('a category with no trailing history never "spikes" on its first spend', async () => {
+    const accountId = await getDemoAccountId();
+    const category = await prisma.category.create({
+      data: { accountId, name: 'TEST Fresh Category', type: 'expense' },
+    });
+    const txn = await prisma.transaction.create({
+      data: {
+        accountId,
+        date: new Date(),
+        amountCents: 500_000, // would trivially beat a zero baseline
+        type: 'expense',
+        description: 'TEST first-ever spend in a new category',
+        source: 'manual',
+        status: 'confirmed',
+        categoryId: category.id,
+      },
+    });
+
+    await insightService.generateInsights(accountId);
+    const spike = await prisma.insight.findFirst({
+      where: { accountId, type: 'expense_spike', dedupeKey: { contains: 'test-fresh-category' } },
+    });
+    expect(spike).toBeNull();
+
+    await prisma.transaction.delete({ where: { id: txn.id } });
+    await prisma.category.delete({ where: { id: category.id } });
+  });
+});

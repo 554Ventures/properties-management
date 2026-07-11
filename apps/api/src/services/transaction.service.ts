@@ -171,11 +171,43 @@ export async function suggestCategory(
 
 // ── create / update / remove ─────────────────────────────────────────────────
 
+/**
+ * Attribution integrity: propertyId/unitId must belong to the caller's
+ * account, and the unit must sit under the attributed property. Nothing else
+ * enforces this — RLS is PostgREST-only (the API role bypasses it), so an
+ * unchecked id would leak a foreign property's label into reports and count
+ * in KPIs while silently vanishing from per-property rollups.
+ */
+async function assertAttributionOwned(
+  accountId: string,
+  propertyId: string | null | undefined,
+  unitId: string | null | undefined,
+): Promise<void> {
+  if (propertyId) {
+    const property = await prisma.property.findFirst({
+      where: { id: propertyId, accountId },
+      select: { id: true },
+    });
+    if (!property) throw new NotFoundError('property', propertyId);
+  }
+  if (unitId) {
+    const unit = await prisma.unit.findFirst({
+      where: { id: unitId, property: { accountId } },
+      select: { propertyId: true },
+    });
+    if (!unit) throw new NotFoundError('unit', unitId);
+    if (propertyId && unit.propertyId !== propertyId) {
+      throw new BadRequestError('unit does not belong to the attributed property');
+    }
+  }
+}
+
 export async function create(
   accountId: string,
   input: CreateTransactionInput,
   opts: { source?: TransactionSource; status?: TransactionStatus; actor?: AuditActor } = {},
 ): Promise<CreateTransactionResponse> {
+  await assertAttributionOwned(accountId, input.propertyId, input.unitId);
   let aiSuggestedCategoryId: string | null = null;
   let aiConfidence: number | null = null;
   if (!input.categoryId) {
@@ -238,6 +270,15 @@ export async function update(
   actor: AuditActor = 'user',
 ): Promise<Transaction> {
   const prior = await getOwned(accountId, id);
+  // Validate the row's final attribution: a patch may change either field
+  // alone, so check the effective pair, not just what was sent.
+  if (input.propertyId !== undefined || input.unitId !== undefined) {
+    await assertAttributionOwned(
+      accountId,
+      input.propertyId !== undefined ? input.propertyId : prior.propertyId,
+      input.unitId !== undefined ? input.unitId : prior.unitId,
+    );
+  }
   // Same desync remove() blocks below: this ledger row may back a `paid`
   // RentPayment, whose amountCents/paidAt would silently stop matching (and a
   // type flip would erase the rent from reports while the tracker shows paid).
@@ -429,7 +470,15 @@ export async function confirm(
 ): Promise<Transaction> {
   const existing = await getOwned(accountId, id);
   if (input.rentPaymentId) {
+    // Attribution comes from the lease itself on this path.
     return confirmWithRentLink(accountId, existing, input.rentPaymentId, input.categoryId, actor);
+  }
+  if (input.propertyId !== undefined || input.unitId !== undefined) {
+    await assertAttributionOwned(
+      accountId,
+      input.propertyId !== undefined ? input.propertyId : existing.propertyId,
+      input.unitId !== undefined ? input.unitId : existing.unitId,
+    );
   }
   const usedSuggestion = !input.categoryId && !!existing.aiSuggestedCategoryId;
   const categoryId = input.categoryId ?? existing.aiSuggestedCategoryId ?? existing.categoryId;

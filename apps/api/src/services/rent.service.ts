@@ -18,6 +18,7 @@ import {
   isoOrNull,
   monthEndExclusive,
   monthStart,
+  startOfUtcDay,
 } from '../lib/dates';
 import { NotFoundError, BadRequestError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
@@ -63,6 +64,53 @@ export function deriveRentStatus(
   return { status: 'due' };
 }
 
+const DAY_MS = 86_400_000;
+
+/** Whole days of [start, endExclusive) that fall inside `period`. */
+export function coveredDaysInPeriod(period: string, start: Date, endExclusive: Date): number {
+  const from = Math.max(monthStart(period).getTime(), startOfUtcDay(start).getTime());
+  const to = Math.min(monthEndExclusive(period).getTime(), startOfUtcDay(endExclusive).getTime());
+  return Math.max(0, Math.round((to - from) / DAY_MS));
+}
+
+/**
+ * Unrounded rent share for the slice of `period` covered by [start,
+ * endExclusive) — exactly rentCents when the whole period is covered. Kept
+ * unrounded so a blended charge (old + new lease around a switchover) rounds
+ * once on the sum instead of accumulating per-share rounding.
+ */
+export function proratedRentShare(
+  rentCents: number,
+  period: string,
+  start: Date,
+  endExclusive: Date,
+): number {
+  const daysInPeriod = Math.round(
+    (monthEndExclusive(period).getTime() - monthStart(period).getTime()) / DAY_MS,
+  );
+  const covered = coveredDaysInPeriod(period, start, endExclusive);
+  return covered >= daysInPeriod ? rentCents : (rentCents * covered) / daysInPeriod;
+}
+
+/**
+ * Derivation rule (ARCHITECTURE §4, binding): the expected charge for a
+ * period is the full rent when the lease covers the whole month, otherwise
+ * prorated by covered days (lease endDate is the inclusive last day).
+ */
+export function expectedChargeCents(
+  lease: { rentCents: number; startDate: Date; endDate: Date },
+  period: string,
+): number {
+  return Math.round(
+    proratedRentShare(
+      lease.rentCents,
+      period,
+      lease.startDate,
+      addDays(startOfUtcDay(lease.endDate), 1),
+    ),
+  );
+}
+
 /** Insert any missing expected RentPayment rows for `period`'s active leases. */
 export async function materializeExpectedPayments(
   accountId: string,
@@ -78,22 +126,32 @@ export async function materializeExpectedPayments(
       startDate: { lt: periodEnd },
       endDate: { gte: periodStart },
     },
-    select: { id: true, rentCents: true, dueDay: true },
+    select: { id: true, unitId: true, rentCents: true, dueDay: true, startDate: true, endDate: true },
   });
+  // One charge per unit per month: rows from *any* lease on the unit count,
+  // so a renewal's successor lease never adds a second charge to a month the
+  // outgoing lease already materialized (the switchover reconciliation in
+  // lease.service adjusts that row instead).
   const existing = await prisma.rentPayment.findMany({
-    where: { period, leaseId: { in: activeLeases.map((l) => l.id) } },
-    select: { leaseId: true },
+    where: { period, lease: { unitId: { in: activeLeases.map((l) => l.unitId) } } },
+    select: { leaseId: true, lease: { select: { unitId: true } } },
   });
   const haveRows = new Set(existing.map((e) => e.leaseId));
-  const missing = activeLeases.filter((l) => !haveRows.has(l.id));
+  const chargedUnits = new Set(existing.map((e) => e.lease.unitId));
+  const missing = activeLeases.filter((l) => !haveRows.has(l.id) && !chargedUnits.has(l.unitId));
   if (missing.length > 0) {
-    const data = missing.map((l) => ({
-      leaseId: l.id,
-      period,
-      dueDate: addDays(periodStart, l.dueDay - 1),
-      amountCents: l.rentCents,
-      status: 'due',
-    }));
+    const data = missing.map((l) => {
+      // A lease starting mid-month can't be due before it begins.
+      const nominalDue = addDays(periodStart, l.dueDay - 1);
+      const startDay = startOfUtcDay(l.startDate);
+      return {
+        leaseId: l.id,
+        period,
+        dueDate: nominalDue < startDay ? startDay : nominalDue,
+        amountCents: expectedChargeCents(l, period),
+        status: 'due',
+      };
+    });
     try {
       await prisma.rentPayment.createMany({ data });
     } catch (err) {
@@ -264,13 +322,17 @@ export async function recordPayment(
     where: { leaseId_period: { leaseId: input.leaseId, period: input.period } },
   });
   if (!payment) {
+    // Same derivation as materializeExpectedPayments: prorated charge for
+    // partial-coverage months, due date never before the lease starts.
+    const nominalDue = addDays(monthStart(input.period), lease.dueDay - 1);
+    const startDay = startOfUtcDay(lease.startDate);
     try {
       payment = await prisma.rentPayment.create({
         data: {
           leaseId: input.leaseId,
           period: input.period,
-          dueDate: addDays(monthStart(input.period), lease.dueDay - 1),
-          amountCents: lease.rentCents,
+          dueDate: nominalDue < startDay ? startDay : nominalDue,
+          amountCents: expectedChargeCents(lease, input.period),
           status: 'due',
         },
       });

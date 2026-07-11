@@ -338,6 +338,7 @@ async function buildScheduleE(
     propertyId: string | null;
     propertyLabel: string;
     rentsReceivedCents: number;
+    otherIncomeCents: number; // income whose category maps off Line 3
     expenseLines: Record<string, number>; // IRS line label → cents
     totalExpensesCents: number;
     netCents: number;
@@ -351,18 +352,24 @@ async function buildScheduleE(
         ? (t.property.nickname ?? t.property.addressLine1)
         : 'Portfolio / unassigned',
       rentsReceivedCents: 0,
+      otherIncomeCents: 0,
       expenseLines: {},
       totalExpensesCents: 0,
       netCents: 0,
     };
     if (t.type === 'income') {
-      row.rentsReceivedCents += t.amountCents;
+      // Income maps through the category's IRS line like expenses do
+      // (uncategorized defaults to rents); a category mapped off Line 3
+      // stays out of "Rents received" instead of silently inflating it.
+      const line = t.category?.irsScheduleELine ?? 'Line 3 – Rents received';
+      if (line === 'Line 3 – Rents received') row.rentsReceivedCents += t.amountCents;
+      else row.otherIncomeCents += t.amountCents;
     } else {
       const line = t.category?.irsScheduleELine ?? 'Line 19 – Other';
       row.expenseLines[line] = (row.expenseLines[line] ?? 0) + t.amountCents;
       row.totalExpensesCents += t.amountCents;
     }
-    row.netCents = row.rentsReceivedCents - row.totalExpensesCents;
+    row.netCents = row.rentsReceivedCents + row.otherIncomeCents - row.totalExpensesCents;
     rowsByProperty.set(key, row);
   }
   const propertyRows = [...rowsByProperty.values()].sort((a, b) =>
@@ -371,14 +378,16 @@ async function buildScheduleE(
   const totals = propertyRows.reduce(
     (acc, r) => ({
       rentsReceivedCents: acc.rentsReceivedCents + r.rentsReceivedCents,
+      otherIncomeCents: acc.otherIncomeCents + r.otherIncomeCents,
       totalExpensesCents: acc.totalExpensesCents + r.totalExpensesCents,
       netCents: acc.netCents + r.netCents,
     }),
-    { rentsReceivedCents: 0, totalExpensesCents: 0, netCents: 0 },
+    { rentsReceivedCents: 0, otherIncomeCents: 0, totalExpensesCents: 0, netCents: 0 },
   );
   const tableRows = propertyRows.map((r) => ({
     propertyLabel: r.propertyLabel,
     rentsReceivedCents: r.rentsReceivedCents,
+    otherIncomeCents: r.otherIncomeCents,
     totalExpensesCents: r.totalExpensesCents,
     netCents: r.netCents,
   }));
@@ -391,6 +400,7 @@ async function buildScheduleE(
       columns: [
         { key: 'propertyLabel', label: 'Property' },
         { key: 'rentsReceivedCents', label: 'Rents received (cents)' },
+        { key: 'otherIncomeCents', label: 'Other income (cents)' },
         { key: 'totalExpensesCents', label: 'Total expenses (cents)' },
         { key: 'netCents', label: 'Net (cents)' },
       ],
