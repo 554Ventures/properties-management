@@ -249,7 +249,14 @@ export function PropertyDetail() {
                 const lease = unit.currentLease;
                 return (
                   <Tr key={unit.id}>
-                    <Td className="font-medium">{unit.label}</Td>
+                    <Td className="font-medium">
+                      <Link
+                        to={`/units/${unit.id}`}
+                        className="text-ink transition-colors duration-fast hover:text-brand"
+                      >
+                        {unit.label}
+                      </Link>
+                    </Td>
                     <Td>
                       {lease && lease.tenants.length > 0 ? (
                         lease.tenants.map((tenant, i) => (

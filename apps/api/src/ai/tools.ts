@@ -37,6 +37,7 @@ import * as rentService from '../services/rent.service';
 import * as reportService from '../services/report.service';
 import * as tenantService from '../services/tenant.service';
 import * as transactionService from '../services/transaction.service';
+import * as unitService from '../services/unit.service';
 import type { AuditActor } from '../services/audit.service';
 
 export interface ServiceToolDef {
@@ -142,6 +143,15 @@ export const serviceTools: ServiceToolDef[] = [
     write: false,
     execute: (accountId, input) =>
       tenantService.getDetail(accountId, (input as { tenantId: string }).tenantId),
+  },
+  {
+    name: 'get_unit',
+    description:
+      'Full detail for one unit: property context, current + historical leases with tenants, rent payment history and MTD/YTD P&L.',
+    inputSchema: z.object({ unitId: z.string() }),
+    write: false,
+    execute: (accountId, input) =>
+      unitService.getDetail(accountId, (input as { unitId: string }).unitId),
   },
   {
     name: 'list_leases',

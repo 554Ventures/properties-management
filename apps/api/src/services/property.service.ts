@@ -102,10 +102,10 @@ async function getOwned(accountId: string, id: string): Promise<DbProperty> {
   return row;
 }
 
-async function pnlTotals(
+export async function pnlTotals(
   accountId: string,
   range: { from: Date; to: Date },
-  propertyId?: string,
+  scope: { propertyId?: string; unitId?: string } = {},
 ): Promise<PnlTotals> {
   const grouped = await prisma.transaction.groupBy({
     by: ['type'],
@@ -113,7 +113,8 @@ async function pnlTotals(
       accountId,
       status: 'confirmed',
       date: { gte: range.from, lt: range.to },
-      ...(propertyId ? { propertyId } : {}),
+      ...(scope.propertyId ? { propertyId: scope.propertyId } : {}),
+      ...(scope.unitId ? { unitId: scope.unitId } : {}),
     },
     _sum: { amountCents: true },
   });
@@ -140,12 +141,12 @@ export async function getDetail(accountId: string, id: string): Promise<Property
   const mtd = await pnlTotals(
     accountId,
     { from: monthStart(period), to: monthEndExclusive(period) },
-    id,
+    { propertyId: id },
   );
   const ytd = await pnlTotals(
     accountId,
     { from: new Date(Date.UTC(now.getUTCFullYear(), 0, 1)), to: monthEndExclusive(period) },
-    id,
+    { propertyId: id },
   );
 
   // Same staleness fix as getDashboardInsight/list (insight.service.ts): the

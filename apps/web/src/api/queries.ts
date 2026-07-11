@@ -72,6 +72,7 @@ import type {
   TransactionListQuery,
   TransactionListResponse,
   Unit,
+  UnitDetailResponse,
   UpdateAccountSettingsInput,
   UpdateContractorInput,
   UpdateDocumentInput,
@@ -205,6 +206,22 @@ export function useRestoreProperty() {
 
 // -------------------------------------------------------------------- units
 
+export function useUnitDetail(id: string | undefined) {
+  return useQuery({
+    queryKey: ['units', id],
+    queryFn: () => api.get<UnitDetailResponse>(`/units/${id}`),
+    enabled: Boolean(id),
+    staleTime: STALE_SHORT,
+  });
+}
+
+// A unit write ripples through its property (occupancy) and the unit's own
+// detail page.
+function invalidateUnit(qc: ReturnType<typeof useQueryClient>, id: string, propertyId: string) {
+  invalidateProperty(qc, propertyId);
+  void qc.invalidateQueries({ queryKey: ['units', id] });
+}
+
 export function useCreateUnit() {
   const qc = useQueryClient();
   return useMutation({
@@ -219,7 +236,7 @@ export function useUpdateUnit() {
   return useMutation({
     mutationFn: ({ id, propertyId: _propertyId, ...input }: UpdateUnitInput & { id: string; propertyId: string }) =>
       api.patch<Unit>(`/units/${id}`, input),
-    onSuccess: (_data, { propertyId }) => invalidateProperty(qc, propertyId),
+    onSuccess: (_data, { id, propertyId }) => invalidateUnit(qc, id, propertyId),
   });
 }
 
@@ -227,7 +244,7 @@ export function useArchiveUnit() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id }: { id: string; propertyId: string }) => api.delete(`/units/${id}`),
-    onSuccess: (_data, { propertyId }) => invalidateProperty(qc, propertyId),
+    onSuccess: (_data, { id, propertyId }) => invalidateUnit(qc, id, propertyId),
   });
 }
 
@@ -236,7 +253,7 @@ export function useRestoreUnit() {
   return useMutation({
     mutationFn: ({ id }: { id: string; propertyId: string }) =>
       api.post<Unit>(`/units/${id}/restore`),
-    onSuccess: (_data, { propertyId }) => invalidateProperty(qc, propertyId),
+    onSuccess: (_data, { id, propertyId }) => invalidateUnit(qc, id, propertyId),
   });
 }
 
@@ -387,6 +404,7 @@ export function useLeaseDetail(id: string | undefined) {
 function invalidateLease(qc: ReturnType<typeof useQueryClient>, leaseId?: string) {
   void qc.invalidateQueries({ queryKey: ['properties'] });
   void qc.invalidateQueries({ queryKey: ['tenants'] });
+  void qc.invalidateQueries({ queryKey: ['units'] });
   void qc.invalidateQueries({ queryKey: ['rent'] });
   void qc.invalidateQueries({ queryKey: ['dashboard'] });
   if (leaseId) void qc.invalidateQueries({ queryKey: ['leases', leaseId] });
@@ -458,6 +476,7 @@ export function useSendEsign() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['tenants'] });
       void qc.invalidateQueries({ queryKey: ['properties'] });
+      void qc.invalidateQueries({ queryKey: ['units'] });
     },
   });
 }

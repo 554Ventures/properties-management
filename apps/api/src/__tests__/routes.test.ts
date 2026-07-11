@@ -15,6 +15,7 @@ import {
   LeaseListResponseSchema,
   PropertyDetailResponseSchema,
   PropertyListResponseSchema,
+  UnitDetailResponseSchema,
   RentTrackerResponseSchema,
   ReportLibraryResponseSchema,
   ReportListResponseSchema,
@@ -75,6 +76,22 @@ describe('GET endpoints satisfy the shared response schemas', () => {
     );
     expect(detail.units.length).toBe(first.unitCount);
     expect(detail.units.every((u) => u.status === 'occupied')).toBe(true);
+  });
+
+  it('/units/:id — detail composite agrees with the property detail', async () => {
+    const list = PropertyListResponseSchema.parse(await getJson('/api/v1/properties'));
+    const property = list[0]!;
+    const propertyDetail = PropertyDetailResponseSchema.parse(
+      await getJson(`/api/v1/properties/${property.id}`),
+    );
+    const unit = propertyDetail.units[0]!;
+    const detail = UnitDetailResponseSchema.parse(await getJson(`/api/v1/units/${unit.id}`));
+    expect(detail.unit.id).toBe(unit.id);
+    expect(detail.propertyId).toBe(property.id);
+    expect(detail.status).toBe(unit.status);
+    // An occupied unit resolves its current lease + at least one lease in history.
+    expect(detail.currentLease?.id).toBe(unit.currentLease?.id ?? undefined);
+    expect(detail.leases.length).toBeGreaterThanOrEqual(1);
   });
 
   it('/tenants + /tenants/:id', async () => {

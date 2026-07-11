@@ -184,7 +184,10 @@ describe('cross-tenant isolation: Account B can never read or write Account A da
     ).rejects.toMatchObject(NOT_FOUND);
   });
 
-  it('Unit: update/remove/restore refuse cross-account access (parent-chain check)', async () => {
+  it('Unit: getDetail/update/remove/restore refuse cross-account access (parent-chain check)', async () => {
+    await expect(
+      unitService.getDetail(accountBId.current, fixture.unitId),
+    ).rejects.toMatchObject(NOT_FOUND);
     await expect(
       unitService.update(accountBId.current, fixture.unitId, { label: 'Hijacked' }),
     ).rejects.toMatchObject(NOT_FOUND);
@@ -375,6 +378,7 @@ describe('cross-tenant isolation: Account B can never read or write Account A da
     // Guards against a broken test accidentally proving isolation by having
     // silently failed to create the fixtures in the first place.
     await expect(propertyService.getDetail(accountAId.current, fixture.propertyId)).resolves.toBeTruthy();
+    await expect(unitService.getDetail(accountAId.current, fixture.unitId)).resolves.toBeTruthy();
     await expect(tenantService.getDetail(accountAId.current, fixture.tenantId)).resolves.toBeTruthy();
     await expect(leaseService.getDetail(accountAId.current, fixture.leaseId)).resolves.toBeTruthy();
     await expect(reportService.getById(accountAId.current, fixture.reportId)).resolves.toBeTruthy();
