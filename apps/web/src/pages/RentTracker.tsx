@@ -16,9 +16,10 @@ import { ProgressBar } from '../components/ui/ProgressBar';
 import { Select } from '../components/ui/Select';
 import { Skeleton } from '../components/ui/Skeleton';
 import { StatusBadge, type BadgeTone } from '../components/ui/StatusBadge';
+import { RowActions } from '../components/ui/RowActions';
 import { Table, Td, Th, Tr } from '../components/ui/Table';
 import { useToast } from '../components/ui/Toast';
-import { IconBell, IconCalendarCheck } from '../components/ui/icons';
+import { IconBell, IconCalendarCheck, IconCheck } from '../components/ui/icons';
 import { currentPeriod, formatDate, formatMonthLong, recentPeriods } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
 
@@ -265,31 +266,34 @@ export function RentTracker() {
                           )}
                         </Td>
                         <Td stickyRight>
-                          <div className="flex justify-end gap-2">
-                            {row.status === 'late' && (
-                              <Button
-                                variant="secondary"
-                                size="sm"
-                                busy={remind.isPending}
-                                onClick={() => remindOne(row)}
-                              >
-                                <IconBell size={12} />
-                                Remind
-                              </Button>
-                            )}
-                            {unpaid && (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => {
-                                  setPayMethod('manual');
-                                  setPayRow(row);
-                                }}
-                              >
-                                Mark paid
-                              </Button>
-                            )}
-                          </div>
+                          <RowActions
+                            context={row.tenantName}
+                            actions={[
+                              ...(row.status === 'late'
+                                ? [
+                                    {
+                                      label: 'Remind',
+                                      icon: <IconBell size={12} />,
+                                      variant: 'secondary' as const,
+                                      busy: remind.isPending,
+                                      onClick: () => remindOne(row),
+                                    },
+                                  ]
+                                : []),
+                              ...(unpaid
+                                ? [
+                                    {
+                                      label: 'Mark paid',
+                                      icon: <IconCheck size={14} />,
+                                      onClick: () => {
+                                        setPayMethod('manual');
+                                        setPayRow(row);
+                                      },
+                                    },
+                                  ]
+                                : []),
+                            ]}
+                          />
                         </Td>
                       </Tr>
                     );
