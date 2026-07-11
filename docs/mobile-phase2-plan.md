@@ -1,6 +1,8 @@
 # Phase 2 — Hearth iOS App (Capacitor remote-URL shell + push, camera, Face ID)
 
-> Status: planned 2026-07-04, implementation not started. Decisions locked with the user: Capacitor wrap, iOS only, remote-URL shell, personal use (paid Apple Developer account), push + camera + Face ID.
+> **Status: implemented 2026-07-11** — see [MOBILE.md](MOBILE.md), which now governs the mobile architecture. This file is kept as the planning record. Deviations from plan: bundle id is `com.properties554.hearth` (the Capacitor CLI rejects digit-leading segments the plan assumed Apple-valid), the iOS project uses SPM instead of CocoaPods, and adapter selection lives in `integrations/factory.ts` (repo convention) rather than a new `integrations/push.ts`. Part D (manual Apple steps) remains open — checklist in MOBILE.md.
+>
+> Original planning header: planned 2026-07-04. Decisions locked with the user: Capacitor wrap, iOS only, remote-URL shell, personal use (paid Apple Developer account), push + camera + Face ID.
 
 
 ## Context

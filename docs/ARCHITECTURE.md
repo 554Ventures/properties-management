@@ -72,8 +72,9 @@
 │           ├── styles/tokens.css             # design tokens incl. --surface-ai (§8)
 │           ├── components/
 │           │   ├── shell/        # AppShell, SideNav, BottomTabBar, Breadcrumbs, PageHeader
-│           │   ├── ui/           # Button, Card, Badge/StatusBadge, Table, Skeleton, Modal,
-│           │   │                 #   Toast, EmptyState, FormField, Select, Drawer
+│           │   ├── ui/           # Button, Card, Badge/StatusBadge, Table, DataTable, Skeleton,
+│           │   │                 #   Modal, Toast, EmptyState, FormField, Select, MultiSelect,
+│           │   │                 #   Drawer, BottomSheet, RowActions (mobile-collapsing row actions)
 │           │   ├── charts/       # ChartContainer, LineChart, BarChart, DonutChart, Sparkline (Recharts)
 │           │   ├── ai/           # AiSurface (wrapper), InsightCard, AiChip (suggested category)
 │           │   └── chat/         # ChatDrawer, ChatTranscript, ChatComposer, blocks/
