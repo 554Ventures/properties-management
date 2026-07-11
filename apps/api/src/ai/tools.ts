@@ -255,7 +255,7 @@ export const serviceTools: ServiceToolDef[] = [
   {
     name: 'create_transaction',
     description:
-      'WRITES to the ledger: creates a new income or expense transaction (amount in cents, always positive). This permanently records money movement and affects every report and KPI.',
+      'WRITES to the ledger: creates a new income or expense transaction (amount in cents, always positive). This permanently records money movement and affects every report and KPI. If the result includes a rentMatch, the income looks like an expected rent payment — offer to link it via confirm_transaction with that rentPaymentId; never also call record_rent_payment for the same money (that would create a second ledger row).',
     inputSchema: CreateTransactionInputSchema,
     write: true,
     execute: (accountId, input, actor) =>
@@ -275,7 +275,7 @@ export const serviceTools: ServiceToolDef[] = [
   {
     name: 'confirm_transaction',
     description:
-      'WRITES: confirms (categorizes) a pending-review transaction, moving it into the ledger. Pass categoryId to override the AI suggestion; omit it to accept the suggestion. Pass propertyId/unitId to attribute the transaction. Pass rentPaymentId to link a bank deposit to that expected rent payment and mark it paid (property/unit then come from the lease).',
+      'WRITES: confirms (categorizes) a pending-review transaction, moving it into the ledger. Pass categoryId to override the AI suggestion; omit it to accept the suggestion. Pass propertyId/unitId to attribute the transaction. Pass rentPaymentId to link an income transaction (a bank deposit or an already-confirmed manual entry) to that expected rent payment and mark it paid — amounts must match exactly, and property/unit then come from the lease.',
     inputSchema: z.object({
       transactionId: z.string(),
       categoryId: z.string().optional(),
@@ -298,7 +298,7 @@ export const serviceTools: ServiceToolDef[] = [
   {
     name: 'record_rent_payment',
     description:
-      'WRITES: records a rent payment for a lease/period as paid and creates the matching income transaction in the ledger. Cannot be undone from chat.',
+      'WRITES: records a rent payment for a lease/period as paid and creates the matching income transaction in the ledger. Cannot be undone from chat. amountCents must equal the amount due for the period — partial payments are rejected (log those with create_transaction instead).',
     inputSchema: RecordRentPaymentInputSchema,
     write: true,
     execute: (accountId, input, actor) =>

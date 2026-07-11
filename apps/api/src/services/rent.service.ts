@@ -286,6 +286,15 @@ export async function recordPayment(
   if (payment.status === 'paid') {
     throw new BadRequestError(`rent for ${input.period} is already recorded as paid`);
   }
+  // A mismatched amount used to flip the row to paid anyway and overwrite the
+  // charge, silently erasing the shortfall from outstandingCents and the tenant
+  // ledger. Partial/adjusted payments aren't modeled yet, so reject instead.
+  if (input.amountCents !== payment.amountCents) {
+    throw new BadRequestError(
+      `payment of ${formatUsd(input.amountCents)} doesn't match the ${formatUsd(payment.amountCents)} due for ${input.period} — ` +
+        `partial payments aren't supported yet; log the received amount as a manual income transaction instead`,
+    );
+  }
 
   const paidAt = input.paidAt ? new Date(input.paidAt) : new Date();
   let externalRef: string | null = null;
@@ -295,8 +304,10 @@ export async function recordPayment(
   }
 
   const tenantName = lease.leaseTenants[0]?.tenant.fullName ?? 'tenant';
+  // Scoped like suggestCategory: never pick up another account's custom "Rent".
   const rentCategory = await prisma.category.findFirst({
-    where: { name: 'Rent', type: 'income' },
+    where: { name: 'Rent', type: 'income', OR: [{ isSystem: true }, { accountId }] },
+    orderBy: { isSystem: 'desc' },
   });
 
   // Ledger transaction + RentPayment update commit or roll back together; the
@@ -322,13 +333,14 @@ export async function recordPayment(
         status: 'confirmed',
       },
     });
+    // amountCents is untouched: the charge is validated equal to the payment
+    // above, so the expected amount is never overwritten.
     const updatedPayment = await tx.rentPayment.update({
       where: { id: paymentId },
       data: {
         status: 'paid',
         method: input.method,
         paidAt,
-        amountCents: input.amountCents,
         externalRef,
         transactionId: createdTxn.id,
       },

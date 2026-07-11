@@ -2,24 +2,33 @@
 // chip (never auto-applied) and "Snap a receipt" — the scan pre-fills the
 // form; saving is always an explicit user action.
 import { useMemo, useRef, useState, type DragEvent, type FormEvent } from 'react';
-import type { TransactionType } from '@hearth/shared';
+import {
+  formatUsd,
+  type CreateTransactionResponse,
+  type RentMatchSuggestion,
+  type TransactionType,
+} from '@hearth/shared';
 import { useNavigate } from 'react-router-dom';
 import {
   useCategories,
+  useConfirmTransaction,
   useCreateTransaction,
   useProperties,
   useScanReceipt,
   useUploadDocument,
 } from '../api/queries';
 import { AiChip } from '../components/ai/AiChip';
+import { AiSurface } from '../components/ai/AiSurface';
 import { PageHeader } from '../components/shell/PageHeader';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { FormField, Input } from '../components/ui/FormField';
+import { Modal } from '../components/ui/Modal';
 import { Select } from '../components/ui/Select';
 import { useToast } from '../components/ui/Toast';
 import { IconUpload } from '../components/ui/icons';
 import { cx } from '../lib/cx';
+import { formatMonthLong } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
 import { capturePhoto } from '../native/camera';
 import { isNativeApp } from '../native/platform';
@@ -41,6 +50,7 @@ export function AddTransaction() {
   const categories = useCategories();
   const properties = useProperties();
   const create = useCreateTransaction();
+  const confirm = useConfirmTransaction();
   const scan = useScanReceipt();
   const uploadDocument = useUploadDocument();
 
@@ -58,6 +68,12 @@ export function AddTransaction() {
   // save (kept even when the scan itself fails).
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Saved income that looks like an expected rent payment — offer to mark the
+  // rent paid and link it, so it doesn't get recorded a second time later.
+  const [rentMatchPrompt, setRentMatchPrompt] = useState<{
+    txnId: string;
+    match: RentMatchSuggestion;
+  } | null>(null);
 
   const typeCategories = useMemo(
     () => (categories.data ?? []).filter((c) => c.type === type),
@@ -121,8 +137,7 @@ export function AddTransaction() {
       {
         onSuccess: (txn) => {
           if (!receiptFile) {
-            toast('Transaction saved.', 'positive');
-            navigate('/money');
+            finish(txn, 'Transaction saved.', 'positive');
             return;
           }
           // Attach the receipt to the saved transaction. A failed upload never
@@ -135,17 +150,42 @@ export function AddTransaction() {
           form.append('type', 'receipt');
           form.append('file', receiptFile);
           uploadDocument.mutate(form, {
-            onSuccess: () => {
-              toast('Transaction saved.', 'positive');
-              navigate('/money');
-            },
-            onError: () => {
-              toast('Transaction saved; receipt attachment failed.', 'neutral');
-              navigate('/money');
-            },
+            onSuccess: () => finish(txn, 'Transaction saved.', 'positive'),
+            onError: () => finish(txn, 'Transaction saved; receipt attachment failed.', 'neutral'),
           });
         },
         onError: () => toast('Could not save the transaction. Try again.', 'danger'),
+      },
+    );
+  };
+
+  // When the saved income matches an expected rent, hold the navigation and
+  // offer the explicit link instead (never auto-applied).
+  const finish = (
+    txn: CreateTransactionResponse,
+    message: string,
+    tone: 'positive' | 'neutral',
+  ) => {
+    toast(message, tone);
+    if (txn.rentMatch) {
+      setRentMatchPrompt({ txnId: txn.id, match: txn.rentMatch });
+    } else {
+      navigate('/money');
+    }
+  };
+
+  const linkRentMatch = () => {
+    if (!rentMatchPrompt) return;
+    const { txnId, match } = rentMatchPrompt;
+    confirm.mutate(
+      { id: txnId, rentPaymentId: match.rentPaymentId },
+      {
+        onSuccess: () => {
+          toast(`Marked ${match.tenantName}'s ${formatMonthLong(match.period)} rent paid.`, 'positive');
+          navigate('/money');
+        },
+        onError: () =>
+          toast('Could not mark the rent paid — the transaction is still saved.', 'danger'),
       },
     );
   };
@@ -314,6 +354,37 @@ export function AddTransaction() {
           </div>
         </form>
       </Card>
+
+      <Modal
+        open={rentMatchPrompt !== null}
+        onClose={() => navigate('/money')}
+        title="Is this a rent payment?"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => navigate('/money')}>
+              No, keep as-is
+            </Button>
+            <Button busy={confirm.isPending} onClick={linkRentMatch}>
+              Mark rent paid
+            </Button>
+          </>
+        }
+      >
+        {rentMatchPrompt && (
+          <AiSurface>
+            <p className="text-sm text-ink">
+              This income matches {rentMatchPrompt.match.tenantName}&rsquo;s expected{' '}
+              {formatMonthLong(rentMatchPrompt.match.period)} rent —{' '}
+              {formatUsd(rentMatchPrompt.match.amountCents)} for {rentMatchPrompt.match.unitLabel} at{' '}
+              {rentMatchPrompt.match.propertyLabel}.
+            </p>
+            <p className="mt-2 text-sm text-ink-muted">
+              Marking it paid updates Rent Collection and links it to this transaction, so the rent
+              can&rsquo;t be recorded twice.
+            </p>
+          </AiSurface>
+        )}
+      </Modal>
     </div>
   );
 }

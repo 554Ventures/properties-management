@@ -144,3 +144,33 @@ describe('rentService.recordPayment double-pay guard', () => {
     });
   });
 });
+
+describe('rentService.recordPayment amount guard', () => {
+  it('rejects a partial payment and leaves the charge and ledger untouched', async () => {
+    const accountId = await getDemoAccountId();
+    const period = currentPeriod();
+    const tracker = await rentService.getMonthStatus(accountId, period);
+    const park = tracker.rows.find((r) => r.tenantName === PARK_NAME)!;
+
+    await expect(
+      rentService.recordPayment(accountId, {
+        leaseId: park.leaseId,
+        period,
+        amountCents: park.amountCents - 5000,
+        method: 'manual',
+      }),
+    ).rejects.toThrow(/doesn't match/);
+
+    // The row still carries the full expected charge, unpaid, with no ledger row.
+    const fresh = await prisma.rentPayment.findUniqueOrThrow({
+      where: { id: park.rentPaymentId },
+    });
+    expect(fresh.status).toBe('due');
+    expect(fresh.amountCents).toBe(park.amountCents);
+    expect(fresh.transactionId).toBeNull();
+    const ledgerCount = await prisma.transaction.count({
+      where: { accountId, description: `Rent payment — ${PARK_NAME} — ${period}` },
+    });
+    expect(ledgerCount).toBe(0);
+  });
+});

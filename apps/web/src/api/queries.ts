@@ -23,6 +23,7 @@ import type {
   CreatePropertyInput,
   CreateTenantInput,
   CreateTransactionInput,
+  CreateTransactionResponse,
   CreateUnitInput,
   DashboardInsightResponse,
   DashboardKpisResponse,
@@ -501,7 +502,8 @@ function invalidateLedger(qc: ReturnType<typeof useQueryClient>) {
 export function useCreateTransaction() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: CreateTransactionInput) => api.post<Transaction>('/transactions', input),
+    mutationFn: (input: CreateTransactionInput) =>
+      api.post<CreateTransactionResponse>('/transactions', input),
     onSuccess: () => invalidateLedger(qc),
   });
 }
