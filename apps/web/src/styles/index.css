@@ -84,6 +84,23 @@
   animation: drawer-enter var(--motion-slow) var(--motion-ease) both;
 }
 
+/* Insight-deck card transition (cycling / a card surfacing after dismiss) —
+   zeroed by the reduced-motion override in tokens.css. */
+@keyframes card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(5px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.animate-card-enter {
+  animation: card-enter var(--motion-slow) var(--motion-ease) both;
+}
+
 /* Mobile "More" bottom sheet slide-up — zeroed by the reduced-motion override in tokens.css. */
 @keyframes sheet-enter {
   from {

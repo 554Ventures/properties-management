@@ -123,6 +123,7 @@ export type EmailReportInput = z.infer<typeof s.EmailReportInputSchema>;
 
 // Insights
 export type Insight = z.infer<typeof s.InsightSchema>;
+export type InsightAction = z.infer<typeof s.InsightActionSchema>;
 export type InsightListResponse = z.infer<typeof s.InsightListResponseSchema>;
 
 // Dashboard

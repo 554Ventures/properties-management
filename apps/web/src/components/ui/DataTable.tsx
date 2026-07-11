@@ -160,6 +160,10 @@ export interface DataTableProps<Row> {
   itemNoun?: { one: string; other: string };
   /** Opt into server-driven processing (see DataTableManual). */
   manual?: DataTableManual;
+  /** Seeds the internal state on first render (uncontrolled mode only) — for
+   *  deep links that land with a filter pre-applied. Ignored with `manual`,
+   *  where the caller owns the state. */
+  initialState?: Partial<DataTableState>;
   className?: string;
 }
 
@@ -222,10 +226,14 @@ export function DataTable<Row>({
   emptyState,
   itemNoun = { one: 'result', other: 'results' },
   manual,
+  initialState,
   className,
 }: DataTableProps<Row>) {
   const controlled = manual != null;
-  const [internal, setInternal] = useState<DataTableState>(emptyDataTableState);
+  const [internal, setInternal] = useState<DataTableState>(() => ({
+    ...emptyDataTableState,
+    ...initialState,
+  }));
   const state = controlled ? manual.state : internal;
   const update = (next: DataTableState) => {
     if (controlled) manual.onStateChange(next);

@@ -267,11 +267,18 @@ describe('trigger: daily jobs push fresh warning insights', () => {
       );
       expect(push).toBeDefined();
       expect(push!.message.title).toContain('days late on rent');
-      expect(push!.message.deepLink).toBe('/rent');
+      // The deep link is the insight's actionTarget — now period-scoped so the
+      // notification lands on the exact month the payment is late for.
+      expect(push!.message.deepLink).toBe(`/rent?period=${currentPeriod()}`);
     } finally {
-      // Restore the pristine seed: drop the synthetic insight + portfolio rows
-      // and any monthly-review report the run snapshotted.
-      await prisma.insight.deleteMany({ where: { accountId, tenantId: tenant.id } });
+      // Restore the pristine seed: drop the synthetic insights + portfolio
+      // rows and any monthly-review report the run snapshotted. The daily run
+      // also flags the brand-new empty property as underperforming (tenantId
+      // null, and deleting the property only SetNulls propertyId), so match
+      // on either fixture id before the property row goes away.
+      await prisma.insight.deleteMany({
+        where: { accountId, OR: [{ tenantId: tenant.id }, { propertyId: property.id }] },
+      });
       await prisma.property.delete({ where: { id: property.id } });
       await prisma.tenant.delete({ where: { id: tenant.id } });
       await prisma.report.deleteMany({

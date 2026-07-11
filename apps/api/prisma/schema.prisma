@@ -281,7 +281,8 @@ model Insight {
   title        String
   body         String
   actionLabel  String?
-  actionTarget String? // frontend route or API action ref
+  actionTarget String? // frontend route (also the push-notification deep link)
+  actionJson   String? // InsightAction (@hearth/shared) — structured executable action; null on pre-action rows
   propertyId   String?
   tenantId     String?
   leaseId      String?

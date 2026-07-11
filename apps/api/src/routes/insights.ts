@@ -36,4 +36,10 @@ export async function insightsRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { id: string } }>('/insights/:id/dismiss', async (req) =>
     insightService.dismiss(req.accountId, req.params.id),
   );
+
+  // The user executed the insight's suggested action (audited server-side as
+  // ai_suggested_user_confirmed — see insight.service.markActioned).
+  app.post<{ Params: { id: string } }>('/insights/:id/actioned', async (req) =>
+    insightService.markActioned(req.accountId, req.params.id),
+  );
 }

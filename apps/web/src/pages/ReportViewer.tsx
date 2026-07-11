@@ -4,6 +4,7 @@
 // surfaces (PRD §7.3 / §13.4).
 import { useParams } from 'react-router-dom';
 import { useReportDetail } from '../api/queries';
+import { AiSurface } from '../components/ai/AiSurface';
 import { EmailAccountantButton, ExportLinks } from '../components/reports/ReportActions';
 import { ReportBody } from '../components/reports/ReportBody';
 import { PageHeader } from '../components/shell/PageHeader';
@@ -66,7 +67,16 @@ export function ReportViewer() {
         }
       />
 
-      <ReportBody type={data.type} data={data.data} title={data.title} />
+      {/* The monthly review is AI-authored (Roost writes it up), so it renders
+          inside AiSurface; every other report is a deterministic ledger
+          snapshot and stays unwrapped. */}
+      {data.type === 'monthly_review' ? (
+        <AiSurface className="p-5">
+          <ReportBody type={data.type} data={data.data} title={data.title} />
+        </AiSurface>
+      ) : (
+        <ReportBody type={data.type} data={data.data} title={data.title} />
+      )}
 
       {isTaxReport && (
         <Card className="bg-surface-sunken">

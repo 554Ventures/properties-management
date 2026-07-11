@@ -1,16 +1,21 @@
 // Rent Collection (PRD §5.5): period selector, collected/outstanding/progress
 // tiles, per-tenant rows with status text + days late, individual Remind and
 // a confirmed "Remind all late" bulk action, and manual payment recording.
-// Deliberately no AI banner here — this ledger reads as deterministic.
-import { useState } from 'react';
+// The ledger itself stays deterministic; the one AI element is the single
+// most recent late_rent insight card (clearly marked via AiSurface) since
+// this is the page that insight is about.
+import { useEffect, useState } from 'react';
 import { formatUsd } from '@hearth/shared';
 import type { RentPaymentMethod, RentTrackerRow } from '@hearth/shared';
-import { useRecordPayment, useRentTracker, useSendReminders } from '../api/queries';
+import { useSearchParams } from 'react-router-dom';
+import { useInsights, useRecordPayment, useRentTracker, useSendReminders } from '../api/queries';
+import { InsightCard } from '../components/ai/InsightCard';
 import { PageHeader } from '../components/shell/PageHeader';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorNotice } from '../components/ui/ErrorNotice';
+import { LiveRegion } from '../components/ui/LiveRegion';
 import { Modal } from '../components/ui/Modal';
 import { ProgressBar } from '../components/ui/ProgressBar';
 import { Select } from '../components/ui/Select';
@@ -46,7 +51,19 @@ function statusInfo(row: RentTrackerRow): { tone: BadgeTone; label: string; cloc
 
 export function RentTracker() {
   usePageTitle('Rent Collection');
-  const [period, setPeriod] = useState(currentPeriod());
+  // ?period=YYYY-MM deep links (insight cards, push notifications) select the
+  // period; the effect also covers same-route navigations (the late-rent card
+  // renders on this page and its "Review" link points back here), which never
+  // remount the component. Manual selector interaction stays state-driven.
+  const [searchParams] = useSearchParams();
+  const [period, setPeriod] = useState(() => {
+    const requested = searchParams.get('period');
+    return requested && recentPeriods().includes(requested) ? requested : currentPeriod();
+  });
+  useEffect(() => {
+    const requested = searchParams.get('period');
+    if (requested && recentPeriods().includes(requested)) setPeriod(requested);
+  }, [searchParams]);
   const tracker = useRentTracker(period);
   const remind = useSendReminders();
   const record = useRecordPayment();
@@ -55,6 +72,11 @@ export function RentTracker() {
   const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
   const [payRow, setPayRow] = useState<RentTrackerRow | null>(null);
   const [payMethod, setPayMethod] = useState<RentPaymentMethod>('manual');
+
+  // Exactly one contextual AI card (newest late_rent) — this page is where
+  // that insight points, so it surfaces here instead of a separate AI page.
+  const insights = useInsights({ status: 'active' });
+  const lateRentInsight = insights.data?.find((i) => i.type === 'late_rent');
 
   const rows = tracker.data?.rows ?? [];
   const lateRows = rows.filter((row) => row.status === 'late');
@@ -138,6 +160,10 @@ export function RentTracker() {
           </div>
         }
       />
+
+      <LiveRegion>
+        {lateRentInsight && <InsightCard insight={lateRentInsight} headingLevel={2} />}
+      </LiveRegion>
 
       {tracker.isPending ? (
         <>

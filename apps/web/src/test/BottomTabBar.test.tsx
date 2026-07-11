@@ -43,7 +43,6 @@ describe('BottomTabBar', () => {
       'Maintenance',
       'Documents',
       'Reports & Tax',
-      'AI Insights',
       'Settings',
     ]) {
       expect(within(dialog).getByRole('link', { name: new RegExp(label) })).toBeTruthy();

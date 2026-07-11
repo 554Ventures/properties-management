@@ -123,6 +123,22 @@ describe('DataTable', () => {
     expect(screen.getByRole('button', { name: /filter by status \(filtered\)/i })).toBeInTheDocument();
   });
 
+  it('initialState pre-applies a filter on first render (deep links)', () => {
+    render(
+      <DataTable
+        caption="Test properties"
+        columns={columns}
+        data={rows}
+        rowKey={(r) => r.id}
+        initialState={{ filters: { status: { kind: 'select', values: ['Vacant'] } } }}
+      />,
+    );
+    expect(bodyNames()).toEqual(['Aspen Flats', 'Dogwood Row']);
+    // The filter is live state, not a lock — the trigger advertises it and it
+    // can be cleared like any user-applied filter.
+    expect(screen.getByRole('button', { name: /filter by status \(filtered\)/i })).toBeInTheDocument();
+  });
+
   it('filters via a per-header numeric range', () => {
     renderTable();
     fireEvent.click(screen.getByRole('button', { name: /filter by units/i }));

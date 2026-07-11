@@ -1,6 +1,8 @@
 import {
   formatUsdWhole,
+  InsightActionSchema,
   type Insight,
+  type InsightAction,
   type InsightScope,
   type InsightSeverity,
   type InsightStatus,
@@ -20,8 +22,22 @@ import { NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { slugify } from '../lib/strings';
 import { writeAudit, type AuditActor } from './audit.service';
+import * as contractorService from './contractor.service';
 import * as rentService from './rent.service';
 import { generateMonthlyReviewReport } from './report.service';
+
+/** actionJson is written by generateInsights below, but rows predating the
+ *  column (or a future shape change) must degrade to the legacy
+ *  actionLabel/actionTarget link — never a 500. */
+function parseInsightAction(actionJson: string | null): InsightAction | null {
+  if (!actionJson) return null;
+  try {
+    const parsed = InsightActionSchema.safeParse(JSON.parse(actionJson));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
 
 export function toApiInsight(i: DbInsight): Insight {
   return {
@@ -34,6 +50,7 @@ export function toApiInsight(i: DbInsight): Insight {
     body: i.body,
     actionLabel: i.actionLabel,
     actionTarget: i.actionTarget,
+    action: parseInsightAction(i.actionJson),
     propertyId: i.propertyId,
     tenantId: i.tenantId,
     leaseId: i.leaseId,
@@ -85,6 +102,26 @@ export async function dismiss(
   return toApiInsight(row);
 }
 
+/** The user executed the insight's suggested action (e.g. sent the rent
+ *  reminder an insight proposed). Actor is fixed server-side: this endpoint
+ *  only ever records a user click on an AI suggestion, so the attribution is
+ *  always ai_suggested_user_confirmed — never client-supplied (same server-
+ *  side upgrade pattern as transaction confirmation). Dedupe still holds:
+ *  generateInsights checks the key regardless of status. */
+export async function markActioned(accountId: string, id: string): Promise<Insight> {
+  const existing = await prisma.insight.findFirst({ where: { id, accountId } });
+  if (!existing) throw new NotFoundError('insight', id);
+  const row = await prisma.insight.update({ where: { id }, data: { status: 'actioned' } });
+  await writeAudit(accountId, {
+    actor: 'ai_suggested_user_confirmed',
+    action: 'insight.actioned',
+    entityType: 'insight',
+    entityId: id,
+    detail: { dedupeKey: existing.dedupeKey },
+  });
+  return toApiInsight(row);
+}
+
 const SEVERITY_RANK: Record<string, number> = { warning: 3, info: 2, positive: 1 };
 
 /** The dashboard's single card: highest severity active, newest first.
@@ -118,6 +155,10 @@ interface InsightCandidate {
   body: string;
   actionLabel: string | null;
   actionTarget: string | null;
+  /** Structured executable action (persisted as actionJson). api_call paths
+   *  must be on the web app's action allowlist; navigate targets are in-app
+   *  routes. */
+  action: InsightAction | null;
   propertyId: string | null;
   tenantId: string | null;
   leaseId: string | null;
@@ -128,6 +169,8 @@ const LATE_RENT_MIN_DAYS = 5; // rule fires when daysLate > 5
 const RENEWAL_WINDOW_DAYS = 60;
 const SPIKE_RATIO = 1.25;
 const UNDERPERFORM_RATIO = 0.8;
+const CONTRACTOR_COST_RATIO = 1.5; // latest job > 150% of the contractor's prior average
+const CONTRACTOR_MIN_PRIOR_JOBS = 3; // no baseline, no spike — mirrors expense_spike's guard
 
 /**
  * Mock insight generation rules (ARCHITECTURE §4, binding). Deduped on
@@ -149,7 +192,18 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
         title: `${row.tenantName} is ${row.daysLate} days late on rent`,
         body: `${formatUsdWhole(row.amountCents)} for ${row.propertyLabel} ${row.unitLabel} was due on the ${new Date(row.dueDate).getUTCDate()}. Consider sending a reminder.`,
         actionLabel: 'Review',
-        actionTarget: '/rent',
+        actionTarget: `/rent?period=${period}`,
+        // One-click reminder for exactly this payment; sendReminders skips
+        // already-paid rows, so a stale card can't double-charge attention.
+        action: {
+          label: 'Send reminder',
+          action: {
+            kind: 'api_call',
+            method: 'POST',
+            path: '/rent/reminders',
+            body: { rentPaymentIds: [row.rentPaymentId] },
+          },
+        },
         propertyId: row.propertyId,
         tenantId: row.tenantId,
         leaseId: row.leaseId,
@@ -213,7 +267,14 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
         title: `${categoryName} spending spiked at ${propertyLabel}`,
         body: `${categoryName} came in at ${formatUsdWhole(currentTotal)} this month vs a ${formatUsdWhole(Math.round(trailingAvg))} three-month average.`,
         actionLabel: 'View transactions',
-        actionTarget: '/money',
+        actionTarget: `/money?type=expense&categoryId=${categoryId}${top.property ? `&propertyId=${top.property.id}` : ''}`,
+        action: {
+          label: 'View transactions',
+          action: {
+            kind: 'navigate',
+            to: `/money?type=expense&categoryId=${categoryId}${top.property ? `&propertyId=${top.property.id}` : ''}`,
+          },
+        },
         propertyId: top.property?.id ?? null,
         tenantId: null,
         leaseId: null,
@@ -238,8 +299,14 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
       severity: 'info',
       title: `${renewals.length} lease${renewals.length === 1 ? '' : 's'} up for renewal in the next 60 days`,
       body: 'Review terms and draft renewals before the leases lapse into month-to-month.',
-      actionLabel: 'Draft renewal',
-      actionTarget: '/tenants',
+      // "Draft renewal" overpromised — there is no renewal-drafting flow. The
+      // honest action is the tenants list pre-filtered to expiring leases.
+      actionLabel: 'Review renewals',
+      actionTarget: '/tenants?status=renew_soon',
+      action: {
+        label: 'Review renewals',
+        action: { kind: 'navigate', to: '/tenants?status=renew_soon' },
+      },
       propertyId: null,
       tenantId: null,
       leaseId: renewals.length === 1 ? (renewals[0]?.id ?? null) : null,
@@ -289,6 +356,10 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
           body: `Net cash flow per unit over the last 3 months (${formatUsdWhole(Math.round(perUnitNet))}) is below 80% of the portfolio average (${formatUsdWhole(Math.round(perUnitAvg))}).`,
           actionLabel: 'View property',
           actionTarget: `/properties/${p.id}`,
+          action: {
+            label: 'View property',
+            action: { kind: 'navigate', to: `/properties/${p.id}` },
+          },
           propertyId: p.id,
           tenantId: null,
           leaseId: null,
@@ -298,6 +369,36 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
     }
   }
 
+  // Rule 5 — contractor_cost_spike: a contractor's most recent matched job
+  // landed this month and cost > 150% of their average across ≥3 prior jobs.
+  // Same vendor-name derivation as the contractor directory (contractor
+  // .service), so the figures always agree with that page's stats.
+  const contractorsWithJobs = await contractorService.activeContractorsWithJobs(accountId);
+  for (const { contractor, jobs } of contractorsWithJobs) {
+    const [latest, ...prior] = jobs; // jobs are newest-first
+    if (!latest || prior.length < CONTRACTOR_MIN_PRIOR_JOBS) continue;
+    if (latest.date < mStart || latest.date >= mEnd) continue; // only current-month news
+    const priorAvg = prior.reduce((sum, j) => sum + j.amountCents, 0) / prior.length;
+    if (priorAvg <= 0 || latest.amountCents <= priorAvg * CONTRACTOR_COST_RATIO) continue;
+    candidates.push({
+      scope: 'portfolio',
+      type: 'contractor_cost_spike',
+      severity: 'info',
+      title: `${contractor.name}'s latest job cost well above their usual`,
+      body: `${formatUsdWhole(latest.amountCents)} for "${latest.description}" vs their ${formatUsdWhole(Math.round(priorAvg))} average across ${prior.length} earlier jobs. Worth a look before the next booking.`,
+      actionLabel: 'View contractor',
+      actionTarget: `/maintenance/contractors/${contractor.id}`,
+      action: {
+        label: 'View contractor',
+        action: { kind: 'navigate', to: `/maintenance/contractors/${contractor.id}` },
+      },
+      propertyId: null,
+      tenantId: null,
+      leaseId: null,
+      dedupeKey: `contractor_cost_spike:${slugify(contractor.name)}:${period}`,
+    });
+  }
+
   const created: Insight[] = [];
   for (const c of candidates) {
     const existing = await prisma.insight.findUnique({
@@ -305,8 +406,14 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
     });
     if (existing) continue; // dedupe: dismissal sticks
     try {
+      const { action, ...columns } = c;
       const row = await prisma.insight.create({
-        data: { accountId, ...c, status: 'active' },
+        data: {
+          accountId,
+          ...columns,
+          actionJson: action ? JSON.stringify(action) : null,
+          status: 'active',
+        },
       });
       created.push(toApiInsight(row));
     } catch (err) {

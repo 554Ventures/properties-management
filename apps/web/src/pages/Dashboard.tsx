@@ -1,17 +1,19 @@
-// Dashboard — PRD §5.1 "Classic KPI overview": greeting, 4 KPI tiles,
-// 6-month income-vs-expense chart, exactly one AI insight card, activity feed.
+// Dashboard — PRD §5.1 "Classic KPI overview": greeting, 4 KPI tiles, the AI
+// insight deck (every active insight as a stack of cards — supersedes §5.1's
+// original single-card slot, 2026-07-11), 6-month income-vs-expense chart,
+// activity feed.
 import { formatUsd, formatUsdWhole } from '@hearth/shared';
 import { Link } from 'react-router-dom';
 import {
   useActivity,
   useCashflowSeries,
-  useDashboardInsight,
   useDashboardKpis,
   useExpenseBreakdown,
+  useInsights,
   useNoiByProperty,
   useProperties,
 } from '../api/queries';
-import { InsightCard } from '../components/ai/InsightCard';
+import { InsightDeck } from '../components/ai/InsightDeck';
 import { BarChart } from '../components/charts/BarChart';
 import { ChartContainer } from '../components/charts/ChartContainer';
 import { categoricalRole } from '../components/charts/chartTheme';
@@ -58,7 +60,7 @@ export function Dashboard() {
   const expenseBreakdown = useExpenseBreakdown();
   const noiByProperty = useNoiByProperty();
   const activity = useActivity(10);
-  const insight = useDashboardInsight();
+  const insights = useInsights({ status: 'active' });
   const properties = useProperties();
 
   const monthLabel = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
@@ -136,6 +138,28 @@ export function Dashboard() {
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="flex flex-col gap-6 lg:col-span-2">
+          {/* The AI insight deck — every active insight, sharing the charts'
+              column width. Announced politely as cards surface. */}
+          <LiveRegion>
+            {insights.isPending ? (
+              <Card>
+                <Skeleton className="mb-2 h-4 w-12" />
+                <Skeleton className="mb-2 h-5 w-40" />
+                <Skeleton className="h-12 w-full" />
+              </Card>
+            ) : insights.isError ? null : insights.data.length === 0 ? (
+              <Card>
+                <h2 className="text-sm font-semibold text-ink">No new insights</h2>
+                <p className="mt-1 text-sm text-ink-muted">
+                  Nothing needs your attention right now. New observations appear here as Roost
+                  notices them.
+                </p>
+              </Card>
+            ) : (
+              <InsightDeck insights={insights.data} />
+            )}
+          </LiveRegion>
+
           {series.isPending ? (
             <Card>
               <Skeleton className="mb-4 h-5 w-48" />
@@ -280,27 +304,6 @@ export function Dashboard() {
         </div>
 
         <div className="flex flex-col gap-6">
-          {/* Exactly one AI insight card on the dashboard (PRD §5.1). */}
-          <LiveRegion>
-            {insight.isPending ? (
-              <Card>
-                <Skeleton className="mb-2 h-4 w-12" />
-                <Skeleton className="mb-2 h-5 w-40" />
-                <Skeleton className="h-12 w-full" />
-              </Card>
-            ) : insight.data ? (
-              <InsightCard insight={insight.data} />
-            ) : (
-              <Card>
-                <h2 className="text-sm font-semibold text-ink">No new insights</h2>
-                <p className="mt-1 text-sm text-ink-muted">
-                  Nothing needs your attention right now. New observations appear here as Roost
-                  notices them.
-                </p>
-              </Card>
-            )}
-          </LiveRegion>
-
           <Card>
             <h2 className="mb-3 text-sm font-semibold text-ink">Recent activity</h2>
             {activity.isPending ? (

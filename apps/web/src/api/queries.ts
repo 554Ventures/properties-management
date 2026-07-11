@@ -25,7 +25,6 @@ import type {
   CreateTransactionInput,
   CreateTransactionResponse,
   CreateUnitInput,
-  DashboardInsightResponse,
   DashboardKpisResponse,
   DismissAllReviewResponse,
   Document,
@@ -138,13 +137,9 @@ export function useActivity(limit = 10) {
   });
 }
 
-export function useDashboardInsight() {
-  return useQuery({
-    queryKey: ['dashboard', 'insight'],
-    queryFn: () => api.get<DashboardInsightResponse>('/dashboard/insight'),
-    staleTime: STALE_SHORT,
-  });
-}
+// The dashboard renders its insight deck from useInsights({ status:
+// 'active' }); the single-card GET /dashboard/insight endpoint still exists
+// for contract stability but the web app no longer consumes it.
 
 // --------------------------------------------------------------- properties
 
@@ -727,7 +722,6 @@ export function useGenerateReport() {
     mutationFn: (input: GenerateReportInput) => api.post<Report>('/reports/generate', input),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['reports'] });
-      void qc.invalidateQueries({ queryKey: ['monthly-reviews'] });
     },
   });
 }
@@ -755,41 +749,31 @@ export function useDismissInsight() {
     mutationFn: (id: string) => api.post<Insight>(`/insights/${id}/dismiss`),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['insights'] });
-      void qc.invalidateQueries({ queryKey: ['dashboard', 'insight'] });
       void qc.invalidateQueries({ queryKey: ['properties'] });
       void qc.invalidateQueries({ queryKey: ['tenants'] });
     },
   });
 }
 
-export function useMonthlyReviews() {
-  return useQuery({
-    queryKey: ['monthly-reviews'],
-    queryFn: () => api.get<Report[]>('/insights/monthly-reviews'),
-    staleTime: STALE_SHORT,
-  });
-}
-
-export function useMonthlyReviewDetail(id: string | undefined) {
-  return useQuery({
-    queryKey: ['monthly-reviews', id],
-    queryFn: () => api.get<ReportDetailResponse>(`/insights/monthly-reviews/${id}`),
-    enabled: Boolean(id),
-    staleTime: STALE_LONG,
-  });
-}
-
-export function useGenerateMonthlyReview() {
+/** Records that the user executed the insight's suggested action (the server
+ *  audits it as ai_suggested_user_confirmed). Same invalidations as dismiss —
+ *  the card leaves every active list. */
+export function useMarkInsightActioned() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => api.post<Report>('/insights/monthly-reviews/generate'),
+    mutationFn: (id: string) => api.post<Insight>(`/insights/${id}/actioned`),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['monthly-reviews'] });
       void qc.invalidateQueries({ queryKey: ['insights'] });
-      void qc.invalidateQueries({ queryKey: ['reports'] });
+      void qc.invalidateQueries({ queryKey: ['properties'] });
+      void qc.invalidateQueries({ queryKey: ['tenants'] });
     },
   });
 }
+
+// Monthly reviews are plain Report rows — they list, view, and generate
+// through the /reports hooks above (the dedicated /insights/monthly-reviews
+// API routes still exist for contract stability, but the web app no longer
+// needs them since the standalone AI Insights page was retired).
 
 // ------------------------------------------------------ settings/integrations
 

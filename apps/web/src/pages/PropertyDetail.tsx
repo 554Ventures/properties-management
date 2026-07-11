@@ -187,6 +187,14 @@ export function PropertyDetail() {
         </div>
       )}
 
+      {/* Property-scoped AI insights lead the page — same top-of-page
+          placement as every other contextual insight surface. */}
+      <LiveRegion className="flex flex-col gap-4">
+        {insights.map((insight) => (
+          <InsightCard key={insight.id} insight={insight} headingLevel={2} />
+        ))}
+      </LiveRegion>
+
       <section aria-label="Profit and loss summary">
         <Card flush>
           <Table
@@ -361,12 +369,6 @@ export function PropertyDetail() {
           uploadTarget={{ entityType: 'property', entityId: propertyId }}
         />
       </section>
-
-      <LiveRegion className="flex flex-col gap-4">
-        {insights.map((insight) => (
-          <InsightCard key={insight.id} insight={insight} />
-        ))}
-      </LiveRegion>
 
       {/* --- Modals & confirmations --- */}
       <PropertyFormModal

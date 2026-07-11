@@ -88,6 +88,37 @@ describe('insight generation rules', () => {
     expect(created).toEqual([]);
   });
 
+  it('insights carry executable actions and context-aware deep links', async () => {
+    const accountId = await getDemoAccountId();
+    const keys = expectedInsightDedupeKeys(currentPeriod());
+    const active = await insightService.listActive(accountId);
+
+    // late_rent: one-click reminder targeting exactly the late payment.
+    const lateRent = active.find((i) => i.dedupeKey === keys.lateRent);
+    expect(lateRent?.actionTarget).toBe(`/rent?period=${currentPeriod()}`);
+    expect(lateRent?.action?.label).toBe('Send reminder');
+    const lateAction = lateRent?.action?.action;
+    if (lateAction?.kind !== 'api_call') throw new Error('expected api_call action');
+    expect(lateAction.method).toBe('POST');
+    expect(lateAction.path).toBe('/rent/reminders');
+    const payment = await prisma.rentPayment.findFirst({
+      where: { leaseId: lateRent!.leaseId!, period: currentPeriod() },
+    });
+    expect(lateAction.body).toEqual({ rentPaymentIds: [payment!.id] });
+
+    // expense_spike: deep link lands on Money pre-filtered to the category.
+    const spike = active.find((i) => i.dedupeKey === keys.expenseSpike);
+    expect(spike?.actionTarget).toMatch(/^\/money\?type=expense&categoryId=.+/);
+    expect(spike?.action?.action).toEqual({ kind: 'navigate', to: spike!.actionTarget });
+
+    // renewal_window: the old "Draft renewal" overpromise is gone — the honest
+    // action is the tenants list pre-filtered to expiring leases.
+    const renewal = active.find((i) => i.dedupeKey === keys.renewalWindow);
+    expect(renewal?.actionLabel).toBe('Review renewals');
+    expect(renewal?.actionTarget).toBe('/tenants?status=renew_soon');
+    expect(renewal?.action?.action).toEqual({ kind: 'navigate', to: '/tenants?status=renew_soon' });
+  });
+
   it('POST /insights/:id/dismiss flips status, and the key stays dismissed', async () => {
     const accountId = await getDemoAccountId();
     const keys = expectedInsightDedupeKeys(currentPeriod());
@@ -114,6 +145,37 @@ describe('insight generation rules', () => {
     const accountId = await getDemoAccountId();
     const top = await insightService.getDashboardInsight(accountId);
     expect(top?.severity).toBe('warning');
+  });
+
+  it("POST /insights/:id/actioned marks the insight actioned with 'ai_suggested_user_confirmed' attribution", async () => {
+    const accountId = await getDemoAccountId();
+    const keys = expectedInsightDedupeKeys(currentPeriod());
+    const active = await insightService.listActive(accountId);
+    const spike = active.find((i) => i.dedupeKey === keys.expenseSpike);
+    expect(spike).toBeDefined();
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/insights/${spike!.id}/actioned`,
+    });
+    expect(res.statusCode).toBe(200);
+    const actioned = InsightSchema.parse(res.json());
+    expect(actioned.status).toBe('actioned');
+
+    // The audit row records that the user confirmed an AI suggestion — the
+    // actor is fixed server-side, never client-supplied.
+    const audit = await prisma.auditLog.findFirst({
+      where: { accountId, action: 'insight.actioned', entityId: spike!.id },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(audit?.actor).toBe('ai_suggested_user_confirmed');
+
+    // Actioned insights leave the active lists and are not recreated (dedupe
+    // holds regardless of status).
+    const created = await insightService.generateInsights(accountId);
+    expect(created.map((c) => c.dedupeKey)).not.toContain(keys.expenseSpike);
+    const stillActive = await insightService.listActive(accountId);
+    expect(stillActive.map((i) => i.dedupeKey)).not.toContain(keys.expenseSpike);
   });
 
   it('getDashboardInsight self-refreshes — a new late-rent condition appears without an explicit generateInsights call', async () => {
@@ -194,6 +256,95 @@ describe('insight generation rules', () => {
       where: { accountId, type: 'late_rent' },
     });
     expect(rows).toHaveLength(1);
+  });
+});
+
+describe('contractor_cost_spike rule', () => {
+  /** Fresh account + contractor + vendor-matched confirmed expenses. */
+  async function createContractorFixture(
+    emailSuffix: string,
+    jobs: Array<{ monthsAgo: number; amountCents: number }>,
+  ) {
+    const account = await prisma.account.create({
+      data: {
+        name: `Contractor Spike ${emailSuffix}`,
+        email: `contractor-spike-${emailSuffix}@integrationtest.example`,
+      },
+    });
+    const contractor = await prisma.contractor.create({
+      data: { accountId: account.id, name: 'Testy Plumbing', trade: 'Plumbing' },
+    });
+    for (const [i, job] of jobs.entries()) {
+      const date = new Date();
+      date.setUTCMonth(date.getUTCMonth() - job.monthsAgo);
+      await prisma.transaction.create({
+        data: {
+          accountId: account.id,
+          date,
+          amountCents: job.amountCents,
+          type: 'expense',
+          description: `Fixture job ${i}`,
+          vendor: 'Testy Plumbing',
+          source: 'manual',
+          status: 'confirmed',
+        },
+      });
+    }
+    return { accountId: account.id, contractorId: contractor.id };
+  }
+
+  it('fires when the latest job lands this month at >150% of the prior average, with a contractor deep link', async () => {
+    const { accountId, contractorId } = await createContractorFixture('fires', [
+      { monthsAgo: 3, amountCents: 20000 },
+      { monthsAgo: 2, amountCents: 20000 },
+      { monthsAgo: 1, amountCents: 20000 },
+      { monthsAgo: 0, amountCents: 45000 }, // 225% of the $200 prior average
+    ]);
+
+    const active = await insightService.listActive(accountId);
+    const spike = active.find((i) => i.type === 'contractor_cost_spike');
+    expect(spike).toBeDefined();
+    expect(spike!.severity).toBe('info');
+    expect(spike!.title).toContain('Testy Plumbing');
+    expect(spike!.actionTarget).toBe(`/maintenance/contractors/${contractorId}`);
+    expect(spike!.action?.action).toEqual({
+      kind: 'navigate',
+      to: `/maintenance/contractors/${contractorId}`,
+    });
+    expect(spike!.dedupeKey).toBe(`contractor_cost_spike:testy-plumbing:${currentPeriod()}`);
+  });
+
+  it('stays quiet without a ≥3-job baseline or without a current-month job', async () => {
+    // Only 2 prior jobs — an expensive latest job has no baseline to spike against.
+    const thin = await createContractorFixture('thin', [
+      { monthsAgo: 2, amountCents: 20000 },
+      { monthsAgo: 1, amountCents: 20000 },
+      { monthsAgo: 0, amountCents: 45000 },
+    ]);
+    expect(
+      (await insightService.listActive(thin.accountId)).filter(
+        (i) => i.type === 'contractor_cost_spike',
+      ),
+    ).toEqual([]);
+
+    // Expensive latest job, but months old — old history is not news.
+    const stale = await createContractorFixture('stale', [
+      { monthsAgo: 5, amountCents: 20000 },
+      { monthsAgo: 4, amountCents: 20000 },
+      { monthsAgo: 3, amountCents: 20000 },
+      { monthsAgo: 2, amountCents: 45000 },
+    ]);
+    expect(
+      (await insightService.listActive(stale.accountId)).filter(
+        (i) => i.type === 'contractor_cost_spike',
+      ),
+    ).toEqual([]);
+  });
+
+  it('does not fire on the seeded demo portfolio (flat per-contractor amounts)', async () => {
+    const accountId = await getDemoAccountId();
+    const active = await insightService.listActive(accountId);
+    expect(active.filter((i) => i.type === 'contractor_cost_spike')).toEqual([]);
   });
 });
 

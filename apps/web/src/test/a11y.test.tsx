@@ -101,13 +101,45 @@ const insight: Insight = {
   title: 'T. Okafor is 6 days late on July rent',
   body: 'Rent of $1,150.00 for 21 Cedar Ct was due on the 1st. A reminder usually resolves this.',
   actionLabel: 'Review',
-  actionTarget: '/rent',
+  actionTarget: '/rent?period=2026-07',
+  // Structured api_call action so the merge-blocking axe run covers the
+  // "Send reminder" button (render only — nothing is clicked here).
+  action: {
+    label: 'Send reminder',
+    action: {
+      kind: 'api_call',
+      method: 'POST',
+      path: '/rent/reminders',
+      body: { rentPaymentIds: ['rp1'] },
+    },
+  },
   propertyId: null,
   tenantId: 't-okafor',
   leaseId: null,
   dedupeKey: 'late_rent:t-okafor:2026-07',
   status: 'active',
   createdAt: '2026-07-03T08:00:00.000Z',
+};
+
+// Second insight so the Dashboard deck renders its cycle controls + stacked
+// edge under axe.
+const renewalInsight: Insight = {
+  ...insight,
+  id: 'i2',
+  scope: 'portfolio',
+  type: 'renewal_window',
+  severity: 'info',
+  title: '2 leases up for renewal in the next 60 days',
+  body: 'Review terms and draft renewals before the leases lapse into month-to-month.',
+  actionLabel: 'Review renewals',
+  actionTarget: '/tenants?status=renew_soon',
+  action: {
+    label: 'Review renewals',
+    action: { kind: 'navigate', to: '/tenants?status=renew_soon' },
+  },
+  tenantId: null,
+  dedupeKey: 'renewal_window:2026-07',
+  createdAt: '2026-07-02T08:00:00.000Z',
 };
 
 const properties: PropertyWithStats[] = [
@@ -137,7 +169,7 @@ const fixtures: Record<string, unknown> = {
   '/api/v1/dashboard/expense-breakdown': expenseBreakdown,
   '/api/v1/dashboard/noi-by-property': noiByProperty,
   '/api/v1/dashboard/activity': activity,
-  '/api/v1/dashboard/insight': insight,
+  '/api/v1/insights': [renewalInsight, insight],
   '/api/v1/properties': properties,
 };
 

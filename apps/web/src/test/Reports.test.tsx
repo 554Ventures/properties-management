@@ -1,14 +1,18 @@
 // Reports page: the generated-reports table renders from a mocked list
-// response with friendly type/scope labels, supports search + type filtering,
-// and the page passes axe (merge-blocking a11y bar per ARCHITECTURE §8).
+// response with friendly type/scope labels (monthly reviews carry the AI
+// marker), supports search + type filtering, the retired /insights routes
+// redirect here, and the page passes axe (merge-blocking a11y bar per
+// ARCHITECTURE §8).
 import type { Report, ReportTypeInfo } from '@hearth/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen } from '@testing-library/react';
 import axe from 'axe-core';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Navigate, Route, Routes, useParams } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ToastProvider } from '../components/ui/Toast';
+import { ReportViewer } from '../pages/ReportViewer';
 import { Reports } from '../pages/Reports';
+import { LegacyInsightRedirect } from '../router';
 
 vi.mock('../state/chat', () => ({
   useChat: () => ({ openWithContext: vi.fn() }),
@@ -47,6 +51,7 @@ const reports: Report[] = [
   report({ id: 'r1', type: 'pnl', title: 'Profit & Loss — 2026' }),
   report({ id: 'r2', type: 'rent_roll', title: 'Rent Roll — 2026', taxYear: null, propertyId: 'p1' }),
   report({ id: 'r3', type: 'pnl', title: 'Profit & Loss — 2025', taxYear: 2025 }),
+  report({ id: 'r4', type: 'monthly_review', title: 'Monthly Review — June 2026', taxYear: null }),
 ];
 
 const properties = [
@@ -123,7 +128,7 @@ describe('Reports generated table', () => {
 
     expect(await screen.findByRole('link', { name: 'Profit & Loss — 2026' })).toBeInTheDocument();
     // Scope column: portfolio-wide vs. the property's nickname.
-    expect(screen.getAllByRole('cell', { name: 'Whole portfolio' })).toHaveLength(2);
+    expect(screen.getAllByRole('cell', { name: 'Whole portfolio' })).toHaveLength(3);
     expect(screen.getByRole('cell', { name: '88 Oak Ave' })).toBeInTheDocument();
     // Sortable headers carry aria-sort.
     expect(screen.getByRole('columnheader', { name: /Generated/ })).toHaveAttribute(
@@ -157,10 +162,115 @@ describe('Reports generated table', () => {
     expect(screen.queryByRole('link', { name: 'Profit & Loss — 2026' })).not.toBeInTheDocument();
   });
 
+  it('marks monthly reviews as AI-generated in the report list', async () => {
+    vi.stubGlobal('fetch', vi.fn(fixtureFetch));
+    renderPage();
+
+    // The sr-only "AI-generated" text joins the accessible name (icon + text,
+    // never color alone).
+    expect(
+      await screen.findByRole('link', { name: /Monthly Review — June 2026.*AI-generated/ }),
+    ).toBeInTheDocument();
+  });
+
   it('has no axe violations with the table rendered', async () => {
     vi.stubGlobal('fetch', vi.fn(fixtureFetch));
     const { container } = renderPage();
     await screen.findByRole('link', { name: 'Profit & Loss — 2026' });
+
+    const results = await axe.run(container);
+    expect(results.violations).toEqual([]);
+  });
+});
+
+describe('retired /insights routes', () => {
+  function renderRedirect(initialEntry: string) {
+    return render(
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <Routes>
+          {/* Mirrors router.tsx: bare /insights goes to the Reports library,
+              /insights/:reportId goes to the same report's viewer route. */}
+          <Route path="/insights" element={<Navigate to="/reports" replace />} />
+          <Route path="/insights/:reportId" element={<LegacyInsightRedirect />} />
+          <Route path="/reports" element={<div>reports-index</div>} />
+          <Route path="/reports/:id" element={<ReportIdProbe />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+  }
+
+  it('redirects /insights to /reports', () => {
+    renderRedirect('/insights');
+    expect(screen.getByText('reports-index')).toBeInTheDocument();
+  });
+
+  it('redirects /insights/:reportId to /reports/:id', () => {
+    renderRedirect('/insights/r9');
+    expect(screen.getByText('report:r9')).toBeInTheDocument();
+  });
+});
+
+function ReportIdProbe() {
+  const { id } = useParams<{ id: string }>();
+  return <div>report:{id}</div>;
+}
+
+describe('ReportViewer monthly review', () => {
+  const review = {
+    ...report({ id: 'rmr', type: 'monthly_review', title: 'Monthly Review — June 2026', taxYear: null }),
+    data: {
+      bottomLine: 'June netted $2,140 across the portfolio — up from May.',
+      watchItems: ['Repairs at 88 Oak Ave are trending above average.'],
+    },
+  };
+
+  function renderViewer() {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <MemoryRouter initialEntries={['/reports/rmr']}>
+            <Routes>
+              <Route
+                path="/reports/:id"
+                element={
+                  <main>
+                    <ReportViewer />
+                  </main>
+                }
+              />
+            </Routes>
+          </MemoryRouter>
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+  }
+
+  it('wraps the AI-authored review in AiSurface with the AI badge, passing axe', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const path = String(input).replace(/^https?:\/\/[^/]+/, '').split('?')[0] ?? '';
+        return Promise.resolve(
+          new Response(
+            JSON.stringify(
+              path === '/api/v1/reports/rmr'
+                ? review
+                : { error: { code: 'not_found', message: `No fixture for ${path}` } },
+            ),
+            {
+              status: path === '/api/v1/reports/rmr' ? 200 : 404,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          ),
+        );
+      }),
+    );
+    const { container } = renderViewer();
+
+    expect(await screen.findByText(/June netted \$2,140/)).toBeInTheDocument();
+    // The ✦ AI badge marks the review as AI-authored (binding AiSurface rule).
+    expect(screen.getByText('AI')).toBeInTheDocument();
 
     const results = await axe.run(container);
     expect(results.violations).toEqual([]);

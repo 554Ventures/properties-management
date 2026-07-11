@@ -8,7 +8,6 @@ import {
   IconFileText,
   IconGear,
   IconHome,
-  IconSparkle,
   IconUsers,
   IconWrench,
 } from '../ui/icons';
@@ -32,7 +31,6 @@ export const navItems: NavItem[] = [
   { to: '/rent', label: 'Rent Collection', shortLabel: 'Rent', icon: IconCalendarCheck },
   { to: '/documents', label: 'Documents', icon: IconFileText },
   { to: '/reports', label: 'Reports & Tax', icon: IconFileText },
-  { to: '/insights', label: 'AI Insights', icon: IconSparkle, ai: true },
 ];
 
 // Settings (and Sign out, in auth mode) are pinned separately at the bottom of

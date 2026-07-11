@@ -1,10 +1,12 @@
-// Allowlist for AI-proposed action_card actions (§9.3 hardening). api_call
-// buttons execute an AI-supplied method+path through the normal REST client,
-// so in real-AI mode a prompt-injected model could hide an arbitrary write
-// (e.g. POST /reports/:id/email {to: attacker}) behind a benign label. Only
-// the write routes the assistant legitimately proposes may execute; anything
-// else renders as a disabled button with a visible note — never a silent
-// drop, and never executed.
+// Allowlist for AI-proposed actions (§9.3 hardening): chat action_card
+// buttons AND insight-card structured actions (components/ai/InsightCard)
+// both gate through here. api_call buttons execute a server-supplied
+// method+path through the normal REST client, so in real-AI mode a
+// prompt-injected model could hide an arbitrary write (e.g. POST
+// /reports/:id/email {to: attacker}) behind a benign label. Only the write
+// routes the assistant legitimately proposes may execute; anything else
+// renders as a disabled button with a visible note — never a silent drop,
+// and never executed.
 //
 // Adding/editing core records (properties, tenants, transactions) is
 // explicitly supported: the assistant fills in the body and the USER clicks

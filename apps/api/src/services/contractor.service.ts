@@ -91,6 +91,38 @@ async function getOwned(accountId: string, id: string): Promise<DbContractor> {
   return row;
 }
 
+/**
+ * Every active contractor with its matched jobs, newest first — the same
+ * vendor-name match as list()/detail() (ARCHITECTURE §4), factored out so the
+ * insight rules can reason about individual jobs (latest vs. prior average)
+ * without re-deriving the match. One transaction scan for the whole account.
+ */
+export async function activeContractorsWithJobs(
+  accountId: string,
+): Promise<Array<{ contractor: DbContractor; jobs: Array<{ date: Date; amountCents: number; description: string }> }>> {
+  const contractors = await prisma.contractor.findMany({
+    where: { accountId, archivedAt: null },
+    orderBy: { name: 'asc' },
+  });
+  if (contractors.length === 0) return [];
+  const candidates = await prisma.transaction.findMany({
+    where: { accountId, type: 'expense', status: 'confirmed', vendor: { not: null } },
+    select: { vendor: true, date: true, amountCents: true, description: true },
+    orderBy: { date: 'desc' },
+  });
+  const byVendor = new Map<string, Array<{ date: Date; amountCents: number; description: string }>>();
+  for (const t of candidates) {
+    const key = vendorKey(t.vendor as string);
+    const list = byVendor.get(key) ?? [];
+    list.push({ date: t.date, amountCents: t.amountCents, description: t.description });
+    byVendor.set(key, list);
+  }
+  return contractors.map((contractor) => ({
+    contractor,
+    jobs: byVendor.get(vendorKey(contractor.name)) ?? [],
+  }));
+}
+
 type JobCandidate = DbTransaction & {
   property: { nickname: string | null; addressLine1: string } | null;
 };

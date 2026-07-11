@@ -344,7 +344,9 @@ export async function getActivity(accountId: string, limit: number): Promise<Act
       kind: 'insight',
       text: `New insight — ${i.title}`,
       at: iso(i.createdAt),
-      link: '/insights',
+      // Insights no longer have a dedicated page — send the user to the
+      // contextual surface the insight is about.
+      link: i.actionTarget ?? '/',
     });
   }
 

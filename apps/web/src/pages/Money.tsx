@@ -2,7 +2,7 @@
 // search, and numbered server-side pagination (PRD §5.4). All searching,
 // filtering, sorting, and paging run on the server via the DataTable `manual`
 // mode; the review-queue link shows the pending count.
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { formatUsd } from '@hearth/shared';
 import type {
   ImportTransactionsResponse,
@@ -12,16 +12,18 @@ import type {
   TransactionStatus,
   TransactionType,
 } from '@hearth/shared';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ApiClientError } from '../api/client';
 import {
   useCategories,
   useImportTransactions,
+  useInsights,
   useIntegrations,
   useProperties,
   useReviewQueue,
   useTransactions,
 } from '../api/queries';
+import { InsightCard } from '../components/ai/InsightCard';
 import { TransactionEditModal } from '../components/forms/TransactionEditModal';
 import { PageHeader } from '../components/shell/PageHeader';
 import { Button, buttonClasses } from '../components/ui/Button';
@@ -35,6 +37,7 @@ import {
 } from '../components/ui/DataTable';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorNotice } from '../components/ui/ErrorNotice';
+import { LiveRegion } from '../components/ui/LiveRegion';
 import { RowActions } from '../components/ui/RowActions';
 import { Skeleton } from '../components/ui/Skeleton';
 import { StatusBadge } from '../components/ui/StatusBadge';
@@ -101,6 +104,21 @@ function selected(filters: Record<string, FilterValue>, id: string): string | un
   return f?.kind === 'select' && f.values.length > 0 ? f.values[0] : undefined;
 }
 
+/** ?type=&categoryId=&propertyId= deep links (insight cards, push
+ *  notifications) pre-apply the matching column filters. Pure and exported
+ *  for tests; unknown or empty params fall back to the empty state. A stale
+ *  id (e.g. a deleted category) just yields an empty filtered table. */
+export function moneyStateFromParams(params: URLSearchParams): DataTableState {
+  const filters: Record<string, FilterValue> = {};
+  const type = params.get('type');
+  if (type === 'income' || type === 'expense') filters.amount = { kind: 'select', values: [type] };
+  const categoryId = params.get('categoryId');
+  if (categoryId) filters.category = { kind: 'select', values: [categoryId] };
+  const propertyId = params.get('propertyId');
+  if (propertyId) filters.property = { kind: 'select', values: [propertyId] };
+  return { ...emptyDataTableState, filters };
+}
+
 function hasCriteria(state: DataTableState): boolean {
   if (state.search.trim() !== '') return true;
   return Object.values(state.filters).some((f) =>
@@ -114,7 +132,16 @@ function hasCriteria(state: DataTableState): boolean {
 
 export function Money() {
   usePageTitle('Money');
-  const [state, setState] = useState<DataTableState>(emptyDataTableState);
+  const [searchParams] = useSearchParams();
+  const [state, setState] = useState<DataTableState>(() => moneyStateFromParams(searchParams));
+  // The expense-spike insight card renders on this page and deep-links back to
+  // it — a same-route navigation never remounts, so re-apply on param change.
+  const paramsKey = searchParams.toString();
+  useEffect(() => {
+    const next = moneyStateFromParams(searchParams);
+    if (Object.keys(next.filters).length > 0) setState(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paramsKey]);
   const [editing, setEditing] = useState<Transaction | null>(null);
 
   const query: TransactionListQuery = useMemo(() => {
@@ -159,6 +186,11 @@ export function Money() {
   );
 
   const pendingCount = review.data?.pages[0]?.total ?? 0;
+
+  // Exactly one contextual AI card (newest expense_spike) — the spending
+  // anomaly belongs on the ledger page it's about, clearly marked (AiSurface).
+  const insights = useInsights({ status: 'active' });
+  const spikeInsight = insights.data?.find((i) => i.type === 'expense_spike');
 
   const plaid = integrations.data?.find((i) => i.type === 'plaid');
   // Server-driven cooldown: set from an import_rate_limited (429) response.
@@ -335,6 +367,10 @@ export function Money() {
           </>
         }
       />
+
+      <LiveRegion>
+        {spikeInsight && <InsightCard insight={spikeInsight} headingLevel={2} />}
+      </LiveRegion>
 
       {transactions.isPending ? (
         <Card flush className="p-4">

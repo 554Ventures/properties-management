@@ -45,6 +45,7 @@ Interfaces in `apps/api/src/integrations/types.ts`; each swap is one adapter imp
 - [ ] Multi-user teams/roles (`Membership` table attaches to `Account` without reshaping).
 - [~] Native mobile: iOS Capacitor shell shipped 2026-07-11 (`apps/mobile`, remote-URL mode) with APNs push (rent received + daily warning insights), camera receipt capture, and Face ID lock — see `docs/MOBILE.md`. Remaining: the manual Apple steps (identifier + APNs key + first device install, MOBILE.md checklist), Android if ever needed.
 - [ ] Custom report builder if "Ask AI to build a report" usage shows recurring unmet patterns.
+- [x] **AI distributed, not siloed** (2026-07-11): the standalone `/insights` page is retired (`/insights[/:reportId]` → `/reports[/:id]`; monthly reviews render in the report viewer inside `AiSurface`). Insight cards surface contextually (Dashboard, PropertyDetail, TenantsList, RentTracker, Money — one card per page) and now carry executable, allowlist-gated actions (late rent → one-click "Send reminder", audited `ai_suggested_user_confirmed` via the new `POST /insights/:id/actioned`) plus context-aware deep links (`/rent?period=`, `/money?type&categoryId&propertyId`, `/tenants?status=renew_soon`); the overpromising "Draft renewal" label is gone.
 
 ## 5. Polish / engineering hygiene
 

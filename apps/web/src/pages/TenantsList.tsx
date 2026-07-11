@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { formatUsd } from '@hearth/shared';
 import type { TenantListRow } from '@hearth/shared';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useInsights, useRentTracker, useSendReminders, useTenants } from '../api/queries';
 import { TenantFormModal } from '../components/forms/TenantFormModal';
 import { InsightCard } from '../components/ai/InsightCard';
@@ -22,10 +22,20 @@ import { IconBell, IconPlus, IconUsers } from '../components/ui/icons';
 import { currentPeriod, formatDate } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
 
+// ?status= deep links (the renewal-window insight) → the status column's
+// select-filter value. Filter values are the visible labels.
+const STATUS_FILTER_LABEL: Record<string, string> = {
+  renew_soon: 'Renew soon',
+  late: 'Late',
+  current: 'Current',
+};
+
 export function TenantsList() {
   usePageTitle('Tenants & Leases');
   const tenants = useTenants();
   const [createOpen, setCreateOpen] = useState(false);
+  const [searchParams] = useSearchParams();
+  const statusFilterLabel = STATUS_FILTER_LABEL[searchParams.get('status') ?? ''];
   const insights = useInsights({ scope: 'portfolio', status: 'active' });
   // Rent tracker for the current period maps late tenants → rentPaymentIds so
   // "Remind" can send from this screen (contract has no per-tenant reminder).
@@ -170,7 +180,9 @@ export function TenantsList() {
         }
       />
 
-      <LiveRegion>{renewalInsight && <InsightCard insight={renewalInsight} />}</LiveRegion>
+      <LiveRegion>
+        {renewalInsight && <InsightCard insight={renewalInsight} headingLevel={2} />}
+      </LiveRegion>
 
       {tenants.isPending ? (
         <Card flush className="p-4">
@@ -195,6 +207,10 @@ export function TenantsList() {
       ) : (
         <Card flush>
           <DataTable
+            // The renewal insight card on this page links back here with
+            // ?status= — a same-route navigation never remounts the page, so
+            // key the (uncontrolled) table to re-seed initialState on change.
+            key={statusFilterLabel ?? 'all'}
             caption="Tenants — unit, rent, lease end date, and status"
             columns={columns}
             data={tenants.data}
@@ -202,6 +218,11 @@ export function TenantsList() {
             searchPlaceholder="Search tenants"
             pageSize={20}
             itemNoun={{ one: 'tenant', other: 'tenants' }}
+            initialState={
+              statusFilterLabel
+                ? { filters: { status: { kind: 'select', values: [statusFilterLabel] } } }
+                : undefined
+            }
           />
         </Card>
       )}

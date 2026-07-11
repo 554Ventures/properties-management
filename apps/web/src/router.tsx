@@ -1,4 +1,4 @@
-import { createBrowserRouter, Navigate } from 'react-router-dom';
+import { createBrowserRouter, Navigate, useParams } from 'react-router-dom';
 import { AppShell } from './components/shell/AppShell';
 import { NativeBridge } from './native/NativeBridge';
 import { AddTransaction } from './pages/AddTransaction';
@@ -6,7 +6,6 @@ import { ContractorDetail } from './pages/ContractorDetail';
 import { ContractorsPage } from './pages/ContractorsPage';
 import { Dashboard } from './pages/Dashboard';
 import { DocumentsPage } from './pages/DocumentsPage';
-import { Insights } from './pages/Insights';
 import { Money } from './pages/Money';
 import { MoneyReview } from './pages/MoneyReview';
 import { NotFound } from './pages/NotFound';
@@ -22,6 +21,13 @@ import { TenantsList } from './pages/TenantsList';
 import { TermsOfService } from './pages/TermsOfService';
 import { UnitDetail } from './pages/UnitDetail';
 import { AuthGate } from './state/auth';
+
+// /insights/:reportId used to render the monthly review directly; report ids
+// are shared, so the same review renders at /reports/:id. Exported for tests.
+export function LegacyInsightRedirect() {
+  const { reportId } = useParams<{ reportId: string }>();
+  return <Navigate to={`/reports/${reportId}`} replace />;
+}
 
 // Routes per ARCHITECTURE §8. The chat drawer is layout state (?chat=open),
 // not a route — added in build-order task 9.
@@ -64,8 +70,11 @@ export const router = createBrowserRouter([
       { path: 'documents', element: <DocumentsPage /> },
       { path: 'reports', element: <Reports /> },
       { path: 'reports/:id', element: <ReportViewer /> },
-      { path: 'insights', element: <Insights /> },
-      { path: 'insights/:reportId', element: <Insights /> },
+      // The standalone AI Insights page is gone — monthly reviews live on
+      // Reports & Tax now, and insight cards surface contextually per page.
+      // Old bookmarks and push deep links keep working via these redirects.
+      { path: 'insights', element: <Navigate to="/reports" replace /> },
+      { path: 'insights/:reportId', element: <LegacyInsightRedirect /> },
       { path: 'settings', element: <Settings /> },
       { path: '*', element: <NotFound /> },
     ],

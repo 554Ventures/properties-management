@@ -20,6 +20,7 @@ import { ErrorNotice } from '../components/ui/ErrorNotice';
 import { Select } from '../components/ui/Select';
 import { Skeleton } from '../components/ui/Skeleton';
 import { StatusBadge } from '../components/ui/StatusBadge';
+import { IconSparkle } from '../components/ui/icons';
 import { useToast } from '../components/ui/Toast';
 import { formatDate, humanizeKey } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
@@ -63,6 +64,12 @@ export function Reports() {
           className="font-medium text-ink transition-colors duration-fast hover:text-brand"
         >
           {report.title}
+          {report.type === 'monthly_review' && (
+            <span className="ml-1.5 inline-flex align-middle text-ink-ai">
+              <IconSparkle size={12} />
+              <span className="sr-only">AI-generated</span>
+            </span>
+          )}
         </Link>
       ),
     },

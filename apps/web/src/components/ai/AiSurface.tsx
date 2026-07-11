@@ -56,7 +56,9 @@ export function AiSurface({
   return (
     <Tag
       className={cx(
-        'rounded-lg border border-border border-l-4 border-l-border-ai bg-surface-ai p-4 shadow-card',
+        // Thin violet border all around (matching the inline AiChip pill and
+        // the insight deck's stacked layers) + the thick violet left accent.
+        'rounded-lg border border-border-ai border-l-4 bg-surface-ai p-4 shadow-card',
         className,
       )}
       {...rest}

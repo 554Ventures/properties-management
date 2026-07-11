@@ -1,9 +1,17 @@
 // Contractor directory (Maintenance): the vendors a landlord trusts, with
-// usage stats derived server-side from confirmed expense transactions.
+// usage stats derived server-side from confirmed expense transactions. The
+// one AI element is the single most recent contractor_cost_spike insight
+// (clearly marked via AiSurface) — this is the page that insight is about.
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { formatUsdWhole } from '@hearth/shared';
-import { useArchiveContractor, useContractors, type ContractorListRow } from '../api/queries';
+import {
+  useArchiveContractor,
+  useContractors,
+  useInsights,
+  type ContractorListRow,
+} from '../api/queries';
+import { InsightCard } from '../components/ai/InsightCard';
 import { ContractorFormModal } from '../components/forms/ContractorFormModal';
 import { PageHeader } from '../components/shell/PageHeader';
 import { Button } from '../components/ui/Button';
@@ -12,6 +20,7 @@ import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorNotice } from '../components/ui/ErrorNotice';
 import { DataTable, type DataTableColumn } from '../components/ui/DataTable';
+import { LiveRegion } from '../components/ui/LiveRegion';
 import { Skeleton } from '../components/ui/Skeleton';
 import { useToast } from '../components/ui/Toast';
 import { RowActions } from '../components/ui/RowActions';
@@ -36,6 +45,11 @@ export function ContractorsPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<ContractorListRow | null>(null);
   const [deleting, setDeleting] = useState<ContractorListRow | null>(null);
+
+  // Exactly one contextual AI card (newest contractor cost spike) — same
+  // one-card-per-page convention as Rent Collection and Money.
+  const insights = useInsights({ status: 'active' });
+  const costSpikeInsight = insights.data?.find((i) => i.type === 'contractor_cost_spike');
 
   const columns: DataTableColumn<ContractorListRow>[] = [
     {
@@ -160,6 +174,10 @@ export function ContractorsPage() {
           </Button>
         }
       />
+
+      <LiveRegion>
+        {costSpikeInsight && <InsightCard insight={costSpikeInsight} headingLevel={2} />}
+      </LiveRegion>
 
       {contractors.isPending ? (
         <Card flush className="p-4">
