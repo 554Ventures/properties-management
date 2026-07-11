@@ -1,9 +1,13 @@
-import type { CreateUnitInput, Unit, UpdateUnitInput } from '@hearth/shared';
+import type { CreateUnitInput, Unit, UnitDetailResponse, UpdateUnitInput } from '@hearth/shared';
 import type { Unit as DbUnit } from '@prisma/client';
-import { isoOrNull } from '../lib/dates';
+import { currentPeriod, iso, isoOrNull, monthEndExclusive, monthStart } from '../lib/dates';
 import { ConflictError, NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { writeAudit, type AuditActor } from './audit.service';
+import { toApiLease } from './lease.service';
+import { pnlTotals, propertyLabel } from './property.service';
+import { deriveRentStatus } from './rent.service';
+import { toApiTenant } from './tenant.service';
 
 export function toApiUnit(u: DbUnit): Unit {
   return {
@@ -48,6 +52,73 @@ async function getOwned(accountId: string, id: string): Promise<DbUnit> {
   const row = await prisma.unit.findFirst({ where: { id, property: { accountId } } });
   if (!row) throw new NotFoundError('unit', id);
   return row;
+}
+
+export async function getDetail(accountId: string, id: string): Promise<UnitDetailResponse> {
+  const account = await prisma.account.findUniqueOrThrow({ where: { id: accountId } });
+  const unit = await prisma.unit.findFirst({
+    // No archivedAt filter — detail resolves an archived unit (history
+    // retention), same rationale as lease.service.getDetail.
+    where: { id, property: { accountId } },
+    include: {
+      property: true,
+      leases: {
+        orderBy: { startDate: 'desc' },
+        include: {
+          leaseTenants: { include: { tenant: true }, orderBy: { isPrimary: 'desc' } },
+          rentPayments: { orderBy: { dueDate: 'desc' } },
+        },
+      },
+    },
+  });
+  if (!unit) throw new NotFoundError('unit', id);
+
+  const toLeaseWithTenants = (l: (typeof unit.leases)[number]) => ({
+    ...toApiLease(l),
+    tenants: l.leaseTenants.map((lt) => toApiTenant(lt.tenant)),
+  });
+  const currentLeaseRow = unit.leases.find((l) => l.status === 'active');
+
+  const now = new Date();
+  const period = currentPeriod(now);
+  const mtd = await pnlTotals(
+    accountId,
+    { from: monthStart(period), to: monthEndExclusive(period) },
+    { unitId: id },
+  );
+  const ytd = await pnlTotals(
+    accountId,
+    { from: new Date(Date.UTC(now.getUTCFullYear(), 0, 1)), to: monthEndExclusive(period) },
+    { unitId: id },
+  );
+
+  const rentPayments = unit.leases
+    .flatMap((l) => l.rentPayments)
+    .sort((a, b) => b.dueDate.getTime() - a.dueDate.getTime())
+    .map((p) => {
+      const derived = deriveRentStatus(p, account.graceDays);
+      return {
+        id: p.id,
+        period: p.period,
+        dueDate: iso(p.dueDate),
+        amountCents: p.amountCents,
+        status: derived.status,
+        ...(derived.daysLate !== undefined ? { daysLate: derived.daysLate } : {}),
+        method: p.method as 'online' | 'manual' | null,
+        paidAt: isoOrNull(p.paidAt),
+      };
+    });
+
+  return {
+    unit: toApiUnit(unit),
+    propertyId: unit.propertyId,
+    propertyLabel: propertyLabel(unit.property),
+    status: currentLeaseRow ? 'occupied' : 'vacant',
+    currentLease: currentLeaseRow ? toLeaseWithTenants(currentLeaseRow) : null,
+    leases: unit.leases.map(toLeaseWithTenants),
+    rentPayments,
+    pnl: { mtd, ytd },
+  };
 }
 
 export async function update(

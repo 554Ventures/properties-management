@@ -35,6 +35,7 @@ export type PropertyDetailResponse = z.infer<typeof s.PropertyDetailResponseSche
 export type Unit = z.infer<typeof s.UnitSchema>;
 export type CreateUnitInput = z.infer<typeof s.CreateUnitInputSchema>;
 export type UpdateUnitInput = z.infer<typeof s.UpdateUnitInputSchema>;
+export type UnitDetailResponse = z.infer<typeof s.UnitDetailResponseSchema>;
 
 // Tenants
 export type Tenant = z.infer<typeof s.TenantSchema>;

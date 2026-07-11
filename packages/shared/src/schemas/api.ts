@@ -24,6 +24,9 @@ export * from './property';
 // Units
 export * from './unit';
 
+// Unit management composites (detail: lease history, payments, P&L)
+export * from './unit-management';
+
 // Tenants
 export * from './tenant';
 

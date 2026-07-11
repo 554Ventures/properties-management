@@ -63,6 +63,7 @@ describe('MCP server', () => {
     expect(names).toContain('get_dashboard_kpis');
     expect(names).toContain('get_rent_status');
     expect(names).toContain('list_properties');
+    expect(names).toContain('get_unit');
     expect(names).toContain('list_transactions');
     for (const name of WRITE_TOOLS) expect(names).not.toContain(name);
     for (const name of RENDER_TOOLS) expect(names).not.toContain(name);

@@ -135,6 +135,7 @@ describe('unit mutations', () => {
     expect(init?.method).toBe('PATCH');
     expect(init?.body).toBe(JSON.stringify({ label: 'Unit B' }));
     expect(keys).toContain(JSON.stringify(['properties', 'p1']));
+    expect(keys).toContain(JSON.stringify(['units', 'u1']));
   });
 
   it('useArchiveUnit / useRestoreUnit hit the right paths', async () => {

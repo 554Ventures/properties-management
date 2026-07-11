@@ -10,6 +10,10 @@ export async function unitsRoutes(app: FastifyInstance): Promise<void> {
     return reply.code(201).send(unit);
   });
 
+  app.get<{ Params: { id: string } }>('/units/:id', async (req) =>
+    unitService.getDetail(req.accountId, req.params.id),
+  );
+
   app.patch<{ Params: { id: string } }>('/units/:id', async (req) => {
     const input = parseBody(UpdateUnitInputSchema, req.body);
     return unitService.update(req.accountId, req.params.id, input);

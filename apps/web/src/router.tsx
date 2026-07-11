@@ -20,6 +20,7 @@ import { Settings } from './pages/Settings';
 import { TenantDetail } from './pages/TenantDetail';
 import { TenantsList } from './pages/TenantsList';
 import { TermsOfService } from './pages/TermsOfService';
+import { UnitDetail } from './pages/UnitDetail';
 import { AuthGate } from './state/auth';
 
 // Routes per ARCHITECTURE §8. The chat drawer is layout state (?chat=open),
@@ -48,6 +49,7 @@ export const router = createBrowserRouter([
       { index: true, element: <Dashboard /> },
       { path: 'properties', element: <PropertiesList /> },
       { path: 'properties/:id', element: <PropertyDetail /> },
+      { path: 'units/:id', element: <UnitDetail /> },
       { path: 'tenants', element: <TenantsList /> },
       { path: 'tenants/:id', element: <TenantDetail /> },
       // Maintenance has one screen today; the index redirect keeps the
