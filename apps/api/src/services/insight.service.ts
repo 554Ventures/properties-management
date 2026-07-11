@@ -196,7 +196,10 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
   for (const [categoryId, txns] of byCategory) {
     const currentTotal = txns.reduce((sum, t) => sum + t.amountCents, 0);
     const trailingAvg = (trailingByCategory.get(categoryId) ?? 0) / 3;
-    if (currentTotal > trailingAvg * SPIKE_RATIO) {
+    // No trailing history means no baseline to spike against — without this
+    // guard any first-ever spend "spikes" (monthly review applies the same
+    // avg > 0 rule; the two calculations must agree).
+    if (trailingAvg > 0 && currentTotal > trailingAvg * SPIKE_RATIO) {
       const top = [...txns].sort((a, b) => b.amountCents - a.amountCents)[0];
       if (!top) continue;
       const categoryName = top.category?.name ?? 'Uncategorized';
@@ -245,10 +248,12 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
   }
 
   // Rule 4 — underperforming_property: per-unit net over the trailing 3 full
-  // months < 80% of the portfolio per-unit average.
+  // months < 80% of the portfolio per-unit average. Active portfolio only
+  // (matches every dashboard rollup): an archived property must neither drag
+  // the average down nor get flagged itself.
   const properties = await prisma.property.findMany({
-    where: { accountId },
-    include: { units: true },
+    where: { accountId, archivedAt: null },
+    include: { units: { where: { archivedAt: null } } },
   });
   const trailingTxns = await prisma.transaction.groupBy({
     by: ['propertyId', 'type'],
@@ -257,6 +262,7 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
       status: 'confirmed',
       date: { gte: trailingStart, lt: mStart },
       propertyId: { not: null },
+      property: { archivedAt: null },
     },
     _sum: { amountCents: true },
   });

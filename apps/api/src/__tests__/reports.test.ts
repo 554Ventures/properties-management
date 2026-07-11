@@ -101,3 +101,54 @@ describe('schedule_e report', () => {
     expect(data.watchItems.length).toBeGreaterThanOrEqual(2);
   });
 });
+
+describe('schedule_e income line mapping', () => {
+  it('income mapped off Line 3 lands in otherIncomeCents, not rents received', async () => {
+    const accountId = await getDemoAccountId();
+    const taxYear = new Date().getUTCFullYear();
+    const category = await prisma.category.create({
+      data: {
+        accountId,
+        name: 'TEST Vending income',
+        type: 'income',
+        irsScheduleELine: 'Line 19 – Other',
+      },
+    });
+    const txn = await prisma.transaction.create({
+      data: {
+        accountId,
+        date: new Date(),
+        amountCents: 12_300,
+        type: 'income',
+        description: 'TEST vending machine income',
+        source: 'manual',
+        status: 'confirmed',
+        categoryId: category.id,
+      },
+    });
+
+    const report = await reportService.generate(accountId, { type: 'schedule_e', taxYear });
+    const detail = await reportService.getById(accountId, report.id);
+    const data = detail.data as ScheduleEData & {
+      totals: { otherIncomeCents: number };
+      propertyRows: Array<{ otherIncomeCents: number }>;
+    };
+
+    expect(data.totals.otherIncomeCents).toBe(12_300);
+    // Rents received = confirmed income minus the off-line-3 row; net includes both.
+    const { from, to } = yearRange(taxYear);
+    const income = await prisma.transaction.aggregate({
+      where: { accountId, status: 'confirmed', type: 'income', date: { gte: from, lt: to } },
+      _sum: { amountCents: true },
+    });
+    expect(data.totals.rentsReceivedCents).toBe((income._sum.amountCents ?? 0) - 12_300);
+    expect(data.totals.netCents).toBe(
+      data.totals.rentsReceivedCents + data.totals.otherIncomeCents - data.totals.totalExpensesCents,
+    );
+
+    await prisma.report.delete({ where: { id: report.id } });
+    await prisma.transaction.delete({ where: { id: txn.id } });
+    await prisma.category.delete({ where: { id: category.id } });
+    await prisma.auditLog.deleteMany({ where: { accountId, entityId: report.id } });
+  });
+});

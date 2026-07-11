@@ -84,7 +84,9 @@ beforeAll(async () => {
   const tenant = await tenantService.create(accountAId.current, { fullName: 'Isolation Tenant' });
   fixture.tenantId = tenant.id;
 
-  const start = new Date();
+  // Backdated start: the lease covers the whole current month, so the
+  // materialized charge is the full rent (mid-month starts prorate).
+  const start = new Date(Date.now() - 1000 * 60 * 60 * 24 * 90);
   const end = new Date(start.getTime() + 1000 * 60 * 60 * 24 * 365);
   const lease = await leaseService.create(accountAId.current, {
     unitId: fixture.unitId,
@@ -230,6 +232,25 @@ describe('cross-tenant isolation: Account B can never read or write Account A da
   it('Transaction: update/remove/confirm/dismiss refuse cross-account access', async () => {
     await expect(
       transactionService.update(accountBId.current, fixture.transactionId, { description: 'Hijacked' }),
+    ).rejects.toMatchObject(NOT_FOUND);
+    // Attribution: B can't point its own ledger at A's property or unit.
+    await expect(
+      transactionService.create(accountBId.current, {
+        date: iso(new Date()),
+        amountCents: 1000,
+        type: 'expense',
+        description: 'Cross-account attribution attempt',
+        propertyId: fixture.propertyId,
+      }),
+    ).rejects.toMatchObject(NOT_FOUND);
+    await expect(
+      transactionService.create(accountBId.current, {
+        date: iso(new Date()),
+        amountCents: 1000,
+        type: 'expense',
+        description: 'Cross-account attribution attempt',
+        unitId: fixture.unitId,
+      }),
     ).rejects.toMatchObject(NOT_FOUND);
     await expect(
       transactionService.confirm(accountBId.current, fixture.transactionId, {}),

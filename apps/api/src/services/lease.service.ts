@@ -14,6 +14,7 @@ import type {
 } from '@hearth/shared';
 import type {
   Lease as DbLease,
+  Prisma,
   Property as DbProperty,
   Tenant as DbTenant,
   Unit as DbUnit,
@@ -23,7 +24,7 @@ import { ConflictError, NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { mockDocusign } from '../integrations/mock/mock-docusign';
 import { writeAudit, type AuditActor } from './audit.service';
-import { deriveRentStatus } from './rent.service';
+import { coveredDaysInPeriod, deriveRentStatus, proratedRentShare } from './rent.service';
 import { toApiTenant } from './tenant.service';
 
 export function toApiLease(l: DbLease): Lease {
@@ -185,7 +186,100 @@ export async function update(
   return toApiLease(row);
 }
 
-/** End a lease now: status → 'ended', endDate → today unless already in the past. */
+interface ChargeAdjustment {
+  action: 'rent_payment.adjusted' | 'rent_payment.voided';
+  rentPaymentId: string;
+  period: string;
+  priorAmountCents: number;
+  amountCents?: number;
+}
+
+/**
+ * Reconcile the open (due/failed) expected charges of a lease that was just
+ * shortened to cover [lease.startDate, endExclusive): charges for months the
+ * lease no longer touches are voided, and the cut month's charge re-prorates
+ * to the lease's remaining days — plus, on a renewal switchover, the
+ * successor lease's share of the rest of that month, rounded once on the
+ * blended sum (the unit-level materialization guard then keeps the successor
+ * from adding its own row for that month). Paid/processing rows are never
+ * touched: money received or in flight is history, not a projection. Runs
+ * inside the caller's transaction and returns what changed so the caller can
+ * audit after commit.
+ */
+async function reconcileShortenedLeaseCharges(
+  tx: Prisma.TransactionClient,
+  lease: { id: string; rentCents: number; startDate: Date },
+  endExclusive: Date,
+  successor?: { rentCents: number; startDate: Date; endDate: Date },
+): Promise<ChargeAdjustment[]> {
+  const open = await tx.rentPayment.findMany({
+    where: { leaseId: lease.id, status: { in: ['due', 'failed'] } },
+  });
+  const adjustments: ChargeAdjustment[] = [];
+  for (const row of open) {
+    if (coveredDaysInPeriod(row.period, lease.startDate, endExclusive) === 0) {
+      await tx.rentPayment.delete({ where: { id: row.id } });
+      adjustments.push({
+        action: 'rent_payment.voided',
+        rentPaymentId: row.id,
+        period: row.period,
+        priorAmountCents: row.amountCents,
+      });
+      continue;
+    }
+    const blended = Math.round(
+      proratedRentShare(lease.rentCents, row.period, lease.startDate, endExclusive) +
+        (successor
+          ? proratedRentShare(
+              successor.rentCents,
+              row.period,
+              successor.startDate,
+              addDays(startOfUtcDay(successor.endDate), 1),
+            )
+          : 0),
+    );
+    if (blended !== row.amountCents) {
+      await tx.rentPayment.update({ where: { id: row.id }, data: { amountCents: blended } });
+      adjustments.push({
+        action: 'rent_payment.adjusted',
+        rentPaymentId: row.id,
+        period: row.period,
+        priorAmountCents: row.amountCents,
+        amountCents: blended,
+      });
+    }
+  }
+  return adjustments;
+}
+
+async function auditChargeAdjustments(
+  accountId: string,
+  actor: AuditActor,
+  reason: 'lease_terminated' | 'lease_renewal_switchover',
+  adjustments: ChargeAdjustment[],
+): Promise<void> {
+  for (const a of adjustments) {
+    await writeAudit(accountId, {
+      actor,
+      action: a.action,
+      entityType: 'rent_payment',
+      entityId: a.rentPaymentId,
+      detail: {
+        period: a.period,
+        priorAmountCents: a.priorAmountCents,
+        ...(a.amountCents !== undefined ? { amountCents: a.amountCents } : {}),
+        reason,
+      },
+    });
+  }
+}
+
+/**
+ * End a lease now: status → 'ended', endDate → today unless already in the
+ * past. Open charges the shortened lease no longer earns are voided, and the
+ * final month's unpaid charge re-prorates to the days actually occupied
+ * (endDate stays the inclusive last covered day).
+ */
 export async function terminate(
   accountId: string,
   id: string,
@@ -194,9 +288,17 @@ export async function terminate(
   const existing = await getOwned(accountId, id);
   const today = startOfUtcDay(new Date());
   const endDate = existing.endDate < today ? existing.endDate : today;
-  const row = await prisma.lease.update({
-    where: { id },
-    data: { status: 'ended', endDate },
+  const { row, adjustments } = await prisma.$transaction(async (tx) => {
+    const updated = await tx.lease.update({
+      where: { id },
+      data: { status: 'ended', endDate },
+    });
+    const changes = await reconcileShortenedLeaseCharges(
+      tx,
+      existing,
+      addDays(startOfUtcDay(endDate), 1),
+    );
+    return { row: updated, adjustments: changes };
   });
   await writeAudit(accountId, {
     actor,
@@ -205,6 +307,7 @@ export async function terminate(
     entityId: id,
     detail: { endDate: iso(endDate) },
   });
+  await auditChargeAdjustments(accountId, actor, 'lease_terminated', adjustments);
   return toApiLease(row);
 }
 
@@ -286,8 +389,11 @@ export async function removeTenant(
 
 /**
  * Immediate switchover: create a new active lease on the same unit and end the
- * source lease at the new lease's start date. Existing RentPayment rows keep
- * their original amounts (no mid-period re-materialization).
+ * source lease at the new lease's start date. The source lease's open charges
+ * are reconciled in the same transaction: months it no longer touches are
+ * voided, and the switchover month's unpaid charge becomes the blended
+ * old-share + new-share proration, so the unit is never billed twice for one
+ * month. Paid/processing rows keep their original amounts.
  */
 export async function createRenewal(
   accountId: string,
@@ -317,7 +423,7 @@ export async function createRenewal(
   }
 
   const startDate = new Date(input.startDate);
-  const created = await prisma.$transaction(async (tx) => {
+  const { created, adjustments } = await prisma.$transaction(async (tx) => {
     const newLease = await tx.lease.create({
       data: {
         unitId: source.unitId,
@@ -333,7 +439,13 @@ export async function createRenewal(
       where: { id: leaseId },
       data: { status: 'ended', endDate: startDate },
     });
-    return newLease;
+    // The old lease now covers only the days before the switchover.
+    const changes = await reconcileShortenedLeaseCharges(tx, source, startDate, {
+      rentCents: newLease.rentCents,
+      startDate: newLease.startDate,
+      endDate: newLease.endDate,
+    });
+    return { created: newLease, adjustments: changes };
   });
 
   await writeAudit(accountId, {
@@ -343,6 +455,7 @@ export async function createRenewal(
     entityId: created.id,
     detail: { sourceLeaseId: leaseId, rentCents: created.rentCents, startDate: iso(startDate) },
   });
+  await auditChargeAdjustments(accountId, actor, 'lease_renewal_switchover', adjustments);
   return toApiLease(created);
 }
 

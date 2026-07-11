@@ -12,6 +12,7 @@ import {
   iso,
   monthEndExclusive,
   monthStart,
+  periodOf,
   startOfUtcDay,
   trailingPeriods,
 } from '../lib/dates';
@@ -91,10 +92,23 @@ export async function getKpis(accountId: string): Promise<DashboardKpisResponse>
     prevPayments.length === 0 ? 0 : Math.round((prevPaid / prevPayments.length) * 100);
 
   // Tax set-aside (estimate only — UI carries the PRD §13.4 disclaimer):
-  // current = net MTD × rate; target = avg net of trailing 6 full months × 3 × rate.
+  // current = net MTD × rate; target = avg monthly net over the trailing 6
+  // full months × 3 × rate. The average divides by months that actually have
+  // ledger activity (≥ 1), not a flat 6 — a two-month-old account would
+  // otherwise see its target understated 3×.
   const sixMonthsAgo = monthStart(addMonthsToPeriod(period, -6));
   const trailing = await sumByType(accountId, { from: sixMonthsAgo, to: mtdRange.from });
-  const avgMonthlyNet = trailing.netCents / 6;
+  const trailingDates = await prisma.transaction.findMany({
+    where: {
+      accountId,
+      status: 'confirmed',
+      date: { gte: sixMonthsAgo, lt: mtdRange.from },
+      OR: [{ propertyId: null }, { property: { archivedAt: null } }],
+    },
+    select: { date: true },
+  });
+  const monthsWithActivity = new Set(trailingDates.map((t) => periodOf(t.date))).size;
+  const avgMonthlyNet = trailing.netCents / Math.max(1, monthsWithActivity);
   const rate = account.taxRatePct / 100;
 
   return {

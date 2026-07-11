@@ -16,6 +16,8 @@ import {
   TAX_SET_ASIDE_TARGET_CENTS,
   TOTAL_UNITS,
 } from '../../prisma/seed-constants';
+import { addMonthsToPeriod, currentPeriod, monthStart } from '../lib/dates';
+import { prisma } from '../lib/prisma';
 import { getDemoAccountId } from '../plugins/auth';
 import * as dashboardService from '../services/dashboard.service';
 
@@ -94,5 +96,29 @@ describe('dashboardService.getNoiByProperty (seed constants)', () => {
     }
     const nois = result.properties.map((p) => p.noiCents);
     expect([...nois].sort((a, b) => b - a)).toEqual(nois);
+  });
+});
+
+describe('tax set-aside for a young account', () => {
+  it('divides the trailing net by months with ledger activity, not a flat 6', async () => {
+    const account = await prisma.account.create({
+      data: { name: 'Young Tax Test', email: 'young-tax-test@example.com' },
+    });
+    // Two months of history: $1,000 and $500 of income, nothing older.
+    const m1Date = monthStart(addMonthsToPeriod(currentPeriod(), -1));
+    const m2Date = monthStart(addMonthsToPeriod(currentPeriod(), -2));
+    await prisma.transaction.createMany({
+      data: [
+        { accountId: account.id, date: m1Date, amountCents: 100_000, type: 'income', description: 'young acct income', source: 'manual', status: 'confirmed' },
+        { accountId: account.id, date: m2Date, amountCents: 50_000, type: 'income', description: 'young acct income', source: 'manual', status: 'confirmed' },
+      ],
+    });
+
+    const kpis = await dashboardService.getKpis(account.id);
+    // avg = 150000 / 2 months with activity; target = avg × 3 × 20% (default rate)
+    expect(kpis.taxSetAside.targetCents).toBe(Math.round((150_000 / 2) * 3 * 0.2));
+
+    await prisma.transaction.deleteMany({ where: { accountId: account.id } });
+    await prisma.account.delete({ where: { id: account.id } });
   });
 });
