@@ -29,7 +29,8 @@ import { Skeleton } from '../components/ui/Skeleton';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { Table, Td, Th, Tr } from '../components/ui/Table';
 import { useToast } from '../components/ui/Toast';
-import { IconPlus } from '../components/ui/icons';
+import { RowActions } from '../components/ui/RowActions';
+import { IconArchive, IconPencil, IconPlus, IconUsers, IconX } from '../components/ui/icons';
 import { formatDate } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
 
@@ -278,7 +279,7 @@ export function PropertyDetail() {
                       )}
                     </Td>
                     <Td align="right" stickyRight>
-                      <div className="flex flex-wrap justify-end gap-1">
+                      <div className="flex flex-wrap items-center justify-end gap-1">
                         {unit.archivedAt ? (
                           <Button
                             variant="secondary"
@@ -289,27 +290,30 @@ export function PropertyDetail() {
                             Restore
                           </Button>
                         ) : lease && unit.status === 'occupied' ? (
-                          <>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => setModal({ kind: 'edit-lease', lease })}
-                            >
-                              Edit terms
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => setModal({ kind: 'co-tenants', leaseId: lease.id })}
-                            >
-                              Co-tenants
-                            </Button>
-                            <Button variant="ghost" size="sm" onClick={() => setTerminating(lease)}>
-                              Terminate
-                            </Button>
-                          </>
+                          <RowActions
+                            context={`${unit.label} lease`}
+                            actions={[
+                              {
+                                label: 'Edit terms',
+                                icon: <IconPencil size={14} />,
+                                onClick: () => setModal({ kind: 'edit-lease', lease }),
+                              },
+                              {
+                                label: 'Co-tenants',
+                                icon: <IconUsers size={14} />,
+                                onClick: () => setModal({ kind: 'co-tenants', leaseId: lease.id }),
+                              },
+                              {
+                                label: 'Terminate',
+                                icon: <IconX size={14} />,
+                                onClick: () => setTerminating(lease),
+                              },
+                            ]}
+                          />
                         ) : (
                           <>
+                            {/* The primary affordance for a vacant unit stays a
+                                visible button; only the secondary edits collapse. */}
                             <Button
                               variant="secondary"
                               size="sm"
@@ -317,20 +321,21 @@ export function PropertyDetail() {
                             >
                               Create lease
                             </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => setModal({ kind: 'edit-unit', unit })}
-                            >
-                              Edit
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => setArchivingUnit(unit)}
-                            >
-                              Archive
-                            </Button>
+                            <RowActions
+                              context={unit.label}
+                              actions={[
+                                {
+                                  label: 'Edit',
+                                  icon: <IconPencil size={14} />,
+                                  onClick: () => setModal({ kind: 'edit-unit', unit }),
+                                },
+                                {
+                                  label: 'Archive',
+                                  icon: <IconArchive size={14} />,
+                                  onClick: () => setArchivingUnit(unit),
+                                },
+                              ]}
+                            />
                           </>
                         )}
                       </div>

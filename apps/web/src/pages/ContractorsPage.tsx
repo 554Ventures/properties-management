@@ -14,7 +14,8 @@ import { ErrorNotice } from '../components/ui/ErrorNotice';
 import { DataTable, type DataTableColumn } from '../components/ui/DataTable';
 import { Skeleton } from '../components/ui/Skeleton';
 import { useToast } from '../components/ui/Toast';
-import { IconPlus, IconStar, IconWrench } from '../components/ui/icons';
+import { RowActions } from '../components/ui/RowActions';
+import { IconPencil, IconPlus, IconStar, IconTrash, IconWrench } from '../components/ui/icons';
 import { cx } from '../lib/cx';
 import { formatMonth } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
@@ -119,14 +120,13 @@ export function ContractorsPage() {
       align: 'right',
       stickyRight: true,
       cell: (row) => (
-        <div className="flex justify-end gap-1">
-          <Button variant="ghost" size="sm" onClick={() => setEditing(row)}>
-            Edit
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => setDeleting(row)}>
-            Delete
-          </Button>
-        </div>
+        <RowActions
+          context={row.name}
+          actions={[
+            { label: 'Edit', icon: <IconPencil size={14} />, onClick: () => setEditing(row) },
+            { label: 'Delete', icon: <IconTrash size={14} />, onClick: () => setDeleting(row) },
+          ]}
+        />
       ),
     },
   ];
