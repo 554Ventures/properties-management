@@ -1,9 +1,11 @@
 // Mock/real Plaid adapter selection, mirroring ai/client.ts's createAiClient().
 import { mockPlaid } from './mock/mock-plaid';
+import { mockPush } from './mock/mock-push';
 import { mockStorage } from './mock/mock-storage';
+import { createApnsPushProvider } from './real/real-apns';
 import { createRealPlaidAdapter } from './real/real-plaid';
 import { createRealStorageAdapter } from './real/real-storage';
-import type { PlaidAdapter, StorageAdapter } from './types';
+import type { PlaidAdapter, PushProvider, StorageAdapter } from './types';
 
 let realAdapter: PlaidAdapter | undefined;
 let warned = false;
@@ -57,4 +59,39 @@ export function createStorageAdapter(): StorageAdapter {
   if (!isRealStorageConfigured()) return mockStorage;
   if (!realStorageAdapter) realStorageAdapter = createRealStorageAdapter();
   return realStorageAdapter;
+}
+
+let realPushProvider: PushProvider | undefined;
+let pushWarned = false;
+
+/** True once APNS_TEAM_ID/KEY_ID/PRIVATE_KEY/BUNDLE_ID are all set. */
+export function isRealPushConfigured(): boolean {
+  const { APNS_TEAM_ID, APNS_KEY_ID, APNS_PRIVATE_KEY, APNS_BUNDLE_ID } = process.env;
+  const configured = [APNS_TEAM_ID, APNS_KEY_ID, APNS_PRIVATE_KEY, APNS_BUNDLE_ID];
+  const setCount = configured.filter(Boolean).length;
+
+  if (setCount > 0 && setCount < configured.length && !pushWarned) {
+    pushWarned = true;
+    console.warn(
+      '[push] APNS_TEAM_ID/APNS_KEY_ID/APNS_PRIVATE_KEY/APNS_BUNDLE_ID are partially set — ' +
+        'falling back to the mock push provider until all four are configured.',
+    );
+  }
+
+  return setCount === configured.length;
+}
+
+/** Real APNs provider only when all APNS_* vars are set, else the mock. */
+export function createPushProvider(): PushProvider {
+  if (!isRealPushConfigured()) return mockPush;
+  if (!realPushProvider) {
+    realPushProvider = createApnsPushProvider({
+      teamId: process.env.APNS_TEAM_ID!,
+      keyId: process.env.APNS_KEY_ID!,
+      privateKey: process.env.APNS_PRIVATE_KEY!,
+      bundleId: process.env.APNS_BUNDLE_ID!,
+      env: process.env.APNS_ENV === 'production' ? 'production' : 'sandbox',
+    });
+  }
+  return realPushProvider;
 }

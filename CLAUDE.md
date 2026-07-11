@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Hearth — AI-native property management app for independent landlords. npm-workspaces monorepo: `packages/shared` (Zod contract), `apps/api` (Fastify + Prisma/Postgres), `apps/web` (React + Vite + Tailwind). Local dev/tests run an npm-managed embedded Postgres (no Docker or system install); production points `DATABASE_URL` at Supabase.
+Hearth — AI-native property management app for independent landlords. npm-workspaces monorepo: `packages/shared` (Zod contract), `apps/api` (Fastify + Prisma/Postgres), `apps/web` (React + Vite + Tailwind), `apps/mobile` (Capacitor iOS shell in remote-URL mode — loads the production site; `docs/MOBILE.md` governs, incl. the exact-pin `@capacitor/*` version-skew policy with `apps/web`). Local dev/tests run an npm-managed embedded Postgres (no Docker or system install); production points `DATABASE_URL` at Supabase.
 
 ## Docs that govern this repo
 
@@ -11,6 +11,7 @@ Hearth — AI-native property management app for independent landlords. npm-work
 - `docs/FEATURES.md` — inventory of what is already implemented (check before building "new" features)
 - `docs/WHATS_NEXT.md` — prioritized roadmap of remaining work
 - `docs/property-app-deployment-plan.md` — deployment architecture as shipped; `docs/ACCOUNT_SETUP.md` — how the provider accounts are wired
+- `docs/MOBILE.md` — iOS Capacitor shell + APNs push (version-skew policy and APNS_ENV warning are binding)
 
 ## Production
 

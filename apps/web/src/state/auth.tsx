@@ -15,6 +15,7 @@ import type { Session } from '@supabase/supabase-js';
 import { api } from '../api/client';
 import { clearPendingConsentVersion, peekPendingConsentVersion } from '../lib/consent';
 import { authEnabled, supabase } from '../lib/supabase';
+import { unregisterPush } from '../native/push';
 import { Login } from '../pages/Login';
 
 /** Fires the consent-capture call left pending by Login.tsx's signup flow
@@ -98,6 +99,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       endRecovery: () => setRecovering(false),
       signOut: async () => {
         setRecovering(false);
+        // Before the session goes away — the device DELETE needs the bearer
+        // token. No-op in plain browsers, best-effort in the iOS shell.
+        await unregisterPush();
         await supabase?.auth.signOut();
       },
     }),

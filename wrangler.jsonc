@@ -10,7 +10,11 @@
 //   DATABASE_URL, SUPABASE_URL, ANTHROPIC_API_KEY, CRON_SECRET,
 //   PLAID_CLIENT_ID, PLAID_SECRET, PLAID_ENV, INTEGRATION_ENCRYPTION_KEY
 //   (Plaid is optional — the app falls back to a mock adapter until all
-//   four are set; account setup §6)
+//   four are set; account setup §6),
+//   APNS_TEAM_ID, APNS_KEY_ID, APNS_PRIVATE_KEY, APNS_BUNDLE_ID, APNS_ENV
+//   (APNs push is optional too — mock provider until all are set; APNS_ENV
+//   must match the install channel: sandbox = Xcode run, production =
+//   TestFlight. docs/MOBILE.md)
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "hearth",

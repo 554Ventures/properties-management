@@ -41,7 +41,7 @@ Interfaces in `apps/api/src/integrations/types.ts`; each swap is one adapter imp
 
 - [ ] Tenant portal (pay rent, maintenance requests, view/sign lease) — data model is already shaped for it (PRD §11).
 - [ ] Multi-user teams/roles (`Membership` table attaches to `Account` without reshaping).
-- [ ] Native mobile (v1 responsive web covers the wireframes' mobile layouts).
+- [~] Native mobile: iOS Capacitor shell shipped 2026-07-11 (`apps/mobile`, remote-URL mode) with APNs push (rent received + daily warning insights), camera receipt capture, and Face ID lock — see `docs/MOBILE.md`. Remaining: the manual Apple steps (identifier + APNs key + first device install, MOBILE.md checklist), Android if ever needed.
 - [ ] Custom report builder if "Ask AI to build a report" usage shows recurring unmet patterns.
 
 ## 5. Polish / engineering hygiene

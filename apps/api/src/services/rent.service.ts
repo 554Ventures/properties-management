@@ -22,9 +22,11 @@ import {
 import { NotFoundError, BadRequestError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { isUniqueConstraintError } from '../lib/prisma-errors';
+import { formatUsd } from '@hearth/shared';
 import { mockEmail } from '../integrations/mock/mock-email';
 import { mockStripe } from '../integrations/mock/mock-stripe';
 import { writeAudit, type AuditActor } from './audit.service';
+import { notifyAccount } from './push.service';
 
 export function toApiRentPayment(p: DbRentPayment): RentPayment {
   return {
@@ -347,6 +349,12 @@ export async function recordPayment(
     entityType: 'rent_payment',
     entityId: updated.id,
     detail: { period: input.period, amountCents: input.amountCents, method: input.method },
+  });
+  // Landlord push notification — never throws, must not fail the payment.
+  await notifyAccount(accountId, {
+    title: 'Rent received',
+    body: `${tenantName} paid ${formatUsd(input.amountCents)} for ${input.period}`,
+    deepLink: '/rent',
   });
   return toApiRentPayment(updated);
 }

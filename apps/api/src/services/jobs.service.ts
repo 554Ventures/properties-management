@@ -8,6 +8,7 @@ import { addMonthsToPeriod, currentPeriod, monthStart } from '../lib/dates';
 import { prisma } from '../lib/prisma';
 import { processScheduledDeletions } from './account.service';
 import * as insightService from './insight.service';
+import { notifyAccount } from './push.service';
 
 export interface DailyJobsResult {
   accountsProcessed: number;
@@ -39,7 +40,18 @@ export async function runDailyJobs(): Promise<DailyJobsResult> {
         await insightService.generateMonthlyReview(accountId, period);
         result.monthlyReviewsCreated += 1;
       }
-      result.insightsCreated += (await insightService.generateInsights(accountId)).length;
+      const newInsights = await insightService.generateInsights(accountId);
+      result.insightsCreated += newInsights.length;
+      // Push only fresh warnings (late rent, expense spike) to the landlord's
+      // devices — info/positive would be noise. dedupeKey guarantees an
+      // insight is "new" at most once, so repeats can't re-notify.
+      for (const insight of newInsights.filter((i) => i.severity === 'warning')) {
+        await notifyAccount(accountId, {
+          title: insight.title,
+          body: insight.body,
+          deepLink: insight.actionTarget ?? '/',
+        });
+      }
     } catch (err) {
       result.errors.push({
         accountId,

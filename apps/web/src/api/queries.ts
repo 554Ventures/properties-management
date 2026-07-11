@@ -48,6 +48,7 @@ import type {
   LogContractorJobResponse,
   Property,
   PropertyDetailResponse,
+  PushDevice,
   PropertyNoiResponse,
   PropertyWithStats,
   ReceiptScanResponse,
@@ -796,6 +797,16 @@ export function useIntegrations() {
     queryKey: ['integrations'],
     queryFn: () => api.get<Integration[]>('/integrations'),
     staleTime: STALE_SHORT,
+  });
+}
+
+/** Registered push devices — fetched only in the iOS shell (Settings card). */
+export function usePushDevices(enabled = true) {
+  return useQuery({
+    queryKey: ['devices'],
+    queryFn: () => api.get<PushDevice[]>('/devices'),
+    staleTime: STALE_SHORT,
+    enabled,
   });
 }
 

@@ -79,6 +79,10 @@ export const DocumentEntityTypeSchema = z.enum([
 ]);
 export type DocumentEntityType = z.infer<typeof DocumentEntityTypeSchema>;
 
+// iOS-only for now (Phase 2 mobile shell); android joins here when it ships.
+export const PushPlatformSchema = z.enum(['ios']);
+export type PushPlatform = z.infer<typeof PushPlatformSchema>;
+
 export const DocumentTypeSchema = z.enum([
   'lease',
   'insurance',
