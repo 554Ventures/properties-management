@@ -7,8 +7,9 @@ AI-native property management for independent landlords (4–15 properties). See
 | Path | What it is |
 |---|---|
 | `packages/shared` | Zod schemas + TypeScript types — the API contract, consumed by both api and web |
-| `apps/api` | Fastify REST API, Prisma (SQLite dev), service layer, AI chat agent, MCP server entrypoint |
+| `apps/api` | Fastify REST API, Prisma/Postgres (embedded Postgres for dev/tests), service layer, AI chat agent, MCP server entrypoint |
 | `apps/web` | React + Vite + Tailwind frontend |
+| `apps/mobile` | iOS Capacitor shell (remote-URL mode — loads the deployed web app; [docs/MOBILE.md](docs/MOBILE.md)) |
 
 ## Getting started
 

@@ -8,7 +8,7 @@ Workspace-specific rules; the root CLAUDE.md and `docs/ARCHITECTURE.md` govern o
 - `src/routes/` — thin Fastify handlers; validate with `@hearth/shared` schemas via `plugins/zod-validation.ts`
 - `src/ai/` — agent loop, tool registry (`tools.ts` — shared with MCP), Anthropic + mock clients, scripts
 - `src/mcp/` — stdio MCP entrypoint wrapping `ai/tools.ts` (`createMcpServer({accountId, allowWrites})` for tests)
-- `src/integrations/` — adapter interfaces + mock impls (Plaid/Stripe/Docusign/email); real impls replace mocks 1:1
+- `src/integrations/` — adapter interfaces + mock impls (Plaid/Stripe/Docusign/email/push); real impls replace mocks 1:1 — Plaid, storage, and APNs push already have real adapters, selected in `factory.ts` when their env vars are all set. `push.service.notifyAccount` must never throw (a push failure can't fail the write that triggered it); prune device rows on `unregistered` results only.
 - `prisma/seed.ts` + `prisma/seed-constants.ts` — the demo portfolio; tests assert these exact numbers
 - `scripts/` — embedded-Postgres lifecycle (`pg.ts` helpers, `dev-postgres.ts` = db:serve, `db-setup.ts`, `wait-for-db.ts`); dev data lives in `prisma/pgdata` (gitignored)
 

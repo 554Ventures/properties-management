@@ -25,6 +25,8 @@
 
 Settings gains an iOS-only "Mobile app" card (Face ID toggle — enabling authenticates first so you can't lock yourself out — and push status from `GET /devices` with a re-enable button). In the shell, the Supabase session store is backed by `@capacitor/preferences` (native UserDefaults) so WKWebView storage eviction can't sign you out.
 
+**Safe areas:** the shell's WKWebView is edge-to-edge (under the status bar and home indicator). `apps/web/index.html` sets `viewport-fit=cover` — required for `env(safe-area-inset-*)` to be non-zero — and the web app pads `body` (top/left/right) plus every fixed/sticky element (tab bar, chat drawer/launcher, toasts, skip link) with the insets. New fixed-position UI must do the same; the insets are 0 in regular browsers, so this costs nothing on the web.
+
 **Push backend**: `PushDevice` model (account-scoped, token-unique), `POST/GET/DELETE /api/v1/devices`, `push.service.notifyAccount()` (never throws; prunes tokens APNs reports unregistered). Triggers: rent payment recorded → "Rent received"; daily 9am cron → each *newly created* `warning` insight. Adapter: `integrations/real/real-apns.ts` — ES256 provider JWT via `jose` (cached ~50 min) + raw `node:http2`; mock provider (`integrations/mock/mock-push.ts`) whenever `APNS_*` env is incomplete.
 
 ## Version-skew policy (binding)
