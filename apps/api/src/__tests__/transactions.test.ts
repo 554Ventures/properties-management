@@ -7,6 +7,7 @@ import FormData from 'form-data';
 import {
   ApiErrorSchema,
   ConfirmAllReviewResponseSchema,
+  CreateTransactionResponseSchema,
   DismissAllReviewResponseSchema,
   ImportTransactionsResponseSchema,
   ReceiptScanResponseSchema,
@@ -411,6 +412,167 @@ describe('POST /transactions/:id/confirm with rentPaymentId', () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().error.message).toMatch(/income/);
+  });
+});
+
+// ── manual-income rent reconciliation (the non-bank path) ────────────────────
+
+describe('POST /transactions — manual income rent match and linked-row guard', () => {
+  let accountId: string;
+  // The rent-linked ledger row created below; later tests assert its edit guard.
+  let linkedTxnId: string;
+
+  beforeAll(async () => {
+    accountId = await getDemoAccountId();
+  });
+
+  afterAll(async () => {
+    // Restore the seeded state: Okafor stays late for other test files.
+    const payment = await okaforPayment();
+    await prisma.rentPayment.update({
+      where: { id: payment.id },
+      data: {
+        status: 'due',
+        method: null,
+        paidAt: null,
+        transactionId: null,
+        amountCents: OKAFOR_RENT_CENTS,
+      },
+    });
+    await prisma.auditLog.deleteMany({
+      where: { accountId, entityId: { in: [...createdIds, payment.id] } },
+    });
+  });
+
+  it('rejects linking a transaction whose amount differs from the rent due', async () => {
+    const payment = await okaforPayment();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/transactions',
+      payload: {
+        date: iso(new Date()),
+        amountCents: OKAFOR_RENT_CENTS - 100,
+        type: 'income',
+        description: 'TEST short check from Okafor',
+      },
+    });
+    const short = CreateTransactionResponseSchema.parse(res.json());
+    createdIds.push(short.id);
+
+    const confirmRes = await app.inject({
+      method: 'POST',
+      url: `/api/v1/transactions/${short.id}/confirm`,
+      payload: { rentPaymentId: payment.id },
+    });
+    expect(confirmRes.statusCode).toBe(400);
+    expect(confirmRes.json().error.message).toMatch(/doesn't match/);
+
+    const untouched = await prisma.rentPayment.findUniqueOrThrow({ where: { id: payment.id } });
+    expect(untouched.status).toBe('due');
+    expect(untouched.amountCents).toBe(OKAFOR_RENT_CENTS);
+  });
+
+  it('surfaces the rent match on a manual income entry and links it as method=manual', async () => {
+    const payment = await okaforPayment();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/transactions',
+      payload: {
+        date: iso(new Date()),
+        amountCents: OKAFOR_RENT_CENTS,
+        type: 'income',
+        description: 'TEST check from Okafor',
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    const txn = CreateTransactionResponseSchema.parse(res.json());
+    createdIds.push(txn.id);
+    linkedTxnId = txn.id;
+    expect(txn.rentMatch).toMatchObject({
+      rentPaymentId: payment.id,
+      tenantName: OKAFOR_NAME,
+      amountCents: OKAFOR_RENT_CENTS,
+      period: currentPeriod(),
+    });
+
+    const confirmRes = await app.inject({
+      method: 'POST',
+      url: `/api/v1/transactions/${txn.id}/confirm`,
+      payload: { rentPaymentId: payment.id },
+    });
+    expect(confirmRes.statusCode).toBe(200);
+
+    const linked = await prisma.rentPayment.findUniqueOrThrow({ where: { id: payment.id } });
+    expect(linked.status).toBe('paid');
+    expect(linked.method).toBe('manual'); // manual entry, not a bank deposit
+    expect(linked.transactionId).toBe(txn.id);
+    expect(linked.amountCents).toBe(OKAFOR_RENT_CENTS); // charge never overwritten
+
+    const rentAudit = await prisma.auditLog.findFirst({
+      where: { accountId, action: 'rent_payment.recorded', entityId: payment.id },
+    });
+    expect(JSON.parse(rentAudit!.detailJson!)).toMatchObject({
+      method: 'manual',
+      via: 'transaction_link',
+    });
+  });
+
+  it('returns no rent match for expenses or amounts that match nothing', async () => {
+    const expenseRes = await app.inject({
+      method: 'POST',
+      url: '/api/v1/transactions',
+      payload: {
+        date: iso(new Date()),
+        amountCents: OKAFOR_RENT_CENTS,
+        type: 'expense',
+        description: 'TEST expense, not rent',
+      },
+    });
+    const expense = CreateTransactionResponseSchema.parse(expenseRes.json());
+    createdIds.push(expense.id);
+    expect(expense.rentMatch).toBeNull();
+
+    const oddRes = await app.inject({
+      method: 'POST',
+      url: '/api/v1/transactions',
+      payload: {
+        date: iso(new Date()),
+        amountCents: 7777700, // no lease rents this
+        type: 'income',
+        description: 'TEST unmatched income',
+      },
+    });
+    const odd = CreateTransactionResponseSchema.parse(oddRes.json());
+    createdIds.push(odd.id);
+    expect(odd.rentMatch).toBeNull();
+  });
+
+  it('blocks amount/date/type edits on the rent-linked row but allows category changes', async () => {
+    for (const payload of [
+      { amountCents: OKAFOR_RENT_CENTS + 100 },
+      { date: iso(addDays(new Date(), -3)) },
+      { type: 'expense' },
+    ]) {
+      const res = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/transactions/${linkedTxnId}`,
+        payload,
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error.message).toMatch(/backs the recorded rent payment/);
+    }
+
+    // Unchanged values and unlinked fields still go through.
+    const rentCategory = await prisma.category.findFirst({
+      where: { name: 'Rent', type: 'income', isSystem: true },
+    });
+    const okRes = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/transactions/${linkedTxnId}`,
+      payload: { amountCents: OKAFOR_RENT_CENTS, categoryId: rentCategory?.id },
+    });
+    expect(okRes.statusCode).toBe(200);
+    expect(TransactionSchema.parse(okRes.json()).categoryId).toBe(rentCategory?.id);
   });
 });
 

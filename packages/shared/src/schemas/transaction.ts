@@ -100,6 +100,15 @@ export const RentMatchSuggestionSchema = z.object({
   confidence: z.number().min(0).max(1),
 });
 
+// POST /transactions response — the created row plus, for a confirmed income
+// entry, the same heuristic rent match the review queue computes: manual rent
+// logging otherwise bypasses the tracker entirely, leaving the unit "due" and
+// inviting a second (double-counted) ledger row when it's later marked paid.
+// Linking stays an explicit user action via POST /transactions/:id/confirm.
+export const CreateTransactionResponseSchema = TransactionSchema.extend({
+  rentMatch: RentMatchSuggestionSchema.nullable(),
+});
+
 // GET /transactions/review — pending_review items with their suggestion
 // resolved to a display name.
 export const ReviewQueueItemSchema = TransactionSchema.extend({

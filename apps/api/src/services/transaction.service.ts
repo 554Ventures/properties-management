@@ -2,6 +2,7 @@ import type {
   ConfirmAllReviewResponse,
   ConfirmTransactionInput,
   CreateTransactionInput,
+  CreateTransactionResponse,
   DismissAllReviewResponse,
   ImportTransactionsResponse,
   ReceiptScanResponse,
@@ -18,6 +19,7 @@ import type {
   UpdateTransactionInput,
 } from '@hearth/shared';
 import type { Prisma, Transaction as DbTransaction } from '@prisma/client';
+import { formatUsd } from '@hearth/shared';
 import { createPlaidAdapter, isRealPlaidConfigured } from '../integrations/factory';
 import type { PlaidBankTransaction } from '../integrations/types';
 import { addDays, currentPeriod, iso, periodOf } from '../lib/dates';
@@ -173,7 +175,7 @@ export async function create(
   accountId: string,
   input: CreateTransactionInput,
   opts: { source?: TransactionSource; status?: TransactionStatus; actor?: AuditActor } = {},
-): Promise<Transaction> {
+): Promise<CreateTransactionResponse> {
   let aiSuggestedCategoryId: string | null = null;
   let aiConfidence: number | null = null;
   if (!input.categoryId) {
@@ -212,7 +214,15 @@ export async function create(
     entityId: row.id,
     detail: { amountCents: row.amountCents, type: row.type, source: row.source },
   });
-  return toApiTransaction(row);
+  // Manually logged rent otherwise never reaches the tracker (rent matching
+  // only ran on the pending_review queue): the unit stays "due" and a later
+  // mark-paid would create a second, double-counted ledger row. Surface the
+  // same heuristic match so the caller can offer an explicit link.
+  const rentMatch =
+    row.type === 'income' && row.status === 'confirmed'
+      ? ((await computeRentMatches(accountId, [row])).get(row.id) ?? null)
+      : null;
+  return { ...toApiTransaction(row), rentMatch };
 }
 
 async function getOwned(accountId: string, id: string): Promise<DbTransaction> {
@@ -228,6 +238,22 @@ export async function update(
   actor: AuditActor = 'user',
 ): Promise<Transaction> {
   const prior = await getOwned(accountId, id);
+  // Same desync remove() blocks below: this ledger row may back a `paid`
+  // RentPayment, whose amountCents/paidAt would silently stop matching (and a
+  // type flip would erase the rent from reports while the tracker shows paid).
+  // Category/property/unit edits don't touch the link and stay allowed.
+  const changesLinkedFields =
+    (input.amountCents !== undefined && input.amountCents !== prior.amountCents) ||
+    (input.date !== undefined && new Date(input.date).getTime() !== prior.date.getTime()) ||
+    (input.type !== undefined && input.type !== prior.type);
+  if (changesLinkedFields) {
+    const linkedPayment = await prisma.rentPayment.findUnique({ where: { transactionId: id } });
+    if (linkedPayment) {
+      throw new BadRequestError(
+        `this transaction backs the recorded rent payment for ${linkedPayment.period} — its amount, date, and type can't be changed`,
+      );
+    }
+  }
   const row = await prisma.transaction.update({
     where: { id },
     data: {
@@ -450,9 +476,22 @@ async function confirmWithRentLink(
     include: { lease: { include: { unit: true } } },
   });
   if (!payment) throw new NotFoundError('rent payment', rentPaymentId);
+  // The heuristic only ever suggests exact-amount matches, but the endpoint
+  // accepts any rentPaymentId — a mismatched link would mark a partial (or
+  // unrelated) deposit as rent paid in full. Mirrors recordPayment's guard.
+  if (existing.amountCents !== payment.amountCents) {
+    throw new BadRequestError(
+      `transaction of ${formatUsd(existing.amountCents)} doesn't match the ${formatUsd(payment.amountCents)} due for ${payment.period} — only an exact-amount transaction can be linked to a rent payment`,
+    );
+  }
+  // Scoped like suggestCategory: never pick up another account's custom "Rent".
   const rentCategory = await prisma.category.findFirst({
-    where: { name: 'Rent', type: 'income' },
+    where: { name: 'Rent', type: 'income', OR: [{ isSystem: true }, { accountId }] },
+    orderBy: { isSystem: 'desc' },
   });
+  // Bank deposits link with method 'bank'; a manually logged income row that
+  // matched an expected rent links as 'manual'.
+  const method = existing.source === 'bank' ? 'bank' : 'manual';
 
   // Confirm + link commit or roll back together; the status re-check inside
   // the transaction makes the double-pay guard hold under concurrent requests
@@ -475,9 +514,8 @@ async function confirmWithRentLink(
       where: { id: payment.id },
       data: {
         status: 'paid',
-        method: 'bank',
+        method,
         paidAt: existing.date,
-        amountCents: existing.amountCents,
         transactionId: existing.id,
       },
     });
@@ -501,8 +539,8 @@ async function confirmWithRentLink(
     detail: {
       period: updatedPayment.period,
       amountCents: updatedPayment.amountCents,
-      method: 'bank',
-      via: 'bank_import',
+      method,
+      via: existing.source === 'bank' ? 'bank_import' : 'transaction_link',
     },
   });
   return toApiTransaction(row);
