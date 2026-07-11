@@ -28,6 +28,13 @@ export class HearthApi extends Container<Env> {
     INTEGRATION_ENCRYPTION_KEY: secrets.INTEGRATION_ENCRYPTION_KEY,
     SUPABASE_SERVICE_ROLE_KEY: secrets.SUPABASE_SERVICE_ROLE_KEY,
     SUPABASE_STORAGE_BUCKET: secrets.SUPABASE_STORAGE_BUCKET,
+    // APNs push (docs/MOBILE.md) — all five forwarded together, else the API
+    // falls back to the mock push provider (integrations/factory.ts).
+    APNS_TEAM_ID: secrets.APNS_TEAM_ID,
+    APNS_KEY_ID: secrets.APNS_KEY_ID,
+    APNS_PRIVATE_KEY: secrets.APNS_PRIVATE_KEY,
+    APNS_BUNDLE_ID: secrets.APNS_BUNDLE_ID,
+    APNS_ENV: secrets.APNS_ENV,
   };
 }
 
@@ -44,6 +51,11 @@ interface Env {
   INTEGRATION_ENCRYPTION_KEY: string;
   SUPABASE_SERVICE_ROLE_KEY: string;
   SUPABASE_STORAGE_BUCKET: string;
+  APNS_TEAM_ID: string;
+  APNS_KEY_ID: string;
+  APNS_PRIVATE_KEY: string;
+  APNS_BUNDLE_ID: string;
+  APNS_ENV: string;
 }
 
 export default {

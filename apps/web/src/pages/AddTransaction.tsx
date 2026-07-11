@@ -21,6 +21,8 @@ import { useToast } from '../components/ui/Toast';
 import { IconUpload } from '../components/ui/icons';
 import { cx } from '../lib/cx';
 import { usePageTitle } from '../lib/usePageTitle';
+import { capturePhoto } from '../native/camera';
+import { isNativeApp } from '../native/platform';
 
 function todayInputValue(): string {
   const now = new Date();
@@ -176,14 +178,29 @@ export function AddTransaction() {
             Drag a receipt photo here — Roost reads the vendor, amount, and date and pre-fills the
             form. Nothing is saved until you hit Save.
           </p>
-          <Button
-            variant="secondary"
-            size="sm"
-            busy={scan.isPending}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            Choose an image
-          </Button>
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              busy={scan.isPending}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              Choose an image
+            </Button>
+            {isNativeApp() && (
+              <Button
+                variant="secondary"
+                size="sm"
+                busy={scan.isPending}
+                onClick={() => {
+                  // Null = the user cancelled the camera — nothing to scan.
+                  void capturePhoto().then((file) => file && handleFile(file));
+                }}
+              >
+                Take a photo
+              </Button>
+            )}
+          </div>
           <input
             ref={fileInputRef}
             type="file"

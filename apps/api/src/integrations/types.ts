@@ -56,6 +56,24 @@ export interface StorageAdapter {
   delete(key: string): Promise<void>;
 }
 
+export interface PushMessage {
+  title: string;
+  body: string;
+  /** In-app route the notification tap should open, e.g. "/rent". */
+  deepLink?: string;
+}
+
+export interface PushSendResult {
+  ok: boolean;
+  /** APNs said the token is gone (410/BadDeviceToken/Unregistered) — delete the row. */
+  unregistered?: boolean;
+  reason?: string;
+}
+
+export interface PushProvider {
+  send(deviceToken: string, message: PushMessage): Promise<PushSendResult>;
+}
+
 export interface EmailMessage {
   to: string;
   subject: string;

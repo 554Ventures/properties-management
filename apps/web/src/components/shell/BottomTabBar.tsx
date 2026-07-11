@@ -44,7 +44,7 @@ export function BottomTabBar() {
     <>
       <nav
         aria-label="Main menu"
-        className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-surface pb-[env(safe-area-inset-bottom)] md:hidden"
+        className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-surface pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] md:hidden"
       >
         <ul className="flex items-stretch justify-around">
           <TabLink item={primaryTabs[0]!} />

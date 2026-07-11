@@ -21,7 +21,7 @@ Complete inventory of what Hearth v1 does today (as of 2026-07-03). Companion to
 | `/reports/:id` | Report viewer (§5.6) | Accessible data tables, CSV/PDF export, email-accountant modal, tax disclaimer footer. |
 | `/insights` | AI Insights (§5.7) | Latest auto-generated monthly review (bottom line, net-cashflow chart, by-property, watch items — all inside the AI surface), archive of past reviews, dev "Generate now", PDF/email actions. |
 | `/settings` | Settings (§5.9) | Account (name/email/tax rate/timezone); integrations connect/disconnect — Plaid is a real Sandbox Link flow when `PLAID_CLIENT_ID`/`PLAID_SECRET`/`INTEGRATION_ENCRYPTION_KEY` are set (mock otherwise), Stripe/Docusign/email still mock; all 4 types always shown, even for a fresh account with no rows yet; MCP access copy. |
-| — | Responsive shell (§5.8) | Left nav ↔ bottom tab bar (<md), breadcrumbs ↔ back-arrow, chat drawer full-screen on mobile; dark mode; reduced-motion honored everywhere. |
+| — | Responsive shell (§5.8) | Left nav ↔ bottom tab bar (<md); on mobile the tab bar shows Home/Money/Add/Rent + a **"More"** tab whose focus-trapped bottom sheet reaches every remaining destination (+ Settings/Sign out), so nothing in the desktop sidebar is unreachable. Both surfaces derive from one shared `navItems` list. Breadcrumbs ↔ back-arrow, chat drawer full-screen on mobile; dark mode; reduced-motion honored everywhere. |
 
 ## AI assistant (PRD §9)
 
@@ -64,6 +64,14 @@ Complete inventory of what Hearth v1 does today (as of 2026-07-03). Companion to
 - **Design tokens** (§6): terracotta brand, status roles ≥4.5:1, the violet AI-surface convention via a single `AiSurface` wrapper, chart palette by semantic role, motion tokens with global reduced-motion override, dark mode.
 - **Security posture**: zod validation on every route, strict localhost CORS, size-capped receipt upload with an image mimetype allowlist and per-account scan rate limit, action-card API allowlist (email/settings/mutating-verb paths refused with visible notice), MCP write gating, no secrets in code.
 - **Tests**: 69 backend (incl. SSE protocol, pause/resume across restart, MCP in-process client, audit attribution, full-CRUD archive/lifecycle + archived-money treatment, Supabase-mode auth + cron endpoint, rate limiting + usage logging) + 74 frontend (incl. axe smoke over all block types + all CRUD modals + Login, allowlist, answer-failure recovery, date-input UTC round-trip) — all green; `npm run build` clean.
+
+## Mobile — iOS shell (docs/MOBILE.md) — *added 2026-07-11*
+
+- **`apps/mobile`**: Capacitor 8 iOS shell in **remote-URL mode** (WKWebView loads https://app.554properties.com — every web deploy updates the app instantly; shell rebuilds only on `@capacitor/*` bumps, exact-pinned identically in `apps/web`). Bundle id `com.properties554.hearth` (Capacitor CLI rejects digit-leading segments, so not `com.554properties.*`).
+- **Push notifications**: `PushDevice` model + `POST/GET/DELETE /api/v1/devices`; APNs adapter (`jose` ES256 provider JWT + `node:http2`, mock provider until `APNS_*` env set); triggers — rent payment recorded → "Rent received", daily cron → newly created `warning` insights; unregistered tokens pruned; registration is a relaunch-idempotent upsert; sign-out deletes the device row.
+- **Camera receipt capture**: "Take a photo" on Add transaction (native only) feeding the existing scan path — no backend change.
+- **Face ID lock**: opt-in via Settings' iOS-only "Mobile app" card (enabling authenticates first); full-screen gate on launch and on returning from background; visible-text failure state; axe-tested.
+- **Hardening**: Supabase session storage backed by `@capacitor/preferences` in the shell (survives WKWebView storage eviction); all native calls dynamic-imported behind `isNativeApp()` and try/catch-guarded (version-skew no-ops).
 
 ## Explicitly NOT implemented (see WHATS_NEXT.md)
 

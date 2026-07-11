@@ -76,7 +76,7 @@ export function ToastViewport() {
     <div
       role="status"
       aria-live="polite"
-      className="fixed bottom-20 right-4 z-[60] flex w-full max-w-xs flex-col gap-2 md:bottom-4"
+      className="fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-4 z-[60] flex w-full max-w-xs flex-col gap-2 md:bottom-4"
     >
       {ctx.toasts.map((t) => {
         const { icon: Icon, accent } = toneStyles[t.tone];

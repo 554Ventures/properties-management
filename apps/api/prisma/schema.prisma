@@ -54,6 +54,7 @@ model Account {
   users        User[]
   documents    Document[]
   contractors  Contractor[]
+  pushDevices  PushDevice[]
 }
 
 // Auth principal → Account mapping (deployment plan §4.1). One row per
@@ -335,6 +336,23 @@ model Integration {
   configJson  String    @default("{}") // provider-specific config, e.g. Plaid { accessTokenEncrypted, itemId, cursor }
   lastSyncedAt DateTime? // plaid: last transaction import (display + import cooldown)
   createdAt   DateTime  @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+}
+
+// A device registered for push notifications (Phase 2 iOS shell). No userId —
+// account is the tenancy boundary, matching every other model. Tokens are
+// APNs device tokens; re-registering an existing token reassigns it to the
+// authenticated account and bumps lastSeenAt (upsert in push.service).
+model PushDevice {
+  id         String   @id @default(cuid())
+  accountId  String
+  platform   String   // PushPlatform (@hearth/shared): ios
+  token      String   @unique // APNs device token
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
 
   account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
 

@@ -64,7 +64,7 @@
 │   │       │   └── resources.ts
 │   │       ├── lib/              # prisma.ts (singleton), dates.ts (period math), csv.ts, pdf.ts
 │   │       └── __tests__/        # vitest: services/*.test.ts, routes/*.test.ts, agent-loop.test.ts
-│   └── web/
+│   ├── web/
 │       ├── package.json          # name: @hearth/web
 │       ├── index.html  vite.config.ts  tailwind.config.ts
 │       └── src/
@@ -79,9 +79,15 @@
 │           │   └── chat/         # ChatDrawer, ChatTranscript, ChatComposer, blocks/
 │           │                     #   TextBlock, ChartBlock, DataTableBlock, ActionCardBlock,
 │           │                     #   AskUserQuestionBlock
+│           ├── native/           # iOS-shell integration (docs/MOBILE.md): platform.ts (isNativeApp),
+│           │                     #   push.ts, camera.ts, biometric.ts + BiometricGate, NativeBridge
 │           └── pages/            # Dashboard, PropertiesList, PropertyDetail, TenantsList,
 │                                 #   TenantDetail, Money, MoneyReview, AddTransaction, RentTracker,
 │                                 #   Reports, ReportViewer, Insights, Settings
+│   └── mobile/                   # name: @hearth/mobile — Capacitor iOS shell, remote-URL mode
+│       ├── capacitor.config.ts   # server.url → https://app.554properties.com (CAP_SERVER_URL for LAN dev)
+│       ├── www/index.html        # placeholder only (never served in remote-URL mode)
+│       └── ios/                  # committed Xcode project (SPM plugins; docs/MOBILE.md)
 ```
 
 ---

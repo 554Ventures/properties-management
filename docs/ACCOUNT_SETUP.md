@@ -144,6 +144,15 @@ Real Sandbox bank-transaction import (`docs/WHATS_NEXT.md` §3). Optional — th
 4. To test: Settings → Connect on the Plaid row → pick any Sandbox institution → log in with Plaid's test credentials (`user_good` / `pass_good`, any Sandbox-supported institution) → Money → "Import from bank" (a second click a little later may be needed — Plaid's first sync after linking commonly returns 0 rows while it finishes its initial pull).
 5. Moving to Production later is a values-only swap: new `PLAID_CLIENT_ID`/`PLAID_SECRET` from Plaid's Production keys (after their review) + `PLAID_ENV=production`. `INTEGRATION_ENCRYPTION_KEY` stays the same.
 
+## 7. Apple Developer (iOS app + push) — *added 2026-07-11*
+
+For the `apps/mobile` Capacitor shell (`docs/MOBILE.md` has the full checklist + APNS_ENV warning). Requires the paid Apple Developer Program.
+
+1. developer.apple.com → Identifiers → register **`com.properties554.hearth`** with the Push Notifications capability.
+2. Keys → create an **APNs Auth Key**; download the `.p8` (one-time!), note the Key ID. 📋 collect `APNS_TEAM_ID` (top-right of the developer portal), `APNS_KEY_ID`, `APNS_PRIVATE_KEY` (the `.p8` contents, `\n`-escaped for env), `APNS_BUNDLE_ID=com.properties554.hearth`.
+3. `APNS_ENV`: `sandbox` for Xcode-run installs, `production` for TestFlight — must match the install channel or valid device tokens get pruned.
+4. `npx wrangler secret put` all five; record in `.secrets.local`. Unset = the API uses the mock push provider (boot warning if partially set).
+
 ## Values you should have collected
 
 | # | Value | Goes to |

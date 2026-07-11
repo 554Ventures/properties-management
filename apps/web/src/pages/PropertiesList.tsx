@@ -16,7 +16,8 @@ import { DataTable, type DataTableColumn } from '../components/ui/DataTable';
 import { Skeleton } from '../components/ui/Skeleton';
 import { StatusBadge, type BadgeTone } from '../components/ui/StatusBadge';
 import { useToast } from '../components/ui/Toast';
-import { IconBuilding, IconPlus } from '../components/ui/icons';
+import { RowActions } from '../components/ui/RowActions';
+import { IconArchive, IconBuilding, IconPencil, IconPlus } from '../components/ui/icons';
 import { usePageTitle } from '../lib/usePageTitle';
 
 function statusTone(label: string): BadgeTone {
@@ -93,14 +94,13 @@ export function PropertiesList() {
       align: 'right',
       stickyRight: true,
       cell: (p) => (
-        <div className="flex justify-end gap-1">
-          <Button variant="ghost" size="sm" onClick={() => setEditing(p)}>
-            Edit
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => setArchiving(p)}>
-            Archive
-          </Button>
-        </div>
+        <RowActions
+          context={p.nickname ?? p.addressLine1}
+          actions={[
+            { label: 'Edit', icon: <IconPencil size={14} />, onClick: () => setEditing(p) },
+            { label: 'Archive', icon: <IconArchive size={14} />, onClick: () => setArchiving(p) },
+          ]}
+        />
       ),
     },
   ];

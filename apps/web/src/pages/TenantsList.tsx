@@ -17,6 +17,7 @@ import { LiveRegion } from '../components/ui/LiveRegion';
 import { Skeleton } from '../components/ui/Skeleton';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { useToast } from '../components/ui/Toast';
+import { RowActions } from '../components/ui/RowActions';
 import { IconBell, IconPlus, IconUsers } from '../components/ui/icons';
 import { currentPeriod, formatDate } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
@@ -139,15 +140,18 @@ export function TenantsList() {
       cell: (row) => {
         const late = lateByTenant.get(row.id);
         return row.status === 'late' && late ? (
-          <Button
-            variant="secondary"
-            size="sm"
-            busy={remind.isPending}
-            onClick={() => sendReminder(row)}
-          >
-            <IconBell size={12} />
-            Remind
-          </Button>
+          <RowActions
+            context={row.fullName}
+            actions={[
+              {
+                label: 'Remind',
+                icon: <IconBell size={12} />,
+                variant: 'secondary',
+                busy: remind.isPending,
+                onClick: () => sendReminder(row),
+              },
+            ]}
+          />
         ) : null;
       },
     },

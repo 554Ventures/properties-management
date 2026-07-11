@@ -1,5 +1,6 @@
 import { createBrowserRouter, Navigate } from 'react-router-dom';
 import { AppShell } from './components/shell/AppShell';
+import { NativeBridge } from './native/NativeBridge';
 import { AddTransaction } from './pages/AddTransaction';
 import { ContractorDetail } from './pages/ContractorDetail';
 import { ContractorsPage } from './pages/ContractorsPage';
@@ -36,6 +37,10 @@ export const router = createBrowserRouter([
     path: '/',
     element: (
       <AuthGate>
+        {/* Inside AuthGate so push registration runs with a session; inside
+            the router so notification deep links can navigate. Renders null
+            in plain browsers. */}
+        <NativeBridge />
         <AppShell />
       </AuthGate>
     ),

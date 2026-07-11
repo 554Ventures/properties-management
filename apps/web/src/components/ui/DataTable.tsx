@@ -28,6 +28,8 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { cx } from '../../lib/cx';
+import { useMediaQuery } from '../../lib/useMediaQuery';
+import { BottomSheet } from './BottomSheet';
 import { Button } from './Button';
 import { Input } from './FormField';
 import { Table, Td, Th, Tr } from './Table';
@@ -532,6 +534,10 @@ interface FilterPopoverProps<Row> {
   onChange: (fv: FilterValue) => void;
 }
 
+// Fixed panel width (px) — sizing in JS lets the position clamp above know the
+// real width instead of duplicating a Tailwind class value.
+const FILTER_PANEL_WIDTH = 240;
+
 function FilterPopover<Row>({ label, filter, value, options, onChange }: FilterPopoverProps<Row>) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -539,15 +545,32 @@ function FilterPopover<Row>({ label, filter, value, options, onChange }: FilterP
   const panelId = useId();
   const active = filterActive(value);
 
+  // Below md an anchored popover is a poor fit (cramped, easily clipped) —
+  // the same controls render in the focus-trapped BottomSheet instead.
+  const isDesktop = useMediaQuery('(min-width: 768px)');
+
+  const close = () => {
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
   useLayoutEffect(() => {
-    if (!open) {
+    if (!open || !isDesktop) {
       setPos(null);
       return;
     }
     const update = () => {
       const r = triggerRef.current?.getBoundingClientRect();
-      if (r) setPos({ left: r.right, top: r.bottom + 4 });
+      if (!r) return;
+      // Right-align the panel to the trigger, clamped inside the viewport —
+      // on narrow screens the first column's trigger sits near the left edge
+      // and a naive right-alignment would push the panel off-screen.
+      const left = Math.max(
+        Math.min(r.right - FILTER_PANEL_WIDTH, window.innerWidth - FILTER_PANEL_WIDTH - 8),
+        8,
+      );
+      setPos({ left, top: r.bottom + 4 });
     };
     update();
     window.addEventListener('resize', update);
@@ -556,11 +579,13 @@ function FilterPopover<Row>({ label, filter, value, options, onChange }: FilterP
       window.removeEventListener('resize', update);
       window.removeEventListener('scroll', update, true);
     };
-  }, [open]);
+  }, [open, isDesktop]);
 
-  // Close on outside press or Escape; return focus to the trigger on Escape.
+  // Popover only: close on outside press or Escape; return focus to the
+  // trigger on Escape. (The BottomSheet's own backdrop + focus trap handle
+  // this on mobile — these listeners would eat taps inside the sheet.)
   useEffect(() => {
-    if (!open) return;
+    if (!open || !isDesktop) return;
     const onPointerDown = (e: PointerEvent) => {
       const t = e.target as Node;
       if (triggerRef.current?.contains(t) || panelRef.current?.contains(t)) return;
@@ -578,7 +603,7 @@ function FilterPopover<Row>({ label, filter, value, options, onChange }: FilterP
       document.removeEventListener('pointerdown', onPointerDown, true);
       document.removeEventListener('keydown', onKeyDown, true);
     };
-  }, [open]);
+  }, [open, isDesktop]);
 
   // Focus the first control when the panel opens.
   useEffect(() => {
@@ -591,36 +616,9 @@ function FilterPopover<Row>({ label, filter, value, options, onChange }: FilterP
     else onChange({ kind: 'number', min: '', max: '' });
   };
 
-  return (
+  // The filter controls, shared by both surfaces (desktop popover / mobile sheet).
+  const controls = (
     <>
-      <button
-        ref={triggerRef}
-        type="button"
-        aria-label={`Filter by ${label}${active ? ' (filtered)' : ''}`}
-        aria-expanded={open}
-        aria-haspopup="dialog"
-        aria-controls={open ? panelId : undefined}
-        onClick={() => setOpen((o) => !o)}
-        className={cx(
-          'inline-flex h-6 w-6 items-center justify-center rounded-sm transition-colors duration-fast hover:bg-surface-sunken focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand',
-          active ? 'text-brand' : 'text-ink-faint hover:text-ink-muted',
-        )}
-      >
-        <IconFilter size={13} />
-        {active && <span className="sr-only">Filtered</span>}
-      </button>
-
-      {open &&
-        pos &&
-        createPortal(
-          <div
-            ref={panelRef}
-            id={panelId}
-            role="dialog"
-            aria-label={`Filter by ${label}`}
-            style={{ position: 'fixed', top: pos.top, left: pos.left, transform: 'translateX(-100%)' }}
-            className="z-[60] w-60 rounded-md border border-border bg-surface p-3 text-left normal-case tracking-normal shadow-overlay"
-          >
             {filter.kind === 'text' && (
               <label className="flex flex-col gap-1.5 text-xs font-medium text-ink-muted">
                 Contains
@@ -727,17 +725,58 @@ function FilterPopover<Row>({ label, filter, value, options, onChange }: FilterP
               <Button variant="ghost" size="sm" disabled={!active} onClick={clear}>
                 Clear
               </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => {
-                  setOpen(false);
-                  triggerRef.current?.focus();
-                }}
-              >
+              <Button variant="secondary" size="sm" onClick={close}>
                 Done
               </Button>
             </div>
+    </>
+  );
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-label={`Filter by ${label}${active ? ' (filtered)' : ''}`}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        aria-controls={open && isDesktop ? panelId : undefined}
+        onClick={() => setOpen((o) => !o)}
+        className={cx(
+          'inline-flex h-6 w-6 items-center justify-center rounded-sm transition-colors duration-fast hover:bg-surface-sunken focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand',
+          active ? 'text-brand' : 'text-ink-faint hover:text-ink-muted',
+        )}
+      >
+        <IconFilter size={13} />
+        {active && <span className="sr-only">Filtered</span>}
+      </button>
+
+      {/* Mobile: modal bottom sheet (focus-trapped; backdrop + Escape close). */}
+      {!isDesktop && (
+        <BottomSheet
+          open={open}
+          onClose={close}
+          label={`Filter by ${label}`}
+          title={`Filter by ${label}`}
+        >
+          <div className="px-2 pb-2 text-left normal-case tracking-normal">{controls}</div>
+        </BottomSheet>
+      )}
+
+      {/* Desktop: popover right-aligned to the trigger, clamped to the viewport. */}
+      {isDesktop &&
+        open &&
+        pos &&
+        createPortal(
+          <div
+            ref={panelRef}
+            id={panelId}
+            role="dialog"
+            aria-label={`Filter by ${label}`}
+            style={{ position: 'fixed', top: pos.top, left: pos.left, width: FILTER_PANEL_WIDTH }}
+            className="z-[60] rounded-md border border-border bg-surface p-3 text-left normal-case tracking-normal shadow-overlay"
+          >
+            {controls}
           </div>,
           document.body,
         )}

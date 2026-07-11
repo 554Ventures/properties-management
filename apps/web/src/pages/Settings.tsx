@@ -4,13 +4,14 @@
 // exists yet — property-app-deployment-plan.md §8), so it has no UI here.
 import { useEffect, useState, type FormEvent } from 'react';
 import { usePlaidLink } from 'react-plaid-link';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import type { AccountSettings, Integration, IntegrationType } from '@hearth/shared';
 import {
   useCreatePlaidLinkToken,
   useDisconnectIntegration,
   useExchangePlaidPublicToken,
   useIntegrations,
+  usePushDevices,
   useSettings,
   useUpdateSettings,
 } from '../api/queries';
@@ -25,6 +26,13 @@ import { StatusBadge } from '../components/ui/StatusBadge';
 import { useToast } from '../components/ui/Toast';
 import { formatDateTime } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
+import {
+  authenticateBiometric,
+  isBiometricLockEnabled,
+  setBiometricLockEnabled,
+} from '../native/biometric';
+import { isNativeApp } from '../native/platform';
+import { reenablePush } from '../native/push';
 import { useAuth } from '../state/auth';
 
 const TIMEZONES = [
@@ -112,10 +120,92 @@ export function Settings() {
             </Card>
           </section>
 
+          <MobileAppSection />
+
           <SessionSection />
         </div>
       </div>
     </div>
+  );
+}
+
+/** iOS-shell-only card: Face ID lock toggle + push registration status.
+ *  Renders nothing in plain browsers (isNativeApp is false there). */
+function MobileAppSection() {
+  const native = isNativeApp();
+  const navigate = useNavigate();
+  const devices = usePushDevices(native);
+  const [faceIdEnabled, setFaceIdEnabled] = useState(() => isBiometricLockEnabled());
+  const [faceIdError, setFaceIdError] = useState(false);
+  const [reenabling, setReenabling] = useState(false);
+
+  if (!native) return null;
+
+  const toggleFaceId = async (next: boolean) => {
+    setFaceIdError(false);
+    if (next) {
+      // Prove Face ID works before locking the app behind it.
+      const ok = await authenticateBiometric('Confirm Face ID to enable the app lock');
+      if (!ok) {
+        setFaceIdError(true);
+        return;
+      }
+    }
+    setBiometricLockEnabled(next);
+    setFaceIdEnabled(next);
+  };
+
+  const reenable = async () => {
+    setReenabling(true);
+    try {
+      await reenablePush((path) => navigate(path));
+      await devices.refetch();
+    } finally {
+      setReenabling(false);
+    }
+  };
+
+  const deviceCount = devices.data?.length ?? 0;
+
+  return (
+    <section aria-label="Mobile app">
+      <Card>
+        <h2 className="mb-3 text-sm font-semibold text-ink">Mobile app</h2>
+        <div className="flex flex-col gap-4">
+          <div>
+            <label className="flex items-center justify-between gap-3 text-sm text-ink">
+              <span className="font-medium">Require Face ID to open the app</span>
+              <input
+                type="checkbox"
+                checked={faceIdEnabled}
+                aria-describedby={faceIdError ? 'face-id-error' : undefined}
+                onChange={(e) => void toggleFaceId(e.target.checked)}
+              />
+            </label>
+            {faceIdError && (
+              <p id="face-id-error" className="mt-1 text-sm text-danger">
+                Face ID check failed — the lock stays off so you aren&rsquo;t locked out.
+              </p>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm text-ink-muted">
+              {devices.isPending
+                ? 'Checking notification status…'
+                : deviceCount > 0
+                  ? `Push notifications are on (${deviceCount} ${deviceCount === 1 ? 'device' : 'devices'}).`
+                  : 'Push notifications are off on this device.'}
+            </p>
+            {!devices.isPending && deviceCount === 0 && (
+              <Button variant="secondary" size="sm" busy={reenabling} onClick={() => void reenable()}>
+                Enable notifications
+              </Button>
+            )}
+          </div>
+        </div>
+      </Card>
+    </section>
   );
 }
 

@@ -57,6 +57,9 @@ export * from './dashboard';
 // Integrations
 export * from './integration';
 
+// Push notification devices (mobile shell)
+export * from './device';
+
 // Documents (uploaded files attached to entities)
 export * from './document';
 

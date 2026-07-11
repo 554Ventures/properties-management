@@ -254,7 +254,13 @@ describe('ContractorsPage', () => {
     mockedUpdate.mockReturnValue(mutationResult<UpdateResult>(mutate));
     renderPage();
 
-    fireEvent.click(within(rowOf('Mario Rossi')).getByRole('button', { name: 'Edit' }));
+    // jsdom reports a narrow viewport, so RowActions renders the mobile "⋯"
+    // menu: open it, then pick Edit from the bottom sheet.
+    fireEvent.click(
+      within(rowOf('Mario Rossi')).getByRole('button', { name: 'Actions for Mario Rossi' }),
+    );
+    const sheet = await screen.findByRole('dialog', { name: 'Actions for Mario Rossi' });
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Edit' }));
     const dialog = await screen.findByRole('dialog', { name: 'Edit contractor' });
     const modal = within(dialog);
 

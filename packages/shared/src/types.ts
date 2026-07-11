@@ -142,6 +142,11 @@ export type IntegrationListResponse = z.infer<typeof s.IntegrationListResponseSc
 export type LinkTokenResponse = z.infer<typeof s.LinkTokenResponseSchema>;
 export type ExchangePublicTokenInput = z.infer<typeof s.ExchangePublicTokenInputSchema>;
 
+// Push notification devices
+export type PushDevice = z.infer<typeof s.PushDeviceSchema>;
+export type RegisterDeviceInput = z.infer<typeof s.RegisterDeviceInputSchema>;
+export type PushDeviceListResponse = z.infer<typeof s.PushDeviceListResponseSchema>;
+
 // Documents
 export type Document = z.infer<typeof s.DocumentSchema>;
 export type CreateDocumentFields = z.infer<typeof s.CreateDocumentFieldsSchema>;

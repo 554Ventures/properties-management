@@ -23,6 +23,7 @@ import { FormField } from '../components/ui/FormField';
 import { Select } from '../components/ui/Select';
 import { Skeleton } from '../components/ui/Skeleton';
 import { useToast } from '../components/ui/Toast';
+import { RowActions } from '../components/ui/RowActions';
 import { IconDownload, IconFileText, IconTrash, IconUpload } from '../components/ui/icons';
 import { formatBytes, formatDate } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
@@ -130,18 +131,13 @@ export function DocumentsPage() {
       align: 'right',
       stickyRight: true,
       cell: (d) => (
-        <div className="flex justify-end gap-1">
-          <Button variant="ghost" size="sm" onClick={() => download(d)}>
-            <IconDownload size={14} />
-            Download
-            <span className="sr-only"> {d.name}</span>
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => setDeleting(d)}>
-            <IconTrash size={14} />
-            Delete
-            <span className="sr-only"> {d.name}</span>
-          </Button>
-        </div>
+        <RowActions
+          context={d.name}
+          actions={[
+            { label: 'Download', icon: <IconDownload size={14} />, onClick: () => download(d) },
+            { label: 'Delete', icon: <IconTrash size={14} />, onClick: () => setDeleting(d) },
+          ]}
+        />
       ),
     },
   ];

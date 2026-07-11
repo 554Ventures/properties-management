@@ -35,10 +35,11 @@ import {
 } from '../components/ui/DataTable';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorNotice } from '../components/ui/ErrorNotice';
+import { RowActions } from '../components/ui/RowActions';
 import { Skeleton } from '../components/ui/Skeleton';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { useToast } from '../components/ui/Toast';
-import { IconDollar, IconDownload, IconPlus } from '../components/ui/icons';
+import { IconDollar, IconDownload, IconPencil, IconPlus } from '../components/ui/icons';
 import { cx } from '../lib/cx';
 import { formatDate, formatDateTime } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
@@ -256,10 +257,12 @@ export function Money() {
       header: <span className="sr-only">Actions</span>,
       stickyRight: true,
       cell: (txn) => (
-        <Button variant="ghost" onClick={() => setEditing(txn)}>
-          Edit
-          <span className="sr-only"> “{txn.description}”</span>
-        </Button>
+        <RowActions
+          context={txn.description}
+          actions={[
+            { label: 'Edit', icon: <IconPencil size={14} />, onClick: () => setEditing(txn) },
+          ]}
+        />
       ),
     },
   ];

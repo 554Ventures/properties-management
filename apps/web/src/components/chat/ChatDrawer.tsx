@@ -36,7 +36,7 @@ export function ChatDrawer() {
         aria-modal={modal}
         aria-label="Roost"
         tabIndex={-1}
-        className="fixed inset-y-0 right-0 z-40 flex w-full flex-col border-l border-border bg-surface shadow-overlay animate-drawer-enter md:w-[420px]"
+        className="fixed inset-y-0 right-0 z-40 flex w-full flex-col border-l border-border bg-surface pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] shadow-overlay animate-drawer-enter md:w-[420px]"
       >
         <header className="flex items-center justify-between gap-4 border-b border-border px-4 py-3">
           <h2 className="flex items-center gap-2 text-base font-semibold text-ink">

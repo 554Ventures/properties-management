@@ -249,3 +249,26 @@ export const IconMore = (p: IconProps) => (
     <rect x="14" y="14" width="6" height="6" rx="1.5" />
   </svg>
 );
+
+export const IconPencil = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+    <path d="m15 5 4 4" />
+  </svg>
+);
+
+export const IconDotsHorizontal = (p: IconProps) => (
+  <svg {...base(p)}>
+    <circle cx="5" cy="12" r="0.5" fill="currentColor" />
+    <circle cx="12" cy="12" r="0.5" fill="currentColor" />
+    <circle cx="19" cy="12" r="0.5" fill="currentColor" />
+  </svg>
+);
+
+export const IconArchive = (p: IconProps) => (
+  <svg {...base(p)}>
+    <rect x="3" y="4" width="18" height="5" rx="1" />
+    <path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9" />
+    <path d="M10 13h4" />
+  </svg>
+);
