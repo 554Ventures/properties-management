@@ -34,6 +34,8 @@ Grounded in what the Service actually does (not a generic list):
 ### 2.3 Information collected automatically
 - **Usage and log data:** IP address, browser/device information, timestamps, and pages/actions used, collected through standard web server logging.
 - **Audit trail:** every write action that touches money or tenant data (creating a transaction, recording a rent payment, sending a reminder, generating a report, connecting/disconnecting a bank account, etc.) is recorded in an internal audit log with who/what/when, for your own record-keeping and for security investigation purposes. This log is not shared externally.
+- **Push notification device token, only if you use the iOS app and allow notifications:** an Apple-issued device token that lets us send push notifications (e.g., "rent received", late-rent alerts) to your device through the Apple Push Notification service (APNs). The token identifies your device for notification delivery only — it contains no personal information and cannot be used to read anything on your device. It is stored against your account, refreshed when you open the app, deleted when you sign out or when Apple reports the device is no longer registered, and shared with no one other than Apple (as required to deliver the notification; see [§6](#6-who-we-share-information-with-sub-processors)). Notification content is generated from your own account data.
+- **Face ID / biometrics — not collected:** if you enable the optional Face ID lock in the iOS app, authentication happens entirely on your device through Apple's APIs. We never receive, store, or have access to any biometric data; the app only learns that the unlock succeeded.
 
 ### 2.4 What we do **not** currently collect
 As of this policy's drafting, 554 Properties does not perform tenant credit checks, background checks, or any consumer-report-based screening, and does not use AI to make or influence any accept/deny decision about a rental applicant or tenant. If that changes, this policy — and applicable law (see [§8.3](#83-fair-credit-reporting-act-fcra--fair-housing-act-fha)) — will be updated accordingly before any such feature launches.
@@ -84,6 +86,7 @@ We use the following service providers to operate 554 Properties. Each processes
 | **Plaid** | Bank-account linking and transaction data aggregation, only if you connect a bank account | Your bank login (handled directly by Plaid, never by us), and the transaction data it returns to us |
 | **Anthropic** | AI assistant (chat) and receipt-image extraction | See [§4](#4-the-ai-assistant-and-what-it-sends-to-anthropic) |
 | **Cloudflare** | Web hosting, content delivery, and edge security for the Service | Standard web request metadata (IP address, request headers) as part of serving the application |
+| **Apple (APNs)** | Push notification delivery, only if you use the iOS app and allow notifications | Your device's push token and the notification content (title/body, e.g. "Rent received"), transiently, to deliver it to your device |
 
 We do not have signed Data Processing Agreements confirmed with every provider above as of this draft — **[ATTORNEY/PRODUCT: confirm DPAs are in place with Supabase, Plaid, and Anthropic before this policy is published, and update this table if the provider list changes.]**
 

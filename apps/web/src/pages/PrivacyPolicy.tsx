@@ -9,7 +9,7 @@ import { usePageTitle } from '../lib/usePageTitle';
 export function PrivacyPolicy() {
   usePageTitle('Privacy Policy');
   return (
-    <LegalPageLayout title="Privacy Policy" lastUpdated="July 9, 2026">
+    <LegalPageLayout title="Privacy Policy" lastUpdated="July 11, 2026">
       <PrivacyPolicyContent />
     </LegalPageLayout>
   );

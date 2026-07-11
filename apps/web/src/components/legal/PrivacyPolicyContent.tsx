@@ -74,6 +74,25 @@ export function PrivacyPolicyContent() {
           an internal audit log of every write action that touches money or tenant data (who/what/
           when) for your own recordkeeping and security investigation — not shared externally.
         </p>
+        <p className="mt-2">
+          <strong className="font-medium">
+            Push notification device token, only if you use the iOS app and allow notifications:
+          </strong>{' '}
+          an Apple-issued device token that lets us send push notifications (e.g., &ldquo;rent
+          received&rdquo;, late-rent alerts) to your device through the Apple Push Notification
+          service. It identifies your device for notification delivery only — it contains no
+          personal information and cannot be used to read anything on your device. It is stored
+          against your account, refreshed when you open the app, deleted when you sign out or when
+          Apple reports the device is no longer registered, and shared with no one other than
+          Apple (as required to deliver the notification). Notification content is generated from
+          your own account data.
+        </p>
+        <p className="mt-2">
+          <strong className="font-medium">Face ID / biometrics — not collected:</strong> if you
+          enable the optional Face ID lock in the iOS app, authentication happens entirely on your
+          device through Apple&rsquo;s APIs. We never receive, store, or have access to any
+          biometric data; the app only learns that the unlock succeeded.
+        </p>
         <h3 className="mt-4 font-medium text-ink">What we don't currently collect</h3>
         <p className="mt-2">
           554 Properties does not perform tenant credit checks, background checks, or any
@@ -163,6 +182,11 @@ export function PrivacyPolicyContent() {
           </li>
           <li>
             <strong className="font-medium">Cloudflare</strong> — web hosting and content delivery.
+          </li>
+          <li>
+            <strong className="font-medium">Apple (APNs)</strong> — push notification delivery,
+            only if you use the iOS app and allow notifications; receives your device&rsquo;s push
+            token and the notification content, transiently, to deliver it.
           </li>
         </ul>
       </section>

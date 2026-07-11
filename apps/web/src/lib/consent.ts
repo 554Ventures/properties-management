@@ -2,7 +2,7 @@
 // Bump this when the policy documents change materially — it's recorded
 // server-side alongside the acceptance timestamp so there's a record of
 // *which* version a user agreed to.
-export const CURRENT_POLICY_VERSION = '2026-07-09';
+export const CURRENT_POLICY_VERSION = '2026-07-11';
 
 const PENDING_CONSENT_KEY = 'hearth_pending_policy_consent_version';
 
