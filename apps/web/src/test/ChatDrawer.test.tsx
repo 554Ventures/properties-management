@@ -280,6 +280,10 @@ describe('ChatDrawer', () => {
     );
     expect(screen.getByText(/cash flow is/i)).toBeInTheDocument();
     expect(screen.getByText('strong')).toBeInTheDocument(); // markdown-lite bold
+    // The assistant's AiSurface badge is named, not the generic "AI"
+    // (two "Roost" nodes: the drawer header and the message badge).
+    expect(screen.getAllByText('Roost')).toHaveLength(2);
+    expect(screen.queryByText('AI')).not.toBeInTheDocument();
 
     // Tool activity shimmer while a tool runs.
     emit(first, { event: 'tool_activity', data: { name: 'get_rent_status', status: 'running' } });

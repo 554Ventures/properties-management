@@ -4,6 +4,7 @@
 // above. Below xl it overlays with a backdrop; at xl the page content shifts
 // aside instead (AppShell adds right padding), so nothing is covered.
 import { useRef } from 'react';
+import { ASSISTANT_NAME } from '@hearth/shared';
 import { useMediaQuery } from '../../lib/useMediaQuery';
 import { useChat } from '../../state/chat';
 import { IconAlertCircle, IconX } from '../ui/icons';
@@ -25,7 +26,7 @@ export function ChatDrawer() {
   if (!open) return null;
 
   return (
-    <aside aria-label="Roost panel">
+    <aside aria-label={`${ASSISTANT_NAME} panel`}>
       {modal && (
         <div className="fixed inset-0 z-40 bg-black/40" onClick={close} aria-hidden="true" />
       )}
@@ -34,7 +35,7 @@ export function ChatDrawer() {
         ref={panelRef}
         role="dialog"
         aria-modal={modal}
-        aria-label="Roost"
+        aria-label={ASSISTANT_NAME}
         tabIndex={-1}
         className="fixed inset-y-0 right-0 z-40 flex w-full flex-col border-l border-border bg-surface pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] shadow-overlay animate-drawer-enter md:w-[420px]"
       >
@@ -43,7 +44,7 @@ export function ChatDrawer() {
             <span aria-hidden="true" className="text-ink-ai">
               ✦
             </span>
-            Roost
+            {ASSISTANT_NAME}
           </h2>
           <div className="flex items-center gap-1">
             <button

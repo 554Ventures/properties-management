@@ -5,7 +5,7 @@
 import type { ElementType, ReactNode } from 'react';
 import { cx } from '../../lib/cx';
 
-export function AiBadge({ className }: { className?: string }) {
+export function AiBadge({ className, label = 'AI' }: { className?: string; label?: string }) {
   return (
     <span
       className={cx(
@@ -14,7 +14,7 @@ export function AiBadge({ className }: { className?: string }) {
       )}
     >
       <span aria-hidden="true">✦</span>
-      AI
+      {label}
     </span>
   );
 }
@@ -24,6 +24,8 @@ export interface AiSurfaceProps {
   className?: string;
   /** Hide the standalone badge when the child renders its own AI labelling. */
   badge?: boolean;
+  /** Badge text — 'AI' everywhere except chat, where the assistant is named. */
+  badgeLabel?: string;
   /** Compact pill variant (AiChip). */
   inline?: boolean;
   as?: ElementType;
@@ -34,6 +36,7 @@ export function AiSurface({
   children,
   className,
   badge = true,
+  badgeLabel,
   inline = false,
   as,
   ...rest
@@ -48,7 +51,7 @@ export function AiSurface({
         )}
         {...rest}
       >
-        {badge && <AiBadge />}
+        {badge && <AiBadge label={badgeLabel} />}
         {children}
       </Tag>
     );
@@ -63,7 +66,7 @@ export function AiSurface({
       )}
       {...rest}
     >
-      {badge && <AiBadge className="mb-2" />}
+      {badge && <AiBadge className="mb-2" label={badgeLabel} />}
       {children}
     </Tag>
   );

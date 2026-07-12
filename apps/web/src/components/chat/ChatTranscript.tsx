@@ -4,7 +4,7 @@
 // latest"). Screen-reader announcements happen through a single polite live
 // region fed only on block_complete / message_complete — never per token.
 import { Fragment, useEffect, useRef, useState, type UIEvent } from 'react';
-import type { ChatMessage, ContentBlock } from '@hearth/shared';
+import { ASSISTANT_NAME, type ChatMessage, type ContentBlock } from '@hearth/shared';
 import { formatDateTime } from '../../lib/format';
 import { useChat } from '../../state/chat';
 import { AiSurface } from '../ai/AiSurface';
@@ -60,7 +60,7 @@ function AssistantMessage({ message, thinking }: { message: ChatMessage; thinkin
   );
   return (
     <div className="flex justify-start">
-      <AiSurface className="min-w-0 flex-1">
+      <AiSurface badgeLabel={ASSISTANT_NAME} className="min-w-0 flex-1">
         <div className="flex flex-col gap-3">
           {blocks.map((block, index) => (
             <BlockView key={index} block={block} />
@@ -117,7 +117,7 @@ export function ChatTranscript() {
               ✦
             </span>
             <p className="text-sm font-semibold text-ink">
-              Ask Roost anything about your rentals
+              Ask {ASSISTANT_NAME} anything about your rentals
             </p>
             <p className="text-sm text-ink-muted">
               Cash flow, late rent, tax prep — or add & edit properties, tenants, and transactions. Every answer comes straight from your ledger.

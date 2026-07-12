@@ -4,7 +4,7 @@ import type {
   DataTableBlock as DataTableBlockData,
   DataTableColumn,
 } from '@hearth/shared';
-import { formatUsd } from '@hearth/shared';
+import { ASSISTANT_NAME, formatUsd } from '@hearth/shared';
 import { formatDate } from '../../../lib/format';
 import { Table, Td, Th, Tr } from '../../ui/Table';
 
@@ -19,7 +19,7 @@ export function DataTableBlock({ block }: { block: DataTableBlockData }) {
   return (
     <div className="rounded-md border border-border bg-surface">
       <Table
-        caption={block.title ?? 'Data from Roost'}
+        caption={block.title ?? `Data from ${ASSISTANT_NAME}`}
         captionVisible={Boolean(block.title)}
         className={block.title ? '[&>caption]:px-4' : undefined}
       >

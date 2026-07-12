@@ -5,7 +5,12 @@
 // chunk boundaries. Transport failures — network errors, malformed JSON, or
 // the server closing without a terminal event — are surfaced to the caller as
 // a synthetic `error` event, so consumers handle exactly one event union.
-import { SseEventNameSchema, type SseEvent, type SseEventName } from '@hearth/shared';
+import {
+  ASSISTANT_NAME,
+  SseEventNameSchema,
+  type SseEvent,
+  type SseEventName,
+} from '@hearth/shared';
 import { getAccessToken } from '../lib/supabase';
 
 const BASE_URL = '/api/v1';
@@ -149,6 +154,6 @@ async function readStream(
     if (!sawTerminal) fail('The assistant connection ended unexpectedly. Try again.');
   } catch {
     if (controller.signal.aborted) return; // caller cancelled — stay silent
-    fail('Could not reach Roost. Check your connection and try again.');
+    fail(`Could not reach ${ASSISTANT_NAME}. Check your connection and try again.`);
   }
 }

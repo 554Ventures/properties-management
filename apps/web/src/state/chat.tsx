@@ -14,14 +14,15 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import type {
-  AskUserQuestionAnswer,
-  ChatMessage,
-  ChatSession,
-  ContentBlock,
-  CreateChatSessionInput,
-  SseEvent,
-  SseToolActivity,
+import {
+  ASSISTANT_NAME,
+  type AskUserQuestionAnswer,
+  type ChatMessage,
+  type ChatSession,
+  type ContentBlock,
+  type CreateChatSessionInput,
+  type SseEvent,
+  type SseToolActivity,
 } from '@hearth/shared';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLocation, useSearchParams } from 'react-router-dom';
@@ -106,15 +107,15 @@ function describeBlock(block: ContentBlock): string | null {
     case 'text':
       return null; // covered by the message_complete announcement
     case 'chart':
-      return `Roost added a chart: ${block.title}.`;
+      return `${ASSISTANT_NAME} added a chart: ${block.title}.`;
     case 'data_table':
       return block.title
-        ? `Roost added a table: ${block.title}.`
-        : 'Roost added a table.';
+        ? `${ASSISTANT_NAME} added a table: ${block.title}.`
+        : `${ASSISTANT_NAME} added a table.`;
     case 'action_card':
-      return `Roost suggested an action: ${block.title}.`;
+      return `${ASSISTANT_NAME} suggested an action: ${block.title}.`;
     case 'ask_user_question':
-      return `Roost asked: ${block.question}`;
+      return `${ASSISTANT_NAME} asked: ${block.question}`;
   }
 }
 
@@ -172,7 +173,7 @@ function applySseEvent(state: ChatState, event: SseEvent): ChatState {
         status: 'idle',
         toolActivity: null,
         streamingMessageId: null,
-        announcement: 'Roost finished replying.',
+        announcement: `${ASSISTANT_NAME} finished replying.`,
       };
     case 'error':
       return {
@@ -433,7 +434,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         .catch(() => {
           dispatch({
             type: 'send_failed',
-            message: 'Could not reach Roost. Check your connection and try again.',
+            message: `Could not reach ${ASSISTANT_NAME}. Check your connection and try again.`,
           });
         });
     },

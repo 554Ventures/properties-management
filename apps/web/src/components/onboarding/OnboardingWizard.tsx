@@ -4,7 +4,7 @@
 // nothing. Only one dialog is on screen at a time: the wizard hides itself
 // while one of the shared form modals is open (stacked focus traps would
 // fight over Tab/Escape).
-import type { OnboardingState, OnboardingStepId } from '@hearth/shared';
+import { ASSISTANT_NAME, type OnboardingState, type OnboardingStepId } from '@hearth/shared';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { usePropertyDetail, useProperties, useUpdateOnboarding } from '../../api/queries';
@@ -145,8 +145,8 @@ export function OnboardingWizard({ open, onClose, state }: OnboardingWizardProps
         <div className="flex flex-col gap-4">
           {allDone ? (
             <p className="text-sm text-ink">
-              You’re all set — your portfolio, tenants, and money now live in one place. Roost’s
-              insights get sharper as more activity comes in.
+              You’re all set — your portfolio, tenants, and money now live in one place.{' '}
+              {ASSISTANT_NAME}’s insights get sharper as more activity comes in.
             </p>
           ) : (
             <>

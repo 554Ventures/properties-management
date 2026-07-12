@@ -4,6 +4,7 @@
 // Suggested prompts (matching the backend's mock scripts) seed an empty
 // transcript so the offline demo has one-tap entry points.
 import { useId, useState, type KeyboardEvent } from 'react';
+import { ASSISTANT_NAME } from '@hearth/shared';
 import { useChat } from '../../state/chat';
 import { Button } from '../ui/Button';
 import { IconArrowUpRight } from '../ui/icons';
@@ -65,7 +66,7 @@ export function ChatComposer() {
         className="flex items-end gap-2"
       >
         <label htmlFor="chat-composer" className="sr-only">
-          Message Roost
+          Message {ASSISTANT_NAME}
         </label>
         <textarea
           id="chat-composer"

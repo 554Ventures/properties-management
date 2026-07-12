@@ -2,6 +2,7 @@
 // BottomTabBar. Hidden (but kept mounted) while the drawer is open so Esc can
 // return focus to it (§8: "Esc closes and returns focus to the launcher").
 import { useEffect, useRef } from 'react';
+import { ASSISTANT_NAME } from '@hearth/shared';
 import { cx } from '../../lib/cx';
 import { useChat } from '../../state/chat';
 import { IconSparkle } from '../ui/icons';
@@ -21,7 +22,7 @@ export function ChatLauncher() {
       ref={buttonRef}
       type="button"
       onClick={openDrawer}
-      aria-label="Open Roost"
+      aria-label={`Open ${ASSISTANT_NAME}`}
       className={cx(
         // bottom offset grows with the home-indicator inset (iOS shell) so the
         // launcher stays clear of the taller BottomTabBar; env() is 0 on web.

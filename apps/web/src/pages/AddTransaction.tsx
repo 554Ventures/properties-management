@@ -3,6 +3,7 @@
 // form; saving is always an explicit user action.
 import { useMemo, useRef, useState, type DragEvent, type FormEvent } from 'react';
 import {
+  ASSISTANT_NAME,
   formatUsd,
   type CreateTransactionResponse,
   type RentMatchSuggestion,
@@ -215,8 +216,8 @@ export function AddTransaction() {
             <IconUpload size={24} />
           </span>
           <p className="text-sm text-ink-muted">
-            Drag a receipt photo here — Roost reads the vendor, amount, and date and pre-fills the
-            form. Nothing is saved until you hit Save.
+            Drag a receipt photo here — {ASSISTANT_NAME} reads the vendor, amount, and date and
+            pre-fills the form. Nothing is saved until you hit Save.
           </p>
           <div className="flex flex-wrap items-center justify-center gap-2">
             <Button
@@ -321,7 +322,7 @@ export function AddTransaction() {
             <FormField
               label="Category"
               htmlFor="txn-category"
-              hint={!categoryId && !suggestion ? 'Leave blank and Roost will suggest one for review.' : undefined}
+              hint={!categoryId && !suggestion ? `Leave blank and ${ASSISTANT_NAME} will suggest one for review.` : undefined}
             >
               <Select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
                 <option value="">No category yet</option>

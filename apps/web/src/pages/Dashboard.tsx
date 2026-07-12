@@ -2,7 +2,7 @@
 // insight deck (every active insight as a stack of cards — supersedes §5.1's
 // original single-card slot, 2026-07-11), 6-month income-vs-expense chart,
 // activity feed.
-import { formatUsd, formatUsdWhole } from '@hearth/shared';
+import { ASSISTANT_NAME, formatUsd, formatUsdWhole } from '@hearth/shared';
 import { Link } from 'react-router-dom';
 import {
   useActivity,
@@ -154,8 +154,8 @@ export function Dashboard() {
               <Card>
                 <h2 className="text-sm font-semibold text-ink">No new insights</h2>
                 <p className="mt-1 text-sm text-ink-muted">
-                  Nothing needs your attention right now. New observations appear here as Roost
-                  notices them.
+                  Nothing needs your attention right now. New observations appear here as{' '}
+                  {ASSISTANT_NAME} notices them.
                 </p>
               </Card>
             ) : (

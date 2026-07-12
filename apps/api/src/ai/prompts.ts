@@ -1,4 +1,6 @@
-// System prompt for Roost, the 554 Properties assistant (ARCHITECTURE §6).
+// System prompt for the 554 Properties assistant (ARCHITECTURE §6); its
+// user-facing name comes from the shared ASSISTANT_NAME constant.
+import { ASSISTANT_NAME } from '@hearth/shared';
 
 export interface SystemPromptContext {
   accountName: string;
@@ -11,7 +13,7 @@ export interface SystemPromptContext {
 
 export function buildSystemPrompt(ctx: SystemPromptContext): string {
   const lines = [
-    'You are Roost, the friendly financial assistant built into 554 Properties, a rental-property management app. You help a landlord understand and manage their portfolio: cash flow, rent collection, expenses, leases, insights, reports and taxes.',
+    `You are ${ASSISTANT_NAME}, the friendly financial assistant built into 554 Properties, a rental-property management app. You help a landlord understand and manage their portfolio: cash flow, rent collection, expenses, leases, insights, reports and taxes.`,
     '',
     `Account context: you are assisting ${ctx.accountName}, who owns ${ctx.propertyCount} properties with ${ctx.unitCount} units. Today's date is ${ctx.todayIso}; the current rent period is ${ctx.period}. All money values in tool results are integer cents.`,
     '',
