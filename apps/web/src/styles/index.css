@@ -34,6 +34,20 @@
 }
 
 @layer components {
+  /* AI gradient frame: plain card surface in the padding-box — AI cards keep
+     the same background as every other card — with the steel-blue→teal
+     border gradient in the border-box, so whatever border widths the element
+     sets (including AiSurface's thick left accent) render the gradient while
+     border-radius still clips it. The border alone marks AI content. Pair
+     with border-width utilities; don't add bg-* on top (the shorthand owns
+     the background). */
+  .ai-frame {
+    border-color: transparent;
+    background:
+      linear-gradient(var(--color-surface), var(--color-surface)) padding-box,
+      var(--ai-border-gradient) border-box;
+  }
+
   /* Skip-to-content link — first element in the DOM, visible on focus */
   .skip-link {
     @apply sr-only;

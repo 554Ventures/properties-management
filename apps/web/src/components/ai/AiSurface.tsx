@@ -43,7 +43,7 @@ export function AiSurface({
     return (
       <Tag
         className={cx(
-          'inline-flex items-center gap-1.5 rounded-full border border-border-ai bg-surface-ai px-3 py-1 text-xs font-medium text-ink-ai',
+          'ai-frame inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium text-ink-ai',
           className,
         )}
         {...rest}
@@ -56,9 +56,9 @@ export function AiSurface({
   return (
     <Tag
       className={cx(
-        // Thin violet border all around (matching the inline AiChip pill and
-        // the insight deck's stacked layers) + the thick violet left accent.
-        'rounded-lg border border-border-ai border-l-4 bg-surface-ai p-4 shadow-card',
+        // Thin gradient border all around (matching the inline AiChip pill and
+        // the insight deck's stacked layers) + the thick gradient left accent.
+        'ai-frame rounded-lg border border-l-4 p-4 shadow-card',
         className,
       )}
       {...rest}

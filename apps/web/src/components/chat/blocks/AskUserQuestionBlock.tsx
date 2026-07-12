@@ -54,7 +54,7 @@ function OptionCard({
       onKeyDown={disabled ? undefined : onKeyDown}
       className={cx(
         'rounded-md border px-3 py-2 transition-colors duration-fast',
-        checked ? 'border-border-ai bg-surface-ai' : 'border-border bg-surface',
+        checked ? 'border-border-ai bg-surface' : 'border-border bg-surface',
         disabled
           ? cx('cursor-default', !checked && 'opacity-60')
           : 'cursor-pointer hover:border-border-strong',

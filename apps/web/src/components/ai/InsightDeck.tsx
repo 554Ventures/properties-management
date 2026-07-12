@@ -1,11 +1,13 @@
 // Deck of AI insight cards (Dashboard): every active insight, highest
-// severity first (then newest) — the same ordering the old single-card
-// endpoint used — presented as a stack. The top card is a full InsightCard
-// (executable action, context link, dismiss all live); the cards beneath peek
-// out as decorative edges. Previous/Next cycle with wrap-around and an
-// "N of M" position readout; a single insight renders as a plain card with no
-// deck chrome. Mount inside a <LiveRegion> so acting on or dismissing the top
-// card announces the one that surfaces.
+// severity first (then newest), presented as a stack. Insights sharing a
+// type+severity (e.g. one late_rent per tenant) merge into a single grouped
+// card (InsightGroupCard) with per-item rows, so the deck cycles genuinely
+// distinct observations instead of near-identical repeats. The top card is
+// fully live (executable actions, context link, dismiss); the cards beneath
+// peek out as decorative edges. Previous/Next cycle with wrap-around and an
+// "N of M" position readout; a single card renders with no deck chrome.
+// Mount inside a <LiveRegion> so acting on or dismissing the top card
+// announces the one that surfaces.
 //
 // Shuffle choreography: cycling keeps the outgoing card mounted for one
 // animation beat — it lifts up and fades (card-shuffle-out) while the
@@ -17,6 +19,7 @@ import type { Insight } from '@hearth/shared';
 import { Button } from '../ui/Button';
 import { IconChevronLeft, IconChevronRight } from '../ui/icons';
 import { InsightCard } from './InsightCard';
+import { InsightGroupCard } from './InsightGroupCard';
 
 const SEVERITY_RANK: Record<Insight['severity'], number> = { warning: 3, info: 2, positive: 1 };
 
@@ -28,21 +31,45 @@ export function sortInsightsForDeck(insights: Insight[]): Insight[] {
   );
 }
 
+/** Deck units: insights sharing type+severity collapse into one group, in the
+ *  position of their highest-ranked member (Map preserves first-seen order
+ *  over the severity-then-newest sort). */
+export function groupInsightsForDeck(insights: Insight[]): Insight[][] {
+  const groups = new Map<string, Insight[]>();
+  for (const insight of sortInsightsForDeck(insights)) {
+    const key = `${insight.type}:${insight.severity}`;
+    const group = groups.get(key);
+    if (group) group.push(insight);
+    else groups.set(key, [insight]);
+  }
+  return [...groups.values()];
+}
+
+const groupKey = (group: Insight[]) => group.map((i) => i.id).join('|');
+
+function DeckCard({ group }: { group: Insight[] }) {
+  return group.length === 1 ? (
+    <InsightCard insight={group[0]!} headingLevel={2} />
+  ) : (
+    <InsightGroupCard insights={group} headingLevel={2} />
+  );
+}
+
 export function InsightDeck({ insights }: { insights: Insight[] }) {
   const [index, setIndex] = useState(0);
   // The card the user just cycled away from, kept mounted while its exit
   // animation plays. Only Previous/Next set this — a card leaving because it
   // was dismissed/actioned should simply reveal the next one, not replay.
-  const [leaving, setLeaving] = useState<Insight | null>(null);
+  const [leaving, setLeaving] = useState<Insight[] | null>(null);
   const leaveTimer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(leaveTimer.current), []);
 
-  const sorted = sortInsightsForDeck(insights);
-  const count = sorted.length;
+  const groups = groupInsightsForDeck(insights);
+  const count = groups.length;
   if (count === 0) return null;
   // Acting on / dismissing a card shrinks the list out from under the index.
   const safeIndex = Math.min(index, count - 1);
-  const current = sorted[safeIndex]!;
+  const current = groups[safeIndex]!;
   const peek = Math.min(count - 1 - safeIndex, 2); // edges visible beneath the top card
 
   const clearLeaving = () => {
@@ -59,38 +86,38 @@ export function InsightDeck({ insights }: { insights: Insight[] }) {
   };
 
   return (
-    <section aria-label={`AI insights, ${count} active`} className="flex flex-col gap-2">
+    <section aria-label={`AI insights, ${insights.length} active`} className="flex flex-col gap-2">
       <div className="relative" style={{ marginBottom: peek * 7 }}>
         {/* Cards still underneath: full-size layers scaled down and nudged
             lower, so the deck reads as a neat stack behind the top card. */}
         {peek >= 2 && (
           <div
             aria-hidden="true"
-            className="absolute inset-0 rounded-lg border border-border-ai bg-surface-ai shadow-card"
+            className="ai-frame absolute inset-0 rounded-lg border shadow-card"
             style={{ transform: 'translateY(14px) scale(0.94)' }}
           />
         )}
         {peek >= 1 && (
           <div
             aria-hidden="true"
-            className="absolute inset-0 rounded-lg border border-border-ai bg-surface-ai shadow-card"
+            className="ai-frame absolute inset-0 rounded-lg border shadow-card"
             style={{ transform: 'translateY(7px) scale(0.97)' }}
           />
         )}
-        {/* Keyed on the insight so a new top card (cycling, or surfacing after
+        {/* Keyed on the group so a new top card (cycling, or surfacing after
             dismiss/action) replays the deal-from-the-stack entrance. */}
-        <div key={current.id} className="relative z-10 animate-card-shuffle-in">
-          <InsightCard insight={current} headingLevel={2} />
+        <div key={groupKey(current)} className="relative z-10 animate-card-shuffle-in">
+          <DeckCard group={current} />
         </div>
         {/* The outgoing card, lifting away above the incoming one. Decorative
             for the beat it exists: hidden from AT and untouchable. */}
-        {leaving && leaving.id !== current.id && (
+        {leaving && groupKey(leaving) !== groupKey(current) && (
           <div
             aria-hidden="true"
             className="pointer-events-none absolute inset-0 z-20 animate-card-shuffle-out"
             onAnimationEnd={clearLeaving}
           >
-            <InsightCard insight={leaving} headingLevel={2} />
+            <DeckCard group={leaving} />
           </div>
         )}
       </div>

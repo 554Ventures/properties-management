@@ -25,7 +25,7 @@ export function ChatLauncher() {
       className={cx(
         // bottom offset grows with the home-indicator inset (iOS shell) so the
         // launcher stays clear of the taller BottomTabBar; env() is 0 on web.
-        'fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-4 z-40 grid h-12 w-12 place-items-center rounded-full border border-border-ai bg-surface-ai text-ink-ai shadow-overlay transition-colors duration-fast hover:bg-surface md:bottom-6 md:right-6',
+        'fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-4 z-40 grid h-12 w-12 place-items-center rounded-full border border-border-ai bg-surface text-ink-ai shadow-overlay transition-colors duration-fast hover:bg-surface-sunken md:bottom-6 md:right-6',
         open && 'hidden',
       )}
     >

@@ -27,7 +27,7 @@ import { useToast } from '../ui/Toast';
 import { isAllowedApiCall, isAllowedNavigate } from '../chat/actionAllowlist';
 import { AiSurface } from './AiSurface';
 
-const severityBadge: Record<Insight['severity'], { tone: BadgeTone; label: string }> = {
+export const severityBadge: Record<Insight['severity'], { tone: BadgeTone; label: string }> = {
   info: { tone: 'neutral', label: 'Heads up' },
   warning: { tone: 'warning', label: 'Needs attention' },
   positive: { tone: 'positive', label: 'Good news' },

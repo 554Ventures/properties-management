@@ -6,7 +6,8 @@
  * Visual language (Mercury-inspired): high-contrast near-black text on an
  * almost-pure-white ground carries the hierarchy; thin 1px borders replace
  * heavy shadows; generous whitespace; small, precise motion. The dark-orange
- * brand accent is used sparingly, violet stays reserved for AI surfaces.
+ * brand accent is used sparingly; the cool steel-blue→teal family stays
+ * reserved for AI surfaces.
  *
  * Contrast requirements: status/text colors ≥ 4.5:1 on --color-surface,
  * chart series ≥ 3:1.
@@ -39,17 +40,22 @@
   --color-neutral: #4e5a68;
   --color-neutral-soft: #edf0f4;
 
-  /* AI-surface convention (PRD §6, mandatory): subtle violet tint. Every
-     AI-authored surface flows through the AiSurface component. */
-  --surface-ai: #f5f3ff;
-  --border-ai: #7c3aed;
-  --text-ai-label: #6027c4;
+  /* AI-surface convention (PRD §6, mandatory): steel-blue→teal identity,
+     deliberately cool against the warm brand orange. Every AI-authored
+     surface flows through the AiSurface component. AI cards share the plain
+     card surface — the gradient BORDER (painted by `.ai-frame`, index.css)
+     is the sole marker; the solid tokens cover pills, text, and everything
+     a gradient can't reach. */
+  --surface-ai: #e7f4f6;
+  --border-ai: #1d7fa2;
+  --text-ai-label: #0e6483;
+  --ai-border-gradient: linear-gradient(135deg, #2a6fd0, #0f8f74);
 
   /* Chart palette — the colorRole → color mapping lives ONLY here (≥3:1) */
   --chart-positive: #15803d;
   --chart-warning: #c05a10;
   --chart-neutral: #64748b;
-  --chart-ai: #7c3aed;
+  --chart-ai: #16759c;
   --chart-grid: #ededeb;
   /* Categorical series (CVD-safe fixed order; validated as a set). Some sit
      below 3:1 on this surface by design — every use ships a legend + the
@@ -64,7 +70,7 @@
   --chart-cat-8: #eb6834;
 
   /* Focus ring — visible on both warm surfaces and brand fills */
-  --color-focus: #6027c4;
+  --color-focus: #16759c;
 
   /* Radius scale — tightened for a crisper, more precise feel */
   --radius-sm: 5px;
@@ -123,14 +129,15 @@
     --color-neutral: #a3b0bf;
     --color-neutral-soft: #242a31;
 
-    --surface-ai: #251f36;
-    --border-ai: #a78bfa;
-    --text-ai-label: #c7b6fc;
+    --surface-ai: #17252a;
+    --border-ai: #57b9d0;
+    --text-ai-label: #a5d8e6;
+    --ai-border-gradient: linear-gradient(135deg, #6ea8f0, #45c8b0);
 
     --chart-positive: #4ade80;
     --chart-warning: #fbbf24;
     --chart-neutral: #94a3b8;
-    --chart-ai: #a78bfa;
+    --chart-ai: #57b9d0;
     --chart-grid: #352f28;
     /* Same eight hues stepped for the dark surface (all ≥3:1 here). */
     --chart-cat-1: #3987e5;
@@ -142,7 +149,7 @@
     --chart-cat-7: #d55181;
     --chart-cat-8: #d95926;
 
-    --color-focus: #c7b6fc;
+    --color-focus: #a5d8e6;
   }
 }
 

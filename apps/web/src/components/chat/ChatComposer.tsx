@@ -45,7 +45,7 @@ export function ChatComposer() {
               key={prompt}
               type="button"
               onClick={() => send(prompt)}
-              className="rounded-full border border-border-ai bg-surface-ai px-3 py-1.5 text-xs font-medium text-ink-ai transition-colors duration-fast hover:bg-surface"
+              className="rounded-full border border-border-ai bg-surface px-3 py-1.5 text-xs font-medium text-ink-ai transition-colors duration-fast hover:bg-surface-sunken"
             >
               {prompt}
             </button>
