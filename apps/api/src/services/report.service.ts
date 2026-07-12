@@ -1,4 +1,5 @@
 import {
+  formatUsd,
   formatUsdWhole,
   type GenerateReportInput,
   type Report,
@@ -21,7 +22,7 @@ import {
 } from '../lib/dates';
 import { BadRequestError, NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
-import { renderPdfPlaceholder } from '../lib/pdf';
+import { renderReportPdf, type PdfBlock } from '../lib/pdf';
 import { mockEmail } from '../integrations/mock/mock-email';
 import { writeAudit, type AuditActor } from './audit.service';
 import { deriveRentStatus } from './rent.service';
@@ -810,20 +811,179 @@ export async function exportCsv(
   return { filename: `${report.type}-${report.id}.csv`, csv };
 }
 
+// ── PDF export: mirrors what the web ReportViewer shows (headline totals,
+//    narrative blocks, then the same canonical `table` snapshot the CSV
+//    export uses), with values formatted at the edge (cents → USD). ─────────
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function humanizeKey(key: string): string {
+  const words = key
+    .replace(/Cents$/i, '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .trim()
+    .toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function pdfDate(isoString: string): string {
+  const date = new Date(isoString);
+  if (Number.isNaN(date.getTime())) return isoString;
+  return date.toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    timeZone: 'UTC',
+  });
+}
+
+/** Same rendering rules as the web viewer's detailCell. */
+function pdfCell(key: string, value: unknown): string {
+  if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'number') return /cents$/i.test(key) ? formatUsd(value) : String(value);
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  if (typeof value === 'string') {
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value)) return pdfDate(value);
+    if (key === 'status' || key === 'type') return humanizeKey(value);
+    return value;
+  }
+  return String(value);
+}
+
+function totalsEntries(totals: Record<string, unknown>): Array<[string, string]> {
+  return Object.entries(totals)
+    .filter((entry): entry is [string, number | string] => {
+      const v = entry[1];
+      return (typeof v === 'number' && Number.isFinite(v)) || typeof v === 'string';
+    })
+    .map(([key, value]) => [
+      humanizeKey(key),
+      typeof value === 'number' && /cents$/i.test(key) ? formatUsd(value) : String(value),
+    ]);
+}
+
+function tableBlock(
+  table: { columns: CsvColumn[]; rows: Array<Record<string, unknown>> },
+): Extract<PdfBlock, { kind: 'table' }> {
+  const rightAligned = new Set(
+    table.columns
+      .filter(
+        (c) =>
+          /cents$/i.test(c.key) ||
+          table.rows.every((r) => r[c.key] == null || typeof r[c.key] === 'number'),
+      )
+      .map((c) => c.key),
+  );
+  return {
+    kind: 'table',
+    columns: table.columns.map((c) => ({
+      label: c.label.replace(/\s*\(cents\)$/i, ''),
+      align: rightAligned.has(c.key) ? 'right' : 'left',
+    })),
+    rows: table.rows.map((row) => table.columns.map((c) => pdfCell(c.key, row[c.key]))),
+  };
+}
+
+/** Schedule E only: the per-property IRS expense-line breakdown the summary
+ * table flattens away (mirrors the viewer's ScheduleELines). */
+function scheduleELinesBlock(data: Record<string, unknown>): PdfBlock[] {
+  const propertyRows = Array.isArray(data.propertyRows)
+    ? data.propertyRows.filter(isPlainObject)
+    : [];
+  const lineNumber = (line: string) => Number(/line (\d+)/i.exec(line)?.[1] ?? 99);
+  const rows = propertyRows.flatMap((property) => {
+    const label = typeof property.propertyLabel === 'string' ? property.propertyLabel : '—';
+    return Object.entries(isPlainObject(property.expenseLines) ? property.expenseLines : {})
+      .filter((entry): entry is [string, number] => typeof entry[1] === 'number')
+      .sort((a, b) => lineNumber(a[0]) - lineNumber(b[0]))
+      .map(([line, cents]) => [label, line, formatUsd(cents)]);
+  });
+  if (rows.length === 0) return [];
+  return [
+    { kind: 'heading', text: 'IRS expense line detail' },
+    {
+      kind: 'table',
+      columns: [
+        { label: 'Property' },
+        { label: 'IRS line' },
+        { label: 'Amount', align: 'right' },
+      ],
+      rows,
+    },
+  ];
+}
+
+const TAX_REPORT_TYPES = new Set<string>(['schedule_e', 'tax_package']);
+
 export async function exportPdf(
   accountId: string,
   id: string,
 ): Promise<{ filename: string; buffer: Buffer }> {
   const report = await getById(accountId, id);
-  const data = report.data as SnapshotTable;
-  const lines: string[] = [
-    `Period: ${report.periodStart} → ${report.periodEnd}`,
-    `Totals: ${JSON.stringify(data.totals ?? {})}`,
-    `Rows: ${data.table?.rows.length ?? 0}`,
+  const data = isPlainObject(report.data) ? report.data : {};
+  const blocks: PdfBlock[] = [];
+
+  const metaLines = [
+    `${pdfDate(report.periodStart)} – ${pdfDate(report.periodEnd)}` +
+      (report.taxYear != null ? ` · tax year ${report.taxYear}` : '') +
+      ` · generated ${pdfDate(report.generatedAt)}`,
   ];
+  blocks.push({ kind: 'meta', lines: metaLines });
+
+  if (typeof data.bottomLine === 'string' && data.bottomLine) {
+    blocks.push({ kind: 'paragraph', text: data.bottomLine });
+  }
+
+  // Headline totals — tax_package keeps its figures under scheduleETotals.
+  const totalsSource = isPlainObject(data.totals)
+    ? data.totals
+    : isPlainObject(data.scheduleETotals)
+      ? data.scheduleETotals
+      : {};
+  const entries = totalsEntries(totalsSource);
+  if (entries.length > 0) blocks.push({ kind: 'keyValues', entries });
+
+  const watchItems = Array.isArray(data.watchItems)
+    ? data.watchItems.filter((item): item is string => typeof item === 'string')
+    : [];
+  if (watchItems.length > 0) {
+    blocks.push({ kind: 'heading', text: 'Worth your attention' });
+    blocks.push({ kind: 'list', items: watchItems });
+  }
+
+  if (typeof data.note === 'string' && data.note) {
+    blocks.push({ kind: 'paragraph', text: data.note, muted: true });
+  }
+
+  const snapshot = data as SnapshotTable;
+  if (snapshot.table && snapshot.table.columns.length > 0) {
+    blocks.push({ kind: 'heading', text: 'Detail' });
+    if (snapshot.table.rows.length > 0) {
+      blocks.push(tableBlock(snapshot.table));
+    } else {
+      blocks.push({ kind: 'paragraph', text: 'No rows in this period.', muted: true });
+    }
+  }
+
+  if (report.type === 'schedule_e') blocks.push(...scheduleELinesBlock(data));
+
+  if (TAX_REPORT_TYPES.has(report.type) || report.taxYear != null) {
+    blocks.push({
+      kind: 'paragraph',
+      muted: true,
+      text:
+        'Not tax advice. 554 Properties organizes your records and computes estimates to help ' +
+        'you prepare — it is not a certified tax preparation service. Confirm figures with a ' +
+        'licensed tax professional before filing.',
+    });
+  }
+
   return {
     filename: `${report.type}-${report.id}.pdf`,
-    buffer: renderPdfPlaceholder(report.title, lines),
+    buffer: renderReportPdf(report.title, blocks),
   };
 }
 

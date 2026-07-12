@@ -14,7 +14,7 @@ import {
   startOfUtcDay,
   trailingPeriods,
 } from '../src/lib/dates';
-import { renderPdfPlaceholder } from '../src/lib/pdf';
+import { renderTextPdf } from '../src/lib/pdf';
 import { prisma } from '../src/lib/prisma';
 import * as contractorService from '../src/services/contractor.service';
 import { sanitizeFilename } from '../src/services/document.service';
@@ -351,7 +351,7 @@ async function main(): Promise<void> {
     entityType: string,
     entityId: string,
   ) => {
-    const bytes = renderPdfPlaceholder(spec.name, [`Seed document — attached to ${entityType}.`]);
+    const bytes = renderTextPdf(spec.name, [`Seed document — attached to ${entityType}.`]);
     const row = await prisma.document.create({
       data: {
         accountId: account.id,

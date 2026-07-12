@@ -87,6 +87,12 @@ describe('schedule_e report', () => {
     });
     expect(pdfRes.statusCode).toBe(200);
     expect(pdfRes.headers['content-type']).toContain('application/pdf');
+    expect(pdfRes.rawPayload.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+    const pdfText = pdfRes.rawPayload.toString('latin1');
+    expect(pdfText).toContain('%%EOF');
+    // Report content is actually rendered: detail table heading + a USD figure.
+    expect(pdfText).toContain('(Detail)');
+    expect(pdfText).toContain('($');
   });
 
   it('monthly review exists from seed and has real data', async () => {
