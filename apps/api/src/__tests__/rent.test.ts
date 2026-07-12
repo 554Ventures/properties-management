@@ -74,7 +74,11 @@ describe('POST /rent/reminders', () => {
     expect(res.statusCode).toBe(200);
     const body = SendRemindersResponseSchema.parse(res.json());
     expect(body.results).toEqual([
-      { rentPaymentId: okafor!.rentPaymentId, status: 'sent' },
+      {
+        rentPaymentId: okafor!.rentPaymentId,
+        status: 'sent',
+        mailto: expect.stringMatching(/^mailto:/),
+      },
       { rentPaymentId: paidRow!.rentPaymentId, status: 'skipped', reason: 'already_paid' },
     ]);
 

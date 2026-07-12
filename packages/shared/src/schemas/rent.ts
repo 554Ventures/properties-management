@@ -87,6 +87,7 @@ export const SendReminderResultSchema = z.object({
   rentPaymentId: z.string(),
   status: z.enum(['sent', 'skipped']),
   reason: z.string().optional(), // present when skipped
+  mailto: z.string().optional(), // present when sent — opens the composed reminder in the user's own mail client
 });
 
 export const SendRemindersResponseSchema = z.object({

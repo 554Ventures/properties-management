@@ -24,7 +24,6 @@ import { NotFoundError, BadRequestError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { isUniqueConstraintError } from '../lib/prisma-errors';
 import { formatUsd } from '@hearth/shared';
-import { mockEmail } from '../integrations/mock/mock-email';
 import { mockStripe } from '../integrations/mock/mock-stripe';
 import { writeAudit, type AuditActor } from './audit.service';
 import { notifyAccount } from './push.service';
@@ -473,11 +472,12 @@ export async function sendReminders(
     }
     const tenant = payment.lease.leaseTenants[0]?.tenant;
     const property = payment.lease.unit.property;
-    await mockEmail.send({
-      to: tenant?.email ?? 'tenant@example.com',
-      subject: `Rent reminder — ${property.nickname ?? property.addressLine1} ${payment.lease.unit.label}`,
-      body: `Hi ${tenant?.fullName ?? 'there'}, this is a friendly reminder that your rent for ${payment.period} is due.`,
-    });
+    const to = tenant?.email ?? 'tenant@example.com';
+    const subject = `Rent reminder — ${property.nickname ?? property.addressLine1} ${payment.lease.unit.label}`;
+    const body = `Hi ${tenant?.fullName ?? 'there'}, this is a friendly reminder that your rent for ${payment.period} is due.`;
+    // No real email provider is wired up — compose a mailto: link so the
+    // landlord reviews and sends it from their own mail client instead.
+    const mailto = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
     await prisma.rentPayment.update({
       where: { id: payment.id },
       data: { remindedAt: new Date() },
@@ -489,7 +489,7 @@ export async function sendReminders(
       entityId: payment.id,
       detail: { period: payment.period, tenantId: tenant?.id ?? null },
     });
-    results.push({ rentPaymentId, status: 'sent' });
+    results.push({ rentPaymentId, status: 'sent', mailto });
   }
   return { results };
 }

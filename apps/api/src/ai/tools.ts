@@ -321,7 +321,7 @@ export const serviceTools: ServiceToolDef[] = [
   {
     name: 'send_rent_reminders',
     description:
-      'WRITES + SENDS EMAIL: sends a rent reminder email to the tenant behind each given rentPaymentId — irreversible. Already-paid rows are skipped.',
+      'WRITES: composes a rent reminder email for the tenant behind each given rentPaymentId and marks it reminded — returns a mailto: link for the landlord to review and send from their own mail client (no email is sent server-side). Already-paid rows are skipped.',
     inputSchema: SendRemindersInputSchema,
     write: true,
     execute: (accountId, input, actor) =>

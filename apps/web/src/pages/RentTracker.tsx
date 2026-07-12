@@ -6,12 +6,12 @@
 // this is the page that insight is about.
 import { useEffect, useState } from 'react';
 import { formatUsd } from '@hearth/shared';
-import type { RentPaymentMethod, RentTrackerRow } from '@hearth/shared';
+import type { RentPaymentMethod, RentTrackerRow, SendRemindersResponse } from '@hearth/shared';
 import { useSearchParams } from 'react-router-dom';
 import { useInsights, useRecordPayment, useRentTracker, useSendReminders } from '../api/queries';
 import { InsightCard } from '../components/ai/InsightCard';
 import { PageHeader } from '../components/shell/PageHeader';
-import { Button } from '../components/ui/Button';
+import { Button, buttonClasses } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorNotice } from '../components/ui/ErrorNotice';
@@ -72,6 +72,9 @@ export function RentTracker() {
   const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
   const [payRow, setPayRow] = useState<RentTrackerRow | null>(null);
   const [payMethod, setPayMethod] = useState<RentPaymentMethod>('manual');
+  const [composedReminders, setComposedReminders] = useState<
+    { tenantName: string; mailto: string }[]
+  >([]);
 
   // Exactly one contextual AI card (newest late_rent) — this page is where
   // that insight points, so it surfaces here instead of a separate AI page.
@@ -81,11 +84,11 @@ export function RentTracker() {
   const rows = tracker.data?.rows ?? [];
   const lateRows = rows.filter((row) => row.status === 'late');
 
-  const summarizeReminders = (results: { status: 'sent' | 'skipped' }[]) => {
+  const summarizeReminders = (results: SendRemindersResponse['results']) => {
     const sent = results.filter((r) => r.status === 'sent').length;
     const skipped = results.length - sent;
     toast(
-      `${sent} reminder${sent === 1 ? '' : 's'} sent${skipped > 0 ? `, ${skipped} skipped` : ''}.`,
+      `${sent} reminder${sent === 1 ? '' : 's'} composed${skipped > 0 ? `, ${skipped} skipped` : ''}.`,
       sent > 0 ? 'positive' : 'neutral',
     );
   };
@@ -94,8 +97,12 @@ export function RentTracker() {
     remind.mutate(
       { rentPaymentIds: [row.rentPaymentId] },
       {
-        onSuccess: (res) => summarizeReminders(res.results),
-        onError: () => toast('Could not send the reminder. Try again.', 'danger'),
+        onSuccess: (res) => {
+          summarizeReminders(res.results);
+          const mailto = res.results.find((r) => r.status === 'sent')?.mailto;
+          if (mailto) window.location.href = mailto;
+        },
+        onError: () => toast('Could not compose the reminder. Try again.', 'danger'),
       },
     );
   };
@@ -107,10 +114,16 @@ export function RentTracker() {
         onSuccess: (res) => {
           setBulkConfirmOpen(false);
           summarizeReminders(res.results);
+          const composed = res.results.flatMap((r) => {
+            if (r.status !== 'sent' || !r.mailto) return [];
+            const row = lateRows.find((lr) => lr.rentPaymentId === r.rentPaymentId);
+            return row ? [{ tenantName: row.tenantName, mailto: r.mailto }] : [];
+          });
+          if (composed.length > 0) setComposedReminders(composed);
         },
         onError: () => {
           setBulkConfirmOpen(false);
-          toast('Could not send reminders. Try again.', 'danger');
+          toast('Could not compose reminders. Try again.', 'danger');
         },
       },
     );
@@ -348,10 +361,39 @@ export function RentTracker() {
         }
       >
         <p className="text-sm text-ink-muted">
-          A payment reminder email will be sent to{' '}
-          {lateRows.map((row) => row.tenantName).join(', ')}. Tenants reminded very recently may be
-          skipped.
+          A payment reminder email will be composed for{' '}
+          {lateRows.map((row) => row.tenantName).join(', ')} — you'll get a link to open and send
+          each one from your own mail app. Already-paid rows are skipped.
         </p>
+      </Modal>
+
+      <Modal
+        open={composedReminders.length > 0}
+        onClose={() => setComposedReminders([])}
+        title="Reminders composed"
+        size="sm"
+      >
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-ink-muted">
+            Open each one to review and send it from your own mail app.
+          </p>
+          <ul className="flex flex-col gap-2">
+            {composedReminders.map((r) => (
+              <li key={r.tenantName} className="flex items-center justify-between gap-2">
+                <span className="text-sm font-medium text-ink">{r.tenantName}</span>
+                <a href={r.mailto} className={buttonClasses('secondary', 'sm')}>
+                  <IconBell size={12} />
+                  Open email
+                </a>
+              </li>
+            ))}
+          </ul>
+          <div className="flex justify-end">
+            <Button variant="ghost" onClick={() => setComposedReminders([])}>
+              Done
+            </Button>
+          </div>
+        </div>
       </Modal>
 
       <Modal
