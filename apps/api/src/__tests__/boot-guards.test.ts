@@ -12,6 +12,8 @@ const GUARD_VARS = [
   'PLAID_CLIENT_ID',
   'PLAID_SECRET',
   'INTEGRATION_ENCRYPTION_KEY',
+  'STRIPE_SECRET_KEY',
+  'STRIPE_PUBLISHABLE_KEY',
 ] as const;
 
 const saved: Record<string, string | undefined> = {};
@@ -96,6 +98,34 @@ describe('assertProductionConfig', () => {
     set('PLAID_CLIENT_ID', undefined);
     set('PLAID_SECRET', undefined);
     set('INTEGRATION_ENCRYPTION_KEY', undefined);
+    expect(() => assertProductionConfig()).not.toThrow();
+  });
+
+  it('throws in production when only STRIPE_SECRET_KEY is set (publishable key missing)', () => {
+    set('NODE_ENV', 'production');
+    set('SUPABASE_URL', 'https://project.supabase.co');
+    set('STRIPE_SECRET_KEY', 'sk_test_123');
+    set('STRIPE_PUBLISHABLE_KEY', undefined);
+    expect(() => assertProductionConfig()).toThrow(
+      /Stripe Financial Connections partially configured/,
+    );
+  });
+
+  it('throws in production when only STRIPE_PUBLISHABLE_KEY is set (secret key missing)', () => {
+    set('NODE_ENV', 'production');
+    set('SUPABASE_URL', 'https://project.supabase.co');
+    set('STRIPE_SECRET_KEY', undefined);
+    set('STRIPE_PUBLISHABLE_KEY', 'pk_test_123');
+    expect(() => assertProductionConfig()).toThrow(
+      /Stripe Financial Connections partially configured/,
+    );
+  });
+
+  it('passes in production with both Stripe FC vars set together', () => {
+    set('NODE_ENV', 'production');
+    set('SUPABASE_URL', 'https://project.supabase.co');
+    set('STRIPE_SECRET_KEY', 'sk_test_123');
+    set('STRIPE_PUBLISHABLE_KEY', 'pk_test_123');
     expect(() => assertProductionConfig()).not.toThrow();
   });
 });

@@ -115,8 +115,9 @@ export function TermsOfServiceContent() {
       <section>
         <h2 className="text-base font-semibold text-ink">7. Third-party integrations</h2>
         <p className="mt-2">
-          The Service integrates with third-party providers — currently or prospectively Plaid,
-          Stripe, Docusign, and email delivery providers. Your use of any integration is also
+          The Service integrates with third-party providers — currently or prospectively Plaid
+          and Stripe (bank-account linking via Stripe Financial Connections, and prospectively
+          payment processing), Docusign, and email delivery providers. Your use of any integration is also
           subject to that provider's own terms. We choose providers we believe are reputable and
           appropriate for the data involved, but are not responsible for their acts or omissions.
         </p>

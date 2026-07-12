@@ -70,7 +70,7 @@ const STATUS_OPTIONS = [
 /** Toast copy for a bank-import result. Exported for tests. */
 export function importToastMessage(
   res: ImportTransactionsResponse,
-  plaidConnected: boolean,
+  bankConnected: boolean,
 ): { message: string; tone: 'positive' | 'neutral' } {
   const s = (n: number) => (n === 1 ? '' : 's');
   const parts: string[] = [];
@@ -91,7 +91,7 @@ export function importToastMessage(
     };
   }
   return {
-    message: plaidConnected
+    message: bankConnected
       ? 'No new transactions yet — bank sync can take a minute after connecting. Try again shortly.'
       : 'No new bank transactions to import.',
     tone: 'neutral',
@@ -192,7 +192,17 @@ export function Money() {
   const insights = useInsights({ status: 'active' });
   const spikeInsight = insights.data?.find((i) => i.type === 'expense_spike');
 
-  const plaid = integrations.data?.find((i) => i.type === 'plaid');
+  // Both bank feeds (Plaid + Stripe Financial Connections) share the import
+  // button; "Last imported" shows the most recent sync across them.
+  const bankFeeds =
+    integrations.data?.filter((i) => i.type === 'plaid' || i.type === 'stripe_fc') ?? [];
+  const bankConnected = bankFeeds.some((i) => i.status === 'connected');
+  const lastImportedAt =
+    bankFeeds
+      .map((i) => i.lastSyncedAt)
+      .filter((t): t is string => t !== null)
+      .sort()
+      .at(-1) ?? null;
   // Server-driven cooldown: set from an import_rate_limited (429) response.
   // The server stays the authority — mock/demo mode has no cooldown, so the
   // button is never disabled preemptively.
@@ -307,9 +317,9 @@ export function Money() {
         breadcrumbs={[{ label: 'Dashboard', to: '/' }, { label: 'Money' }]}
         actions={
           <>
-            {plaid?.lastSyncedAt && (
+            {lastImportedAt && (
               <span className="self-center text-xs text-ink-muted">
-                Last imported {formatDateTime(plaid.lastSyncedAt)}
+                Last imported {formatDateTime(lastImportedAt)}
               </span>
             )}
             <Button
@@ -319,10 +329,7 @@ export function Money() {
               onClick={() =>
                 importBank.mutate(undefined, {
                   onSuccess: (res) => {
-                    const { message, tone } = importToastMessage(
-                      res,
-                      plaid?.status === 'connected',
-                    );
+                    const { message, tone } = importToastMessage(res, bankConnected);
                     toast(message, tone);
                   },
                   onError: (err) => {

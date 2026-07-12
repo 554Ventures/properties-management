@@ -144,6 +144,8 @@ export type Integration = z.infer<typeof s.IntegrationSchema>;
 export type IntegrationListResponse = z.infer<typeof s.IntegrationListResponseSchema>;
 export type LinkTokenResponse = z.infer<typeof s.LinkTokenResponseSchema>;
 export type ExchangePublicTokenInput = z.infer<typeof s.ExchangePublicTokenInputSchema>;
+export type StripeFcSessionResponse = z.infer<typeof s.StripeFcSessionResponseSchema>;
+export type StripeFcCompleteInput = z.infer<typeof s.StripeFcCompleteInputSchema>;
 
 // Push notification devices
 export type PushDevice = z.infer<typeof s.PushDeviceSchema>;

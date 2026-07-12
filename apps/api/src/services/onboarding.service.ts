@@ -17,11 +17,16 @@ async function completedSteps(accountId: string): Promise<Set<OnboardingStepId>>
     prisma.tenant.count({ where: { accountId, archivedAt: null } }),
     prisma.lease.count({ where: { unit: { property: { accountId } } } }),
     prisma.transaction.count({ where: { accountId } }),
-    // 'mock' is the demo seed's placeholder status (a fresh account has no
-    // integration rows at all) — counting it keeps the fully-set-up demo
+    // Either bank feed (Plaid or Stripe Financial Connections) completes the
+    // step. 'mock' is the demo seed's placeholder status (a fresh account has
+    // no integration rows at all) — counting it keeps the fully-set-up demo
     // account deriving completed. Connecting for real flips to 'connected'.
     prisma.integration.count({
-      where: { accountId, type: 'plaid', status: { in: ['connected', 'mock'] } },
+      where: {
+        accountId,
+        type: { in: ['plaid', 'stripe_fc'] },
+        status: { in: ['connected', 'mock'] },
+      },
     }),
   ]);
   const done = new Set<OnboardingStepId>();

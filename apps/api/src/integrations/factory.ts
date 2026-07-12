@@ -2,10 +2,12 @@
 import { mockPlaid } from './mock/mock-plaid';
 import { mockPush } from './mock/mock-push';
 import { mockStorage } from './mock/mock-storage';
+import { mockStripeFc } from './mock/mock-stripe-fc';
 import { createApnsPushProvider } from './real/real-apns';
 import { createRealPlaidAdapter } from './real/real-plaid';
 import { createRealStorageAdapter } from './real/real-storage';
-import type { PlaidAdapter, PushProvider, StorageAdapter } from './types';
+import { createRealStripeFcAdapter } from './real/real-stripe-fc';
+import type { PlaidAdapter, PushProvider, StorageAdapter, StripeFcAdapter } from './types';
 
 let realAdapter: PlaidAdapter | undefined;
 let warned = false;
@@ -32,6 +34,35 @@ export function createPlaidAdapter(): PlaidAdapter {
   if (!isRealPlaidConfigured()) return mockPlaid;
   if (!realAdapter) realAdapter = createRealPlaidAdapter();
   return realAdapter;
+}
+
+let realStripeFcAdapter: StripeFcAdapter | undefined;
+let stripeFcWarned = false;
+
+/** True once STRIPE_SECRET_KEY and STRIPE_PUBLISHABLE_KEY are both set.
+ *  No INTEGRATION_ENCRYPTION_KEY in the trio: Stripe FC stores only inert
+ *  fca_/cus_ ids, never a bearer credential (see real-stripe-fc.ts). */
+export function isRealStripeFcConfigured(): boolean {
+  const { STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY } = process.env;
+  const configured = [STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY];
+  const setCount = configured.filter(Boolean).length;
+
+  if (setCount > 0 && setCount < configured.length && !stripeFcWarned) {
+    stripeFcWarned = true;
+    console.warn(
+      '[stripe_fc] STRIPE_SECRET_KEY/STRIPE_PUBLISHABLE_KEY are partially set — ' +
+        'falling back to the mock Stripe Financial Connections adapter until both are configured.',
+    );
+  }
+
+  return setCount === configured.length;
+}
+
+/** Real Stripe FC adapter only when both env vars are set, else the mock. */
+export function createStripeFcAdapter(): StripeFcAdapter {
+  if (!isRealStripeFcConfigured()) return mockStripeFc;
+  if (!realStripeFcAdapter) realStripeFcAdapter = createRealStripeFcAdapter();
+  return realStripeFcAdapter;
 }
 
 let realStorageAdapter: StorageAdapter | undefined;

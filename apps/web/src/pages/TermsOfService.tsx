@@ -9,7 +9,7 @@ import { usePageTitle } from '../lib/usePageTitle';
 export function TermsOfService() {
   usePageTitle('Terms of Service');
   return (
-    <LegalPageLayout title="Terms of Service" lastUpdated="July 9, 2026">
+    <LegalPageLayout title="Terms of Service" lastUpdated="July 12, 2026">
       <TermsOfServiceContent />
     </LegalPageLayout>
   );

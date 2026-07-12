@@ -1,7 +1,9 @@
-// Settings (PRD §5.9): account profile + tax rate, integrations (Plaid is a
-// real Sandbox/Production Link flow; Stripe/Docusign/Email stay mock —
-// docs/WHATS_NEXT.md §3). MCP is stdio/local-only (no remote transport
-// exists yet — property-app-deployment-plan.md §8), so it has no UI here.
+// Settings (PRD §5.9): account profile + tax rate, integrations (Plaid and
+// Stripe Financial Connections are real bank-feed flows; Stripe rent
+// payments/Docusign/Email stay mock — docs/WHATS_NEXT.md §3). MCP is
+// stdio/local-only (no remote transport exists yet —
+// property-app-deployment-plan.md §8), so it has no UI here.
+import { loadStripe } from '@stripe/stripe-js';
 import { useEffect, useState, type FormEvent } from 'react';
 import { usePlaidLink } from 'react-plaid-link';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
@@ -14,7 +16,9 @@ import type {
 } from '@hearth/shared';
 import { MemberPermissionSchema } from '@hearth/shared';
 import {
+  useCompleteStripeFcSession,
   useCreatePlaidLinkToken,
+  useCreateStripeFcSession,
   useCurrentUser,
   useDisconnectIntegration,
   useExchangePlaidPublicToken,
@@ -106,9 +110,13 @@ export function Settings() {
                 />
               ) : (
                 <ul className="divide-y divide-border">
-                  {KNOWN_INTEGRATIONS.map((known) => {
+                  {visibleIntegrations(integrations.data).map((known) => {
                     const row = integrations.data.find((i) => i.type === known.type) ?? known;
-                    return <PlaidIntegrationRow key={known.type} row={row} />;
+                    return known.type === 'stripe_fc' ? (
+                      <StripeFcIntegrationRow key={known.type} row={row} />
+                    ) : (
+                      <PlaidIntegrationRow key={known.type} row={row} />
+                    );
                   })}
                 </ul>
               )}
@@ -593,13 +601,29 @@ const integrationStatusBadge = {
   disconnected: { tone: 'neutral' as const, label: 'Disconnected' },
 };
 
-/** Only Plaid is implemented today (Stripe/Docusign/Email are deferred —
- * docs/WHATS_NEXT.md §3), so we surface just the one connectable type.
+/** Plaid and Stripe Financial Connections are the two implemented bank feeds
+ * (Stripe rent payments/Docusign/Email are deferred — docs/WHATS_NEXT.md §3).
  * Rendered even when the account has no matching DB row yet (a fresh
  * production account starts with zero). */
 const KNOWN_INTEGRATIONS: { type: IntegrationType; name: string }[] = [
   { type: 'plaid', name: 'Plaid (bank import)' },
+  { type: 'stripe_fc', name: 'Stripe Financial Connections (bank import)' },
 ];
+
+/** Plaid is hidden (not removed) while Stripe Financial Connections is the
+ * preferred bank feed — set VITE_SHOW_PLAID=true to resurface the row. The
+ * whole Plaid stack (API routes, adapter, sync) stays live either way, and an
+ * account that already has a non-disconnected Plaid row always sees it so
+ * imports stay explainable and Disconnect stays reachable. The env read lives
+ * inside the function (not a module constant) so tests can vi.stubEnv it. */
+function visibleIntegrations(rows: Integration[]): typeof KNOWN_INTEGRATIONS {
+  const showPlaid = import.meta.env.VITE_SHOW_PLAID === 'true';
+  return KNOWN_INTEGRATIONS.filter((known) => {
+    if (known.type !== 'plaid' || showPlaid) return true;
+    const plaidRow = rows.find((i) => i.type === 'plaid');
+    return plaidRow !== undefined && plaidRow.status !== 'disconnected';
+  });
+}
 
 type IntegrationRowInput = Integration | { type: IntegrationType; name: string };
 
@@ -684,6 +708,103 @@ function PlaidIntegrationRow({ row }: { row: IntegrationRowInput }) {
           variant="secondary"
           size="sm"
           busy={createLinkToken.isPending || exchange.isPending}
+          onClick={handleConnect}
+        >
+          Connect
+        </Button>
+      )}
+    </li>
+  );
+}
+
+/** Stripe Financial Connections mirrors the Plaid row: in mock mode (no real
+ * Stripe keys configured server-side) Connect completes immediately with no
+ * modal; with real keys it launches Stripe.js's hosted bank-auth modal
+ * (`collectFinancialConnectionsAccounts`). The publishable key arrives with
+ * the session response, so the web bundle needs no Stripe build-time env. */
+function StripeFcIntegrationRow({ row }: { row: IntegrationRowInput }) {
+  const { toast } = useToast();
+  const createSession = useCreateStripeFcSession();
+  const complete = useCompleteStripeFcSession();
+  const disconnect = useDisconnectIntegration();
+  const [modalOpen, setModalOpen] = useState(false);
+  const badge = integrationStatusBadge['id' in row ? row.status : 'disconnected'];
+
+  const finishConnecting = (sessionId: string) => {
+    complete.mutate(sessionId, {
+      onSuccess: () => toast('Stripe Financial Connections connected.', 'positive'),
+      onError: () => toast('Could not finish connecting the bank account. Try again.', 'danger'),
+    });
+  };
+
+  const launchModal = async (sessionId: string, clientSecret: string, publishableKey: string) => {
+    setModalOpen(true);
+    try {
+      const stripe = await loadStripe(publishableKey);
+      if (!stripe) throw new Error('Stripe.js failed to load');
+      const result = await stripe.collectFinancialConnectionsAccounts({ clientSecret });
+      if (result.error) {
+        toast(result.error.message ?? 'Could not connect the bank account.', 'danger');
+        return;
+      }
+      if (result.financialConnectionsSession.accounts.length === 0) {
+        // User closed the modal without linking anything — not an error.
+        toast('No bank account was linked.', 'neutral');
+        return;
+      }
+      finishConnecting(sessionId);
+    } catch {
+      toast('Could not open the bank connection window. Try again.', 'danger');
+    } finally {
+      setModalOpen(false);
+    }
+  };
+
+  const handleConnect = () => {
+    createSession.mutate(undefined, {
+      onSuccess: ({ sessionId, clientSecret, publishableKey, mock }) => {
+        if (mock) {
+          finishConnecting(sessionId);
+        } else {
+          void launchModal(sessionId, clientSecret, publishableKey);
+        }
+      },
+      onError: () => toast('Could not start the bank connection. Try again.', 'danger'),
+    });
+  };
+
+  return (
+    <li className="flex items-center justify-between gap-3 py-3 first:pt-0 last:pb-0">
+      <div>
+        <p className="text-sm font-medium text-ink">{row.name}</p>
+        <div className="mt-1">
+          <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge>
+        </div>
+        {'id' in row && row.lastSyncedAt && (
+          <p className="mt-1 text-xs text-ink-muted">
+            Last imported {formatDateTime(row.lastSyncedAt)}
+          </p>
+        )}
+      </div>
+      {isConnectedIntegration(row) ? (
+        <Button
+          variant="secondary"
+          size="sm"
+          busy={disconnect.isPending}
+          onClick={() =>
+            disconnect.mutate(row.id, {
+              onSuccess: () => toast(`${row.name} disconnected.`, 'neutral'),
+              onError: () => toast('Could not disconnect. Try again.', 'danger'),
+            })
+          }
+        >
+          Disconnect
+        </Button>
+      ) : (
+        <Button
+          variant="secondary"
+          size="sm"
+          busy={createSession.isPending || complete.isPending || modalOpen}
           onClick={handleConnect}
         >
           Connect

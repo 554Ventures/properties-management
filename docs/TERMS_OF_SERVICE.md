@@ -50,7 +50,7 @@ We may suspend or terminate accounts that violate this section.
 
 ## 7. Third-party integrations
 
-The Service integrates with third-party providers, currently or prospectively including Plaid (bank-account linking), Stripe (payment processing), Docusign (e-signature), and email delivery providers. Your use of any such integration is also subject to that provider's own terms. We are not responsible for the acts or omissions of these third-party providers, though we choose providers we believe are reputable and appropriate for the data involved.
+The Service integrates with third-party providers, currently or prospectively including Plaid (bank-account linking), Stripe (bank-account linking via Stripe Financial Connections, and prospectively payment processing), Docusign (e-signature), and email delivery providers. Your use of any such integration is also subject to that provider's own terms. We are not responsible for the acts or omissions of these third-party providers, though we choose providers we believe are reputable and appropriate for the data involved.
 
 ## 8. Fees
 

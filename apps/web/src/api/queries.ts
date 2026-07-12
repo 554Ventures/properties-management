@@ -68,6 +68,7 @@ import type {
   ReviewQueueResponse,
   SendRemindersInput,
   SendRemindersResponse,
+  StripeFcSessionResponse,
   TeamResponse,
   Tenant,
   TenantDetailResponse,
@@ -935,6 +936,23 @@ export function useExchangePlaidPublicToken() {
   return useMutation({
     mutationFn: (publicToken: string) =>
       api.post<Integration>('/integrations/plaid/exchange', { publicToken }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['integrations'] });
+    },
+  });
+}
+
+export function useCreateStripeFcSession() {
+  return useMutation({
+    mutationFn: () => api.post<StripeFcSessionResponse>('/integrations/stripe_fc/session'),
+  });
+}
+
+export function useCompleteStripeFcSession() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (sessionId: string) =>
+      api.post<Integration>('/integrations/stripe_fc/complete', { sessionId }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['integrations'] });
     },

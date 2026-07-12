@@ -17,8 +17,9 @@ export function PrivacyPolicyContent() {
           554 Properties ("554 Properties," "we," "us," "our") provides software that helps
           independent landlords manage rental properties, tenants, leases, rent collection,
           bookkeeping, and reporting, including an AI assistant ("Roost") and, where enabled, bank
-          transaction import via Plaid. This policy describes how we handle personal information
-          when you use the 554 Properties web application. It applies to:
+          transaction import via Plaid or Stripe Financial Connections. This policy describes how
+          we handle personal information when you use the 554 Properties web application. It
+          applies to:
         </p>
         <ul className="mt-2 list-disc space-y-1 pl-5">
           <li>
@@ -64,9 +65,13 @@ export function PrivacyPolicyContent() {
         <h3 className="mt-4 font-medium text-ink">From linked third-party accounts</h3>
         <p className="mt-2">
           Bank transaction data, only if you connect a bank account: date, amount, description,
-          and a bank-assigned transaction id for transactions you import. We never receive or
-          store your online banking username or password — Plaid handles that exchange and gives
-          us a secure access token instead, which we encrypt before storing.
+          and an aggregator-assigned transaction id for transactions you import. You choose the
+          aggregator when connecting — Plaid or Stripe Financial Connections. We never receive or
+          store your online banking username or password — the aggregator handles that exchange
+          directly with your bank. With Plaid, we receive a secure access token, which we encrypt
+          before storing; with Stripe Financial Connections, we store only opaque account
+          identifiers that are unusable outside our own Stripe account — no bank credential or
+          bearer token of any kind.
         </p>
         <h3 className="mt-4 font-medium text-ink">Collected automatically</h3>
         <p className="mt-2">
@@ -143,8 +148,9 @@ export function PrivacyPolicyContent() {
           <li>All traffic to the Service is encrypted in transit (HTTPS/TLS).</li>
           <li>Passwords are managed entirely by our authentication provider — we never see them.</li>
           <li>
-            Bank-account access tokens are encrypted at rest before storage, using a dedicated key
-            never checked into source control.
+            Bank-account access tokens (from Plaid) are encrypted at rest before storage, using a
+            dedicated key never checked into source control. Stripe Financial Connections links
+            involve no stored bank credential at all — only opaque Stripe account identifiers.
           </li>
           <li>
             Every account's data is logically separated from every other account's — a request
@@ -174,7 +180,12 @@ export function PrivacyPolicyContent() {
           </li>
           <li>
             <strong className="font-medium">Plaid</strong> — bank-account linking and transaction
-            data, only if you connect a bank account.
+            data, only if you connect a bank account through Plaid.
+          </li>
+          <li>
+            <strong className="font-medium">Stripe</strong> — bank-account linking and transaction
+            data via Stripe Financial Connections, only if you connect a bank account through
+            Stripe.
           </li>
           <li>
             <strong className="font-medium">Anthropic</strong> — the AI assistant and receipt-image

@@ -1,6 +1,7 @@
 import type { Integration, IntegrationStatus, IntegrationType } from '@hearth/shared';
 import type { Integration as DbIntegration } from '@prisma/client';
-import { createPlaidAdapter } from '../integrations/factory';
+import { createPlaidAdapter, createStripeFcAdapter } from '../integrations/factory';
+import type { StripeFcAccountSummary } from '../integrations/types';
 import { decrypt, encrypt } from '../lib/crypto';
 import { iso, isoOrNull } from '../lib/dates';
 import { BadRequestError, NotFoundError } from '../lib/errors';
@@ -11,6 +12,15 @@ interface PlaidConfig {
   accessTokenEncrypted: string;
   itemId: string;
   cursor: string | null;
+}
+
+// No encrypted credential here: fca_/cus_ ids are inert without
+// STRIPE_SECRET_KEY, which never leaves the env (see real-stripe-fc.ts).
+interface StripeFcConfig {
+  customerId: string | null;
+  accounts: StripeFcAccountSummary[];
+  /** fca account id → last processed transaction_refresh id. */
+  cursors: Record<string, string>;
 }
 
 /** Encrypted only when INTEGRATION_ENCRYPTION_KEY is set (real mode); plaintext in mock mode. */
@@ -27,6 +37,7 @@ export function decodeAccessToken(encoded: string): string {
 const INTEGRATION_NAMES: Record<IntegrationType, string> = {
   plaid: 'Plaid (bank import)',
   stripe: 'Stripe (rent payments)',
+  stripe_fc: 'Stripe Financial Connections (bank import)',
   docusign: 'Docusign (e-sign)',
   email: 'Email (reminders & reports)',
   mcp_client: 'MCP client',
@@ -63,6 +74,11 @@ export async function connectMock(
   if (type === 'plaid') {
     throw new BadRequestError(
       'Use POST /integrations/plaid/link-token and /integrations/plaid/exchange to connect Plaid.',
+    );
+  }
+  if (type === 'stripe_fc') {
+    throw new BadRequestError(
+      'Use POST /integrations/stripe_fc/session and /integrations/stripe_fc/complete to connect Stripe Financial Connections.',
     );
   }
   const existing = await prisma.integration.findFirst({ where: { accountId, type } });
@@ -136,6 +152,105 @@ export async function exchangePublicToken(
   return toApiIntegration(row);
 }
 
+export async function createStripeFcSession(accountId: string): Promise<{
+  clientSecret: string;
+  sessionId: string;
+  publishableKey: string;
+  mock: boolean;
+}> {
+  // Reuse the Stripe Customer across reconnects (even after a disconnect the
+  // config is wiped, so only a currently-configured row can supply one).
+  const existing = await prisma.integration.findFirst({
+    where: { accountId, type: 'stripe_fc' },
+  });
+  let customerId: string | null = null;
+  if (existing && existing.configJson !== '{}') {
+    customerId = (JSON.parse(existing.configJson) as Partial<StripeFcConfig>).customerId ?? null;
+  }
+  return createStripeFcAdapter().createSession(accountId, customerId);
+}
+
+export async function completeStripeFcSession(
+  accountId: string,
+  sessionId: string,
+  actor: AuditActor = 'user',
+): Promise<Integration> {
+  let result: Awaited<ReturnType<ReturnType<typeof createStripeFcAdapter>['completeSession']>>;
+  try {
+    result = await createStripeFcAdapter().completeSession(sessionId);
+  } catch (err) {
+    // Covers both "no accounts collected" (user closed the modal) and an
+    // unknown/foreign session id; neither should surface as a 500.
+    throw new BadRequestError(
+      err instanceof Error ? err.message : 'Could not complete the Stripe bank connection.',
+    );
+  }
+  const config: StripeFcConfig = {
+    customerId: result.customerId,
+    accounts: result.accounts,
+    cursors: {},
+  };
+  const accountIds = result.accounts.map((a) => a.id);
+  const existing = await prisma.integration.findFirst({ where: { accountId, type: 'stripe_fc' } });
+  const row = existing
+    ? await prisma.integration.update({
+        where: { id: existing.id },
+        data: {
+          status: 'connected',
+          externalRef: sessionId,
+          configJson: JSON.stringify(config),
+        },
+      })
+    : await prisma.integration.create({
+        data: {
+          accountId,
+          type: 'stripe_fc',
+          name: INTEGRATION_NAMES.stripe_fc,
+          status: 'connected',
+          externalRef: sessionId,
+          scopesJson: '[]',
+          configJson: JSON.stringify(config),
+        },
+      });
+  await writeAudit(accountId, {
+    actor,
+    action: 'connect',
+    entityType: 'integration',
+    entityId: row.id,
+    detail: { type: 'stripe_fc', sessionId, fcAccountIds: accountIds },
+  });
+  return toApiIntegration(row);
+}
+
+export interface ConnectedStripeFcState {
+  integrationId: string;
+  config: StripeFcConfig;
+  lastSyncedAt: Date | null;
+}
+
+export async function getConnectedStripeFc(
+  accountId: string,
+): Promise<ConnectedStripeFcState | null> {
+  const integration = await prisma.integration.findFirst({
+    where: { accountId, type: 'stripe_fc', status: 'connected' },
+  });
+  if (!integration) return null;
+  const config = JSON.parse(integration.configJson) as StripeFcConfig;
+  return { integrationId: integration.id, config, lastSyncedAt: integration.lastSyncedAt };
+}
+
+export async function persistStripeFcCursors(
+  integrationId: string,
+  config: StripeFcConfig,
+  cursors: Record<string, string>,
+): Promise<void> {
+  const next: StripeFcConfig = { ...config, cursors };
+  await prisma.integration.update({
+    where: { id: integrationId },
+    data: { configJson: JSON.stringify(next) },
+  });
+}
+
 export interface ConnectedPlaidState {
   integrationId: string;
   itemId: string;
@@ -181,6 +296,20 @@ export async function disconnect(
 ): Promise<void> {
   const existing = await prisma.integration.findFirst({ where: { id, accountId } });
   if (!existing) throw new NotFoundError('integration', id);
+
+  if (existing.type === 'stripe_fc' && existing.configJson !== '{}') {
+    // Same best-effort contract as the Plaid branch below: bank-side cleanup
+    // must never block the user's local disconnect.
+    try {
+      const config = JSON.parse(existing.configJson) as Partial<StripeFcConfig>;
+      const fcAccountIds = (config.accounts ?? []).map((a) => a.id);
+      if (fcAccountIds.length > 0) {
+        await createStripeFcAdapter().disconnectAccounts(fcAccountIds);
+      }
+    } catch (err) {
+      console.error('[stripe_fc] pre-disconnect cleanup failed (continuing local disconnect)', err);
+    }
+  }
 
   if (existing.type === 'plaid' && existing.configJson !== '{}') {
     // Best-effort: nothing here — a Plaid-side error, a malformed config, or a

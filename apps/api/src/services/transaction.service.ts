@@ -20,7 +20,12 @@ import type {
 } from '@hearth/shared';
 import type { Prisma, Transaction as DbTransaction } from '@prisma/client';
 import { formatUsd } from '@hearth/shared';
-import { createPlaidAdapter, isRealPlaidConfigured } from '../integrations/factory';
+import {
+  createPlaidAdapter,
+  createStripeFcAdapter,
+  isRealPlaidConfigured,
+  isRealStripeFcConfigured,
+} from '../integrations/factory';
 import type { PlaidBankTransaction } from '../integrations/types';
 import { addDays, currentPeriod, iso, periodOf } from '../lib/dates';
 import {
@@ -31,7 +36,12 @@ import {
 } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { isUniqueConstraintError } from '../lib/prisma-errors';
-import { getConnectedPlaid, persistPlaidCursor } from './integration.service';
+import {
+  getConnectedPlaid,
+  getConnectedStripeFc,
+  persistPlaidCursor,
+  persistStripeFcCursors,
+} from './integration.service';
 import type { UsageLog } from '../ai/agent-loop';
 import { createReceiptExtractor, type ReceiptImageMimetype } from '../ai/receipt';
 import { writeAudit, type AuditActor } from './audit.service';
@@ -729,17 +739,18 @@ export async function scanReceipt(
   };
 }
 
-// ── bank import (Plaid → pending_review rows) ────────────────────────────────
+// ── bank import (Plaid / Stripe FC → pending_review rows) ────────────────────
 
 /**
- * Server-side import cooldown. Plaid pulls are metered, so real mode defaults
- * to once per hour; mock mode defaults to no cooldown so the offline demo
- * (import → review → import again) stays frictionless. The env var overrides
- * both (minutes; 0 disables).
+ * Server-side import cooldown. Bank pulls are metered (Plaid per-sync,
+ * Stripe FC per-refresh), so real mode defaults to once per hour; mock mode
+ * defaults to no cooldown so the offline demo (import → review → import
+ * again) stays frictionless. The env var overrides both (minutes; 0 disables).
  */
 function importCooldownMs(): number {
   const raw = process.env.HEARTH_IMPORT_COOLDOWN_MINUTES;
-  const minutes = raw !== undefined && raw !== '' ? Number(raw) : isRealPlaidConfigured() ? 60 : 0;
+  const realMode = isRealPlaidConfigured() || isRealStripeFcConfigured();
+  const minutes = raw !== undefined && raw !== '' ? Number(raw) : realMode ? 60 : 0;
   return Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : 0;
 }
 
@@ -793,30 +804,23 @@ async function createBankTransaction(
   return 'imported';
 }
 
-export async function importFromBank(accountId: string): Promise<ImportTransactionsResponse> {
-  const adapter = createPlaidAdapter();
+interface BankSyncBatch {
+  added: PlaidBankTransaction[];
+  modified: PlaidBankTransaction[];
+  removed: string[];
+}
 
-  // Real mode requires an already-connected Plaid item. Mock mode uses a
-  // connected row when one exists (so the cursor advances through the mock
-  // script) and otherwise stays stateless (no Integration row required).
-  const plaidState = await getConnectedPlaid(accountId);
-  if (isRealPlaidConfigured() && !plaidState) throw new PlaidNotConnectedError();
-
-  const cooldownMs = importCooldownMs();
-  if (cooldownMs > 0 && plaidState?.lastSyncedAt) {
-    const nextAllowedAt = plaidState.lastSyncedAt.getTime() + cooldownMs;
-    if (Date.now() < nextAllowedAt) throw new ImportRateLimitedError(new Date(nextAllowedAt));
-  }
-
-  const accessToken = plaidState?.accessToken ?? 'mock-access-token';
-  const cursor = plaidState?.cursor ?? null;
-  const { added, modified, removed, nextCursor } = await adapter.syncTransactions(
-    accessToken,
-    cursor,
-  );
-
-  const counts = { imported: 0, skipped: 0, updated: 0, removed: 0 };
-
+/**
+ * Apply one provider's added/modified/removed batch to the ledger.
+ * `provider` only flavors the audit-trail reason strings
+ * (`plaid_modified`, `stripe_fc_removed`, …).
+ */
+async function applySyncBatch(
+  accountId: string,
+  provider: 'plaid' | 'stripe_fc',
+  { added, modified, removed }: BankSyncBatch,
+  counts: ImportTransactionsResponse,
+): Promise<void> {
   for (const t of added) {
     counts[await createBankTransaction(accountId, t)] += 1;
   }
@@ -857,7 +861,7 @@ export async function importFromBank(accountId: string): Promise<ImportTransacti
       action: 'transaction.updated',
       entityType: 'transaction',
       entityId: existing.id,
-      detail: { source: 'bank', externalId: t.externalId, reason: 'plaid_modified' },
+      detail: { source: 'bank', externalId: t.externalId, reason: `${provider}_modified` },
     });
     counts.updated += 1;
   }
@@ -872,10 +876,26 @@ export async function importFromBank(accountId: string): Promise<ImportTransacti
       action: 'transaction.deleted',
       entityType: 'transaction',
       entityId: existing.id,
-      detail: { source: 'bank', externalId, reason: 'plaid_removed' },
+      detail: { source: 'bank', externalId, reason: `${provider}_removed` },
     });
     counts.removed += 1;
   }
+}
+
+async function syncPlaidFeed(
+  accountId: string,
+  plaidState: Awaited<ReturnType<typeof getConnectedPlaid>>,
+  counts: ImportTransactionsResponse,
+): Promise<void> {
+  const adapter = createPlaidAdapter();
+  const accessToken = plaidState?.accessToken ?? 'mock-access-token';
+  const cursor = plaidState?.cursor ?? null;
+  const { added, modified, removed, nextCursor } = await adapter.syncTransactions(
+    accessToken,
+    cursor,
+  );
+
+  await applySyncBatch(accountId, 'plaid', { added, modified, removed }, counts);
 
   if (plaidState) {
     await persistPlaidCursor(
@@ -891,6 +911,82 @@ export async function importFromBank(accountId: string): Promise<ImportTransacti
     where: { accountId, type: 'plaid' },
     data: { lastSyncedAt: new Date() },
   });
+}
+
+async function syncStripeFcFeed(
+  accountId: string,
+  state: NonNullable<Awaited<ReturnType<typeof getConnectedStripeFc>>>,
+  counts: ImportTransactionsResponse,
+): Promise<void> {
+  const adapter = createStripeFcAdapter();
+  const fcAccountIds = state.config.accounts.map((a) => a.id);
+  const { added, modified, removed, nextCursors } = await adapter.syncTransactions(
+    fcAccountIds,
+    state.config.cursors ?? {},
+  );
+
+  await applySyncBatch(accountId, 'stripe_fc', { added, modified, removed }, counts);
+
+  await persistStripeFcCursors(state.integrationId, state.config, nextCursors);
+  await prisma.integration.updateMany({
+    where: { accountId, type: 'stripe_fc' },
+    data: { lastSyncedAt: new Date() },
+  });
+}
+
+export async function importFromBank(accountId: string): Promise<ImportTransactionsResponse> {
+  const realPlaid = isRealPlaidConfigured();
+  const realStripeFc = isRealStripeFcConfigured();
+  const anyReal = realPlaid || realStripeFc;
+
+  const plaidState = await getConnectedPlaid(accountId);
+  const fcState = await getConnectedStripeFc(accountId);
+
+  // Eligibility rules:
+  //  - A real-configured provider syncs only when its integration row is
+  //    connected.
+  //  - Once ANY real provider is configured, unconfigured providers are
+  //    skipped entirely — their mock adapters must never leak demo rows into
+  //    a ledger that also holds real bank data (e.g. real Stripe keys set,
+  //    Plaid left unconfigured).
+  //  - With nothing real configured (pure offline demo), mock Plaid keeps its
+  //    historical stateless behavior (no Integration row required; a
+  //    connected row just persists the mock cursor), while mock Stripe FC
+  //    requires a connected row created via its session/complete flow.
+  const plaidEligible = realPlaid ? plaidState !== null : !anyReal;
+  const fcEligible = (realStripeFc || !anyReal) && fcState !== null;
+
+  if (anyReal && !plaidEligible && !fcEligible) throw new PlaidNotConnectedError();
+
+  const cooldownMs = importCooldownMs();
+  const counts: ImportTransactionsResponse = { imported: 0, skipped: 0, updated: 0, removed: 0 };
+
+  const feeds: { eligible: boolean; lastSyncedAt: Date | null; run: () => Promise<void> }[] = [
+    {
+      eligible: plaidEligible,
+      lastSyncedAt: plaidState?.lastSyncedAt ?? null,
+      run: () => syncPlaidFeed(accountId, plaidState, counts),
+    },
+    {
+      eligible: fcEligible,
+      lastSyncedAt: fcState?.lastSyncedAt ?? null,
+      run: () => syncStripeFcFeed(accountId, fcState!, counts),
+    },
+  ];
+
+  const eligible = feeds.filter((f) => f.eligible);
+  const nextAllowedAt = (f: (typeof feeds)[number]) =>
+    f.lastSyncedAt ? f.lastSyncedAt.getTime() + cooldownMs : 0;
+  // A feed inside its cooldown window is skipped silently as long as another
+  // one can still sync; only when every eligible feed is cooling down does the
+  // import surface a rate-limit error (with the soonest retry time).
+  const due =
+    cooldownMs > 0 ? eligible.filter((f) => Date.now() >= nextAllowedAt(f)) : eligible;
+  if (eligible.length > 0 && due.length === 0) {
+    throw new ImportRateLimitedError(new Date(Math.min(...eligible.map(nextAllowedAt))));
+  }
+
+  for (const feed of due) await feed.run();
 
   return counts;
 }

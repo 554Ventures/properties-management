@@ -103,6 +103,7 @@ Worker secrets (set once with `npx wrangler secret put <NAME>`; forwarded into t
 | `PLAID_CLIENT_ID` / `PLAID_SECRET` | §6 — optional, falls back to the mock adapter until set |
 | `PLAID_ENV` | §6 — literal `sandbox` for now |
 | `INTEGRATION_ENCRYPTION_KEY` | §6 — self-generated, not from Plaid |
+| `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` | §8 — optional, falls back to the mock Stripe FC adapter until both set |
 
 Instance sizing: `basic` to start; revisit after load testing (plan open item #2).
 
@@ -153,6 +154,15 @@ For the `apps/mobile` Capacitor shell (`docs/MOBILE.md` has the full checklist +
 3. `APNS_ENV`: `sandbox` for Xcode-run installs, `production` for TestFlight — must match the install channel or valid device tokens get pruned.
 4. `npx wrangler secret put` all five; record in `.secrets.local`. Unset = the API uses the mock push provider (boot warning if partially set).
 
+## 8. Stripe Financial Connections (bank import #2) — *added 2026-07-12*
+
+A second bank-transaction feed alongside Plaid (`docs/WHATS_NEXT.md` §3). Optional — the app runs the mock Stripe FC adapter until both keys are set.
+
+1. [dashboard.stripe.com](https://dashboard.stripe.com) → Developers → API keys. 📋 collect `STRIPE_SECRET_KEY` (`sk_test_…`) and `STRIPE_PUBLISHABLE_KEY` (`pk_test_…`). Test keys use Stripe's test institutions — no registration wait.
+2. Both vars must be set together or the app falls back to the mock adapter (a boot-time warning fires if only one is set). No extra encryption key needed: unlike Plaid, only inert `fca_`/`cus_` ids are stored, never a bearer credential.
+3. To test: Settings → Connect on the Stripe Financial Connections row → pick a test institution in Stripe's modal → Money → "Import from bank" (the first import after linking may return 0 rows while Stripe's initial transaction refresh finishes — import again a little later).
+4. Moving to live mode later: complete the **Financial Connections registration** under Dashboard → Settings → Financial Connections (there can be a review step), then swap in `sk_live_`/`pk_live_` values. Transactions pricing is per institution per account holder per month — the app subscribes each linked account to daily refreshes.
+
 ## Values you should have collected
 
 | # | Value | Goes to |
@@ -167,3 +177,4 @@ For the `apps/mobile` Capacitor shell (`docs/MOBILE.md` has the full checklist +
 | 8 | (nothing else — the Supabase secret key is deliberately never provisioned) |
 | 9 | Plaid Sandbox `client_id`/`secret` (§6) | container `PLAID_CLIENT_ID` / `PLAID_SECRET` |
 | 10 | `INTEGRATION_ENCRYPTION_KEY` (self-generated, §6) | container secret |
+| 11 | Stripe test `sk_test_…`/`pk_test_…` (§8) | container `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` |

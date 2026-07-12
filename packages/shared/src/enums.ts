@@ -53,7 +53,16 @@ export type InsightStatus = z.infer<typeof InsightStatusSchema>;
 export const InsightSeveritySchema = z.enum(['info', 'warning', 'positive']);
 export type InsightSeverity = z.infer<typeof InsightSeveritySchema>;
 
-export const IntegrationTypeSchema = z.enum(['plaid', 'stripe', 'docusign', 'email', 'mcp_client']);
+// 'stripe' is rent payments (deferred); 'stripe_fc' is Stripe Financial
+// Connections — a bank-transaction feed alongside Plaid, not a payment rail.
+export const IntegrationTypeSchema = z.enum([
+  'plaid',
+  'stripe',
+  'stripe_fc',
+  'docusign',
+  'email',
+  'mcp_client',
+]);
 export type IntegrationType = z.infer<typeof IntegrationTypeSchema>;
 
 export const IntegrationStatusSchema = z.enum(['connected', 'disconnected', 'mock']);

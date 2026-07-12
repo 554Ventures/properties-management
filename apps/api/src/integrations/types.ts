@@ -35,6 +35,62 @@ export interface PlaidAdapter {
   removeItem(accessToken: string): Promise<void>;
 }
 
+export interface StripeFcAccountSummary {
+  /** Stripe Financial Connections account id (`fca_...`). */
+  id: string;
+  institutionName: string;
+  last4: string | null;
+}
+
+export interface StripeFcSession {
+  clientSecret: string;
+  sessionId: string;
+  /** Rides along so the web bundle needs no Stripe build-time env. */
+  publishableKey: string;
+  mock: boolean;
+}
+
+export interface StripeFcSyncResult {
+  added: PlaidBankTransaction[];
+  /** Status changes (pending → posted) redeliver the same fctxn id. */
+  modified: PlaidBankTransaction[];
+  /** fctxn ids whose transactions the bank voided. */
+  removed: string[];
+  /** fca account id → last processed transaction_refresh id. */
+  nextCursors: Record<string, string>;
+}
+
+/**
+ * Stripe Financial Connections — a second bank-transaction feed alongside
+ * Plaid (not the deferred 'stripe' rent-payment rail). Flow: createSession →
+ * Stripe.js `collectFinancialConnectionsAccounts(clientSecret)` on the client
+ * → completeSession retrieves the collected accounts server-side and
+ * subscribes each to daily transaction refreshes.
+ */
+export interface StripeFcAdapter {
+  /** Create a Financial Connections Session (reusing the Stripe Customer when given). */
+  createSession(accountId: string, existingCustomerId: string | null): Promise<StripeFcSession>;
+  /**
+   * Retrieve the accounts collected in a completed session and subscribe each
+   * to transaction refreshes. Rejects when the session collected no accounts.
+   */
+  completeSession(
+    sessionId: string,
+  ): Promise<{ customerId: string | null; accounts: StripeFcAccountSummary[] }>;
+  /**
+   * Incremental pull mapped onto the same added/modified/removed shape the
+   * bank-import pipeline consumes. `cursors` maps fca account id → the last
+   * processed transaction_refresh id; pass {} on first sync and persist the
+   * returned `nextCursors`.
+   */
+  syncTransactions(
+    accountIds: string[],
+    cursors: Record<string, string>,
+  ): Promise<StripeFcSyncResult>;
+  /** Disconnect every account bank-side (best-effort on the caller's side). */
+  disconnectAccounts(accountIds: string[]): Promise<void>;
+}
+
 export interface StripeAdapter {
   createPaymentLink(ref: string, amountCents: number): Promise<{ url: string }>;
   /** Mock settlement: resolves immediately as 'paid'. */

@@ -26,3 +26,18 @@ export const LinkTokenResponseSchema = z.object({
 export const ExchangePublicTokenInputSchema = z.object({
   publicToken: z.string(),
 });
+
+// POST /integrations/stripe_fc/session — the publishable key rides along so
+// the web bundle needs no Stripe build-time env; `mock` mirrors Plaid's
+// LinkTokenResponse and tells the client to skip the Stripe.js modal.
+export const StripeFcSessionResponseSchema = z.object({
+  clientSecret: z.string(),
+  sessionId: z.string(),
+  publishableKey: z.string(),
+  mock: z.boolean(),
+});
+
+// POST /integrations/stripe_fc/complete
+export const StripeFcCompleteInputSchema = z.object({
+  sessionId: z.string(),
+});

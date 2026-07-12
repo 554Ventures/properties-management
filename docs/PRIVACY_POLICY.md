@@ -9,7 +9,7 @@
 
 ## 1. Who this policy covers and what "554 Properties" means here
 
-554 Properties ("554 Properties," "we," "us," "our") provides software that helps independent landlords manage rental properties, tenants, leases, rent collection, bookkeeping, and reporting, including an AI assistant ("Roost") and, where enabled, bank-account transaction import via Plaid.
+554 Properties ("554 Properties," "we," "us," "our") provides software that helps independent landlords manage rental properties, tenants, leases, rent collection, bookkeeping, and reporting, including an AI assistant ("Roost") and, where enabled, bank-account transaction import via Plaid or Stripe Financial Connections.
 
 This policy describes how we handle personal information when you use the 554 Properties web application at app.554properties.com (the "Service"). It applies to:
 
@@ -29,7 +29,7 @@ Grounded in what the Service actually does (not a generic list):
 - **Chat messages you send to the AI assistant ("Roost")** and any files (e.g., receipt photos) you submit to it.
 
 ### 2.2 Information from linked third-party accounts
-- **Bank transaction data, only if you connect a bank account:** if you link a bank account through Plaid, we receive transaction-level data (date, amount, description, a bank-assigned transaction identifier) for transactions you choose to import into your ledger. **We never receive or store your online banking username or password** — Plaid handles that exchange and gives us a secure access token instead, which we encrypt before storing (see [§5](#5-how-we-protect-your-information)).
+- **Bank transaction data, only if you connect a bank account:** if you link a bank account through Plaid or Stripe Financial Connections (you choose which when connecting), we receive transaction-level data (date, amount, description, an aggregator-assigned transaction identifier) for transactions you choose to import into your ledger. **We never receive or store your online banking username or password** — the aggregator (Plaid or Stripe) handles that exchange directly with your bank. With Plaid, we receive a secure access token, which we encrypt before storing (see [§5](#5-how-we-protect-your-information)); with Stripe Financial Connections, we store only opaque account identifiers that are unusable outside our own Stripe account — no bank credential or bearer token of any kind.
 
 ### 2.3 Information collected automatically
 - **Usage and log data:** IP address, browser/device information, timestamps, and pages/actions used, collected through standard web server logging.
@@ -48,7 +48,7 @@ We use the information above only to operate, maintain, and improve the Service,
 - Store and display your properties, tenants, leases, transactions, and documents back to you.
 - Calculate the derived figures the Service shows you (cash flow, rent-collection status, tax set-aside estimates, reports) — always from your own data, scoped to your account only.
 - Power the AI assistant's answers to your questions, using your own account data as context (see [§4](#4-the-ai-assistant-and-what-it-sends-to-anthropic) for specifics).
-- Import bank transactions you've asked us to import, via Plaid.
+- Import bank transactions you've asked us to import, via the bank aggregator you connected (Plaid or Stripe Financial Connections).
 - Send you service-related communications (e.g., password reset emails via Supabase, or — for actions you configure — rent reminder emails and report emails on your behalf to your tenants/accountant).
 - Maintain security, investigate abuse, and enforce our Terms of Service.
 - Comply with legal obligations.
@@ -69,7 +69,7 @@ The in-app assistant ("Roost") is built on Claude, a large language model provid
 
 - All traffic to the Service is encrypted in transit (HTTPS/TLS).
 - Passwords are managed entirely by our authentication provider (Supabase Auth) — we never see or store a raw password.
-- Bank-account access tokens (from Plaid) are encrypted at rest before storage, using a dedicated encryption key that is never checked into source control and is provisioned separately per environment.
+- Bank-account access tokens (from Plaid) are encrypted at rest before storage, using a dedicated encryption key that is never checked into source control and is provisioned separately per environment. Stripe Financial Connections links involve no stored bank credential at all — we keep only opaque Stripe account identifiers that are unusable outside our own Stripe account.
 - Every account's data is logically separated from every other account's — the application enforces that a request under one account can never read or write another account's properties, tenants, transactions, or documents.
 - Uploaded files are validated against their actual content (not just a client-supplied label) before being accepted, to reduce the risk of disguised or malicious file uploads.
 - We do not currently sell, and have no plans to sell, personal information to data brokers or advertisers.
@@ -83,12 +83,13 @@ We use the following service providers to operate 554 Properties. Each processes
 | Provider | What they do | What they receive |
 |---|---|---|
 | **Supabase** | Database hosting, authentication, and (where enabled) file storage | Effectively all data you enter into the Service, since it's our database/infrastructure provider |
-| **Plaid** | Bank-account linking and transaction data aggregation, only if you connect a bank account | Your bank login (handled directly by Plaid, never by us), and the transaction data it returns to us |
+| **Plaid** | Bank-account linking and transaction data aggregation, only if you connect a bank account through Plaid | Your bank login (handled directly by Plaid, never by us), and the transaction data it returns to us |
+| **Stripe** | Bank-account linking and transaction data aggregation via Stripe Financial Connections, only if you connect a bank account through Stripe | Your bank login (handled directly by Stripe, never by us), and the transaction data it returns to us |
 | **Anthropic** | AI assistant (chat) and receipt-image extraction | See [§4](#4-the-ai-assistant-and-what-it-sends-to-anthropic) |
 | **Cloudflare** | Web hosting, content delivery, and edge security for the Service | Standard web request metadata (IP address, request headers) as part of serving the application |
 | **Apple (APNs)** | Push notification delivery, only if you use the iOS app and allow notifications | Your device's push token and the notification content (title/body, e.g. "Rent received"), transiently, to deliver it to your device |
 
-We do not have signed Data Processing Agreements confirmed with every provider above as of this draft — **[ATTORNEY/PRODUCT: confirm DPAs are in place with Supabase, Plaid, and Anthropic before this policy is published, and update this table if the provider list changes.]**
+We do not have signed Data Processing Agreements confirmed with every provider above as of this draft — **[ATTORNEY/PRODUCT: confirm DPAs are in place with Supabase, Plaid, Stripe, and Anthropic before this policy is published, and update this table if the provider list changes.]**
 
 ## 7. Data retention
 

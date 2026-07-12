@@ -54,6 +54,22 @@ function assertPlaidConfigured(): void {
   }
 }
 
+/** Same rationale as assertPlaidConfigured: the factory falls back to the
+ *  mock Stripe FC adapter on partial configuration with only a console.warn,
+ *  and "connected" must never quietly mean "actually mock" in production. */
+function assertStripeFcConfigured(): void {
+  const vars = [process.env.STRIPE_SECRET_KEY, process.env.STRIPE_PUBLISHABLE_KEY];
+  const setCount = countSet(vars);
+  if (setCount > 0 && setCount < vars.length) {
+    throw new Error(
+      'Refusing to start with NODE_ENV=production and Stripe Financial Connections partially ' +
+        'configured: STRIPE_SECRET_KEY and STRIPE_PUBLISHABLE_KEY must be set together, or both ' +
+        'left unset. Partial configuration falls back to the mock Stripe FC adapter silently ' +
+        '(a console.warn only) — set both (or neither) before deploying.',
+    );
+  }
+}
+
 /** Runs every guard; a no-op outside NODE_ENV=production (local dev, CI,
  *  and the test suite — which never imports this module's caller — are
  *  unaffected). Throws with a message intended to be read directly off a
@@ -62,4 +78,5 @@ export function assertProductionConfig(): void {
   if (!isProduction()) return;
   assertAuthConfigured();
   assertPlaidConfigured();
+  assertStripeFcConfigured();
 }

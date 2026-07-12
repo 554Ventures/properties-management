@@ -2,6 +2,7 @@ import {
   ExchangePublicTokenInputSchema,
   IntegrationTypeSchema,
   RecordConsentInputSchema,
+  StripeFcCompleteInputSchema,
   UpdateAccountSettingsInputSchema,
   type AccountSettings,
 } from '@hearth/shared';
@@ -78,6 +79,17 @@ export async function settingsRoutes(app: FastifyInstance): Promise<void> {
   app.post('/integrations/plaid/exchange', async (req) => {
     const input = parseBody(ExchangePublicTokenInputSchema, req.body);
     return integrationService.exchangePublicToken(req.accountId, input.publicToken);
+  });
+
+  // Stripe Financial Connections (bank import): session → Stripe.js modal on
+  // the client → complete. Mirrors the Plaid link-token/exchange pair.
+  app.post('/integrations/stripe_fc/session', async (req) =>
+    integrationService.createStripeFcSession(req.accountId),
+  );
+
+  app.post('/integrations/stripe_fc/complete', async (req) => {
+    const input = parseBody(StripeFcCompleteInputSchema, req.body);
+    return integrationService.completeStripeFcSession(req.accountId, input.sessionId);
   });
 
   app.post<{ Params: { type: string } }>('/integrations/:type/connect', async (req) => {
