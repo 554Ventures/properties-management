@@ -1,6 +1,6 @@
 // Unit tests for the action_card allowlist: only the write routes the
 // assistant legitimately proposes may execute — add/edit for properties,
-// tenants and transactions included; report emailing (exfil channel),
+// tenants, contractors and transactions included; report emailing (exfil channel),
 // settings, un-listed PATCH, all DELETE, and off-app navigation are refused.
 import { describe, expect, it } from 'vitest';
 import { isAllowedApiCall, isAllowedNavigate } from '../components/chat/actionAllowlist';
@@ -15,11 +15,13 @@ describe('isAllowedApiCall', () => {
     expect(isAllowedApiCall('POST', '/insights/cm4ktz8yq000108l5f1a2b3c4/dismiss')).toBe(true);
   });
 
-  it('allows adding and editing properties, tenants and transactions', () => {
+  it('allows adding and editing properties, tenants, contractors and transactions', () => {
     expect(isAllowedApiCall('POST', '/properties')).toBe(true);
     expect(isAllowedApiCall('PATCH', '/properties/clx0f2q9d0001abcdWXYZ123')).toBe(true);
     expect(isAllowedApiCall('POST', '/tenants')).toBe(true);
     expect(isAllowedApiCall('PATCH', '/tenants/cm4ktz8yq000108l5f1a2b3c4')).toBe(true);
+    expect(isAllowedApiCall('POST', '/contractors')).toBe(true);
+    expect(isAllowedApiCall('PATCH', '/contractors/cm4ktz8yq000108l5f1a2b3c4')).toBe(true);
     expect(isAllowedApiCall('PATCH', '/transactions/clx0f2q9d0001abcdWXYZ123')).toBe(true);
   });
 
@@ -39,6 +41,10 @@ describe('isAllowedApiCall', () => {
     expect(isAllowedApiCall('DELETE', '/transactions/t1')).toBe(false);
     expect(isAllowedApiCall('DELETE', '/properties/p1')).toBe(false);
     expect(isAllowedApiCall('DELETE', '/tenants/t1')).toBe(false);
+    expect(isAllowedApiCall('DELETE', '/contractors/c1')).toBe(false);
+    expect(isAllowedApiCall('PATCH', '/contractors')).toBe(false);
+    expect(isAllowedApiCall('POST', '/contractors/c1/jobs')).toBe(false);
+    expect(isAllowedApiCall('POST', '/contractors/c1/restore')).toBe(false);
   });
 
   it('refuses lookalike paths that only prefix or extend an allowed route', () => {

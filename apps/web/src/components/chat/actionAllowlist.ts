@@ -8,7 +8,7 @@
 // renders as a disabled button with a visible note — never a silent drop,
 // and never executed.
 //
-// Adding/editing core records (properties, tenants, transactions) is
+// Adding/editing core records (properties, tenants, contractors, transactions) is
 // explicitly supported: the assistant fills in the body and the USER clicks
 // to save, so each PATCH below edits data within the user's own account —
 // a visible, reversible, click-gated change, not an exfiltration channel.
@@ -29,6 +29,8 @@ const ALLOWED_API_CALLS: ReadonlyArray<{ method: string; pathPattern: RegExp }> 
   { method: 'PATCH', pathPattern: new RegExp(`^/properties/${ID}$`) },
   { method: 'POST', pathPattern: /^\/tenants$/ },
   { method: 'PATCH', pathPattern: new RegExp(`^/tenants/${ID}$`) },
+  { method: 'POST', pathPattern: /^\/contractors$/ },
+  { method: 'PATCH', pathPattern: new RegExp(`^/contractors/${ID}$`) },
   { method: 'POST', pathPattern: /^\/reports\/generate$/ },
   { method: 'POST', pathPattern: new RegExp(`^/insights/${ID}/dismiss$`) },
 ];
