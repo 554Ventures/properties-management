@@ -26,6 +26,11 @@ export class HearthApi extends Container<Env> {
     PLAID_SECRET: secrets.PLAID_SECRET,
     PLAID_ENV: secrets.PLAID_ENV,
     INTEGRATION_ENCRYPTION_KEY: secrets.INTEGRATION_ENCRYPTION_KEY,
+    // Stripe Financial Connections — both forwarded together, else the API
+    // silently falls back to the mock Stripe FC adapter (same failure mode as
+    // Plaid above: Settings "connects" instantly with no Stripe modal).
+    STRIPE_SECRET_KEY: secrets.STRIPE_SECRET_KEY,
+    STRIPE_PUBLISHABLE_KEY: secrets.STRIPE_PUBLISHABLE_KEY,
     SUPABASE_SERVICE_ROLE_KEY: secrets.SUPABASE_SERVICE_ROLE_KEY,
     SUPABASE_STORAGE_BUCKET: secrets.SUPABASE_STORAGE_BUCKET,
     // APNs push (docs/MOBILE.md) — all five forwarded together, else the API
@@ -49,6 +54,8 @@ interface Env {
   PLAID_SECRET: string;
   PLAID_ENV: string;
   INTEGRATION_ENCRYPTION_KEY: string;
+  STRIPE_SECRET_KEY: string;
+  STRIPE_PUBLISHABLE_KEY: string;
   SUPABASE_SERVICE_ROLE_KEY: string;
   SUPABASE_STORAGE_BUCKET: string;
   APNS_TEAM_ID: string;
