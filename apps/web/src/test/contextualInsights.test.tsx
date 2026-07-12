@@ -191,6 +191,8 @@ describe('RentTracker contextual insight', () => {
 
     expect(await screen.findByText('T. Okafor is 6 days late on rent')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Send reminder' })).toBeInTheDocument();
+    // "Review" points at /rent — the page we're on — so it's hidden here.
+    expect(screen.queryByRole('link', { name: 'Review' })).not.toBeInTheDocument();
     // The expense_spike insight belongs on Money, not here.
     expect(screen.queryByText(/Utilities spending spiked/)).not.toBeInTheDocument();
 
@@ -280,10 +282,9 @@ describe('Money contextual insight', () => {
     );
 
     expect(await screen.findByText('Utilities spending spiked at Birch Lane')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'View transactions' })).toHaveAttribute(
-      'href',
-      '/money?type=expense&categoryId=c-util&propertyId=p1',
-    );
+    // Its link points back at /money — the page we're on — so it's hidden;
+    // the card informs, the table's own filters are right below.
+    expect(screen.queryByRole('link', { name: 'View transactions' })).not.toBeInTheDocument();
     // The late_rent insight belongs on Rent Collection, not here.
     expect(screen.queryByText(/days late on rent/)).not.toBeInTheDocument();
 

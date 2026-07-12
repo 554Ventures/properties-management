@@ -7,6 +7,7 @@ import { expectedInsightDedupeKeys } from '../../prisma/seed-constants';
 import { buildApp } from '../app';
 import { addDays, currentPeriod } from '../lib/dates';
 import { prisma } from '../lib/prisma';
+import { slugify } from '../lib/strings';
 import { getDemoAccountId } from '../plugins/auth';
 import * as dashboardService from '../services/dashboard.service';
 import * as insightService from '../services/insight.service';
@@ -233,6 +234,42 @@ describe('insight generation rules', () => {
     const activity = await dashboardService.getActivity(accountId, 10);
     const insightItems = activity.filter((a) => a.kind === 'insight');
     expect(insightItems.some((a) => a.text.includes('Late Payer Activity'))).toBe(true);
+  });
+
+  it('enriches a pre-action active row in place (production rows created before the structured-action deploy)', async () => {
+    const { accountId, lease, tenant } = await createLateRentFixture('enrich', 'Late Payer Enrich');
+    await makeRentLate(lease.id);
+
+    // Simulate a row the old generator created: same dedupeKey the rule
+    // derives today, but no structured action and the old generic target.
+    await prisma.insight.create({
+      data: {
+        accountId,
+        scope: 'tenant',
+        type: 'late_rent',
+        severity: 'warning',
+        title: 'Late Payer Enrich is 10 days late on rent',
+        body: 'Legacy body.',
+        actionLabel: 'Review',
+        actionTarget: '/rent',
+        tenantId: tenant.id,
+        leaseId: lease.id,
+        dedupeKey: `late_rent:${slugify('Late Payer Enrich')}:${currentPeriod()}`,
+        status: 'active',
+      },
+    });
+
+    const active = await insightService.listActive(accountId);
+    const lateRent = active.find((i) => i.type === 'late_rent');
+    expect(lateRent?.action?.label).toBe('Send reminder');
+    expect(lateRent?.actionTarget).toBe(`/rent?period=${currentPeriod()}`);
+    // Still one row — enriched, not duplicated.
+    expect(await prisma.insight.count({ where: { accountId, type: 'late_rent' } })).toBe(1);
+
+    // A dismissed legacy row stays untouched (dismissal semantics win).
+    await insightService.dismiss(accountId, lateRent!.id);
+    const after = await insightService.list(accountId, { status: 'dismissed' });
+    expect(after[0]?.status).toBe('dismissed');
   });
 
   it('concurrent self-refreshes for the same account race-safely (no unhandled unique-constraint error, exactly one row)', async () => {

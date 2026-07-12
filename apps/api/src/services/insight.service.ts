@@ -404,7 +404,24 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
     const existing = await prisma.insight.findUnique({
       where: { accountId_dedupeKey: { accountId, dedupeKey: c.dedupeKey } },
     });
-    if (existing) continue; // dedupe: dismissal sticks
+    if (existing) {
+      // Dedupe: dismissal sticks — but an ACTIVE row created before the
+      // structured-action deploy has no actionJson, leaving its card without
+      // the executable button until the monthly key rolls over. The rule just
+      // recomputed the same candidate, so enrich the row in place (action +
+      // refreshed label/target); dismissed/actioned rows stay untouched.
+      if (existing.status === 'active' && !existing.actionJson && c.action) {
+        await prisma.insight.update({
+          where: { id: existing.id },
+          data: {
+            actionJson: JSON.stringify(c.action),
+            actionLabel: c.actionLabel,
+            actionTarget: c.actionTarget,
+          },
+        });
+      }
+      continue;
+    }
     try {
       const { action, ...columns } = c;
       const row = await prisma.insight.create({

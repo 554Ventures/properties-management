@@ -10,10 +10,15 @@
 // drops out of every active list. navigate actions are plain in-app links.
 // The legacy actionLabel/actionTarget link keeps rendering for older rows, and
 // as the secondary context link next to an api_call action.
+//
+// Contextual cards render ON the page their link points at (late_rent on
+// /rent, underperforming on its property page) — a "go here" button for the
+// page you're on is noise, so navigation actions whose target pathname is the
+// current pathname are hidden. Executable actions and Dismiss always show.
 import { useState } from 'react';
 import type { Insight } from '@hearth/shared';
 import { useQueryClient } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { api, ApiClientError } from '../../api/client';
 import { useDismissInsight, useMarkInsightActioned } from '../../api/queries';
 import { Button, buttonClasses } from '../ui/Button';
@@ -52,9 +57,21 @@ export function InsightCard({
   const [executing, setExecuting] = useState(false);
   const severity = severityBadge[insight.severity];
 
+  const { pathname } = useLocation();
+  /** True when a link would land on the page the card is already on. */
+  const isSamePage = (to: string) => (to.split('?')[0] ?? to) === pathname;
+
   const structured = insight.action ?? null;
   const structuredAllowed = structured !== null && isActionAllowed(structured);
-  const hasRouteAction = insight.actionLabel && insight.actionTarget?.startsWith('/');
+  const showStructuredNavigate =
+    structuredAllowed &&
+    structured?.action.kind === 'navigate' &&
+    !isSamePage(structured.action.to);
+  const hasRouteAction = Boolean(
+    insight.actionLabel &&
+      insight.actionTarget?.startsWith('/') &&
+      !isSamePage(insight.actionTarget),
+  );
   // The legacy link is the primary affordance when there's no structured
   // action, and the secondary context link next to an api_call button. When
   // the structured action is a navigate it mirrors the legacy link — render
@@ -100,7 +117,7 @@ export function InsightCard({
             {structured.label}
           </Button>
         )}
-        {structured && structuredAllowed && structured.action.kind === 'navigate' && (
+        {showStructuredNavigate && structured?.action.kind === 'navigate' && (
           <Link to={structured.action.to} className={buttonClasses('secondary', 'sm')}>
             {structured.label}
           </Link>

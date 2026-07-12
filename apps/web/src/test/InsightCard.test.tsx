@@ -44,12 +44,12 @@ const sendReminder: Insight['action'] = {
   },
 };
 
-function renderCard(data: Insight) {
+function renderCard(data: Insight, initialEntry = '/') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
-        <MemoryRouter>
+        <MemoryRouter initialEntries={[initialEntry]}>
           <InsightCard insight={data} />
         </MemoryRouter>
       </ToastProvider>
@@ -144,6 +144,34 @@ describe('InsightCard structured actions', () => {
     const links = screen.getAllByRole('link', { name: 'Review renewals' });
     expect(links).toHaveLength(1);
     expect(links[0]).toHaveAttribute('href', '/tenants?status=renew_soon');
+  });
+
+  it('hides navigation that points at the page the card is on (contextual placements)', () => {
+    stubFetch();
+    // Legacy "Review" → /rent?period=… while the card sits on /rent.
+    renderCard(insight({ action: sendReminder }), '/rent');
+    expect(screen.queryByRole('link', { name: 'Review' })).not.toBeInTheDocument();
+    // The executable action and Dismiss are unaffected.
+    expect(screen.getByRole('button', { name: 'Send reminder' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument();
+  });
+
+  it('hides a same-page navigate action too (e.g. underperforming card on its own property page)', () => {
+    stubFetch();
+    renderCard(
+      insight({
+        type: 'underperforming_property',
+        actionLabel: 'View property',
+        actionTarget: '/properties/p1',
+        action: {
+          label: 'View property',
+          action: { kind: 'navigate', to: '/properties/p1' },
+        },
+      }),
+      '/properties/p1',
+    );
+    expect(screen.queryByRole('link', { name: 'View property' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument();
   });
 
   it('falls back to the legacy link when there is no structured action (old rows)', () => {
