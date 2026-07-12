@@ -24,6 +24,8 @@ import { NotFoundError, BadRequestError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { isUniqueConstraintError } from '../lib/prisma-errors';
 import { formatUsd } from '@hearth/shared';
+import { createReminderEmailComposer } from '../ai/reminder-email';
+import type { UsageLog } from '../ai/agent-loop';
 import { mockStripe } from '../integrations/mock/mock-stripe';
 import { writeAudit, type AuditActor } from './audit.service';
 import { notifyAccount } from './push.service';
@@ -448,7 +450,9 @@ export async function sendReminders(
   accountId: string,
   input: SendRemindersInput,
   actor: AuditActor = 'user',
+  log?: UsageLog,
 ): Promise<SendRemindersResponse> {
+  const reminderEmailComposer = createReminderEmailComposer();
   const results: SendRemindersResponse['results'] = [];
   for (const rentPaymentId of input.rentPaymentIds) {
     const payment = await prisma.rentPayment.findFirst({
@@ -473,8 +477,16 @@ export async function sendReminders(
     const tenant = payment.lease.leaseTenants[0]?.tenant;
     const property = payment.lease.unit.property;
     const to = tenant?.email ?? 'tenant@example.com';
-    const subject = `Rent reminder — ${property.nickname ?? property.addressLine1} ${payment.lease.unit.label}`;
-    const body = `Hi ${tenant?.fullName ?? 'there'}, this is a friendly reminder that your rent for ${payment.period} is due.`;
+    const { subject, body } = await reminderEmailComposer.compose({
+      accountId,
+      tenantName: tenant?.fullName ?? 'there',
+      propertyLabel: property.nickname ?? property.addressLine1,
+      unitLabel: payment.lease.unit.label,
+      amountCents: payment.amountCents,
+      dueDate: payment.dueDate.toISOString(),
+      period: payment.period,
+      log,
+    });
     // No real email provider is wired up — compose a mailto: link so the
     // landlord reviews and sends it from their own mail client instead.
     const mailto = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;

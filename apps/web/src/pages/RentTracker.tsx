@@ -10,8 +10,12 @@ import type { RentPaymentMethod, RentTrackerRow, SendRemindersResponse } from '@
 import { useSearchParams } from 'react-router-dom';
 import { useInsights, useRecordPayment, useRentTracker, useSendReminders } from '../api/queries';
 import { InsightCard } from '../components/ai/InsightCard';
+import {
+  ComposedRemindersModal,
+  type ComposedReminder,
+} from '../components/rent/ComposedRemindersModal';
 import { PageHeader } from '../components/shell/PageHeader';
-import { Button, buttonClasses } from '../components/ui/Button';
+import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorNotice } from '../components/ui/ErrorNotice';
@@ -75,9 +79,7 @@ export function RentTracker() {
   const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
   const [payRow, setPayRow] = useState<RentTrackerRow | null>(null);
   const [payMethod, setPayMethod] = useState<RentPaymentMethod>('manual');
-  const [composedReminders, setComposedReminders] = useState<
-    { tenantName: string; mailto: string; subject?: string }[]
-  >([]);
+  const [composedReminders, setComposedReminders] = useState<ComposedReminder[]>([]);
 
   // Exactly one contextual AI card (newest late_rent) — this page is where
   // that insight points, so it surfaces here instead of a separate AI page.
@@ -378,39 +380,10 @@ export function RentTracker() {
         </p>
       </Modal>
 
-      <Modal
-        open={composedReminders.length > 0}
+      <ComposedRemindersModal
+        reminders={composedReminders}
         onClose={() => setComposedReminders([])}
-        title="Reminders composed"
-        size="sm"
-      >
-        <div className="flex flex-col gap-3">
-          <p className="text-sm text-ink-muted">
-            Open each one to review and send it from your own mail app.
-          </p>
-          <ul className="flex flex-col gap-2">
-            {composedReminders.map((r) => (
-              <li key={r.tenantName} className="flex items-center justify-between gap-2">
-                <span className="flex flex-col">
-                  <span className="text-sm font-medium text-ink">{r.tenantName}</span>
-                  {r.subject && (
-                    <span className="text-xs text-ink-muted">{r.subject}</span>
-                  )}
-                </span>
-                <a href={r.mailto} className={buttonClasses('secondary', 'sm')}>
-                  <IconBell size={12} />
-                  Open email
-                </a>
-              </li>
-            ))}
-          </ul>
-          <div className="flex justify-end">
-            <Button variant="ghost" onClick={() => setComposedReminders([])}>
-              Done
-            </Button>
-          </div>
-        </div>
-      </Modal>
+      />
 
       <Modal
         open={payRow !== null}

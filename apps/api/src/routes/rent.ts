@@ -30,6 +30,8 @@ export async function rentRoutes(app: FastifyInstance): Promise<void> {
 
   app.post('/rent/reminders', needsRent, async (req) => {
     const input = parseBody(SendRemindersInputSchema, req.body);
-    return rentService.sendReminders(req.accountId, input);
+    return rentService.sendReminders(req.accountId, input, 'user', (data, message) =>
+      req.log.info(data, message),
+    );
   });
 }
