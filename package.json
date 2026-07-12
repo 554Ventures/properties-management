@@ -12,6 +12,7 @@
     "dev:db": "npm run db:serve --workspace apps/api",
     "dev:api": "npm run dev --workspace apps/api",
     "dev:web": "npm run dev --workspace apps/web",
+    "dev:test-user": "bash scripts/dev-test-user.sh",
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present && tsc -p deploy",

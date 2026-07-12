@@ -83,6 +83,30 @@ export type DocumentEntityType = z.infer<typeof DocumentEntityTypeSchema>;
 export const PushPlatformSchema = z.enum(['ios']);
 export type PushPlatform = z.infer<typeof PushPlatformSchema>;
 
+// Onboarding (getting-started checklist for new accounts). `completed` is
+// always derived — the API returns it when every step is completed or skipped;
+// only not_started | in_progress | dismissed are ever stored.
+export const OnboardingStatusSchema = z.enum([
+  'not_started',
+  'in_progress',
+  'completed',
+  'dismissed',
+]);
+export type OnboardingStatus = z.infer<typeof OnboardingStatusSchema>;
+
+export const OnboardingStepIdSchema = z.enum([
+  'add_property',
+  'add_tenant',
+  'create_lease',
+  'log_transaction',
+]);
+export type OnboardingStepId = z.infer<typeof OnboardingStepIdSchema>;
+
+// `completed` is derived from real portfolio data (the entity exists), never
+// stored; `skipped` is the user's explicit choice and is persisted.
+export const OnboardingStepStateSchema = z.enum(['pending', 'completed', 'skipped']);
+export type OnboardingStepState = z.infer<typeof OnboardingStepStateSchema>;
+
 export const DocumentTypeSchema = z.enum([
   'lease',
   'insurance',

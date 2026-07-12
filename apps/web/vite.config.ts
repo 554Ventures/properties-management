@@ -7,8 +7,10 @@ export default defineConfig({
     port: 5173,
     proxy: {
       // The 554 Properties API (apps/api) — everything under /api is proxied.
+      // HEARTH_API_PROXY points a second web instance at a different API
+      // (e.g. scripts/dev-test-user.sh's fresh-account stack on :3101).
       '/api': {
-        target: 'http://localhost:3001',
+        target: process.env.HEARTH_API_PROXY ?? 'http://localhost:3001',
         changeOrigin: true,
       },
     },

@@ -63,6 +63,9 @@ export * from './integration';
 // Push notification devices (mobile shell)
 export * from './device';
 
+// Onboarding (getting-started checklist for new accounts)
+export * from './onboarding';
+
 // Documents (uploaded files attached to entities)
 export * from './document';
 

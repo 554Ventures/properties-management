@@ -14,6 +14,7 @@ import {
   useProperties,
 } from '../api/queries';
 import { InsightDeck } from '../components/ai/InsightDeck';
+import { OnboardingBanner } from '../components/onboarding/OnboardingBanner';
 import { BarChart } from '../components/charts/BarChart';
 import { ChartContainer } from '../components/charts/ChartContainer';
 import { categoricalRole } from '../components/charts/chartTheme';
@@ -83,6 +84,8 @@ export function Dashboard() {
           </Link>
         }
       />
+
+      <OnboardingBanner />
 
       <section aria-label="Key metrics" className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {kpis.isPending ? (

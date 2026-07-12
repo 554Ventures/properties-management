@@ -55,6 +55,21 @@ model Account {
   documents    Document[]
   contractors  Contractor[]
   pushDevices  PushDevice[]
+  onboarding   OnboardingState?
+}
+
+// Getting-started checklist state (one row per account, created lazily on the
+// first onboarding write). Step completion is derived live from portfolio data
+// in onboarding.service — only the user's explicit choices persist here.
+model OnboardingState {
+  id          String   @id @default(cuid())
+  accountId   String   @unique
+  status      String   @default("not_started") // OnboardingStatus (@hearth/shared), stored subset: not_started | in_progress | dismissed ("completed" is always derived)
+  skippedJson String   @default("[]") // OnboardingStepId[] the user chose to skip
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
 }
 
 // Auth principal → Account mapping (deployment plan §4.1). One row per

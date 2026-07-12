@@ -46,6 +46,7 @@ import type {
   LinkTokenResponse,
   LogContractorJobInput,
   LogContractorJobResponse,
+  OnboardingState,
   Property,
   PropertyDetailResponse,
   PushDevice,
@@ -76,6 +77,7 @@ import type {
   UpdateContractorInput,
   UpdateDocumentInput,
   UpdateLeaseInput,
+  UpdateOnboardingInput,
   UpdatePropertyInput,
   UpdateTenantInput,
   UpdateTransactionInput,
@@ -164,6 +166,9 @@ function invalidateProperty(qc: ReturnType<typeof useQueryClient>, id?: string) 
   void qc.invalidateQueries({ queryKey: ['properties'] });
   if (id) void qc.invalidateQueries({ queryKey: ['properties', id] });
   void qc.invalidateQueries({ queryKey: ['dashboard'] });
+  // Onboarding step completion derives from portfolio data, so entity writes
+  // (here and in the tenant/lease/ledger helpers) refresh the checklist.
+  void qc.invalidateQueries({ queryKey: ['onboarding'] });
 }
 
 export function useCreateProperty() {
@@ -274,6 +279,7 @@ export function useTenantDetail(id: string | undefined) {
 function invalidateTenant(qc: ReturnType<typeof useQueryClient>, id?: string) {
   void qc.invalidateQueries({ queryKey: ['tenants'] });
   if (id) void qc.invalidateQueries({ queryKey: ['tenants', id] });
+  void qc.invalidateQueries({ queryKey: ['onboarding'] });
 }
 
 export function useCreateTenant() {
@@ -402,6 +408,7 @@ function invalidateLease(qc: ReturnType<typeof useQueryClient>, leaseId?: string
   void qc.invalidateQueries({ queryKey: ['units'] });
   void qc.invalidateQueries({ queryKey: ['rent'] });
   void qc.invalidateQueries({ queryKey: ['dashboard'] });
+  void qc.invalidateQueries({ queryKey: ['onboarding'] });
   if (leaseId) void qc.invalidateQueries({ queryKey: ['leases', leaseId] });
 }
 
@@ -511,6 +518,7 @@ function invalidateLedger(qc: ReturnType<typeof useQueryClient>) {
   void qc.invalidateQueries({ queryKey: ['transactions'] });
   void qc.invalidateQueries({ queryKey: ['dashboard'] });
   void qc.invalidateQueries({ queryKey: ['properties'] });
+  void qc.invalidateQueries({ queryKey: ['onboarding'] });
 }
 
 export function useCreateTransaction() {
@@ -793,6 +801,27 @@ export function useUpdateSettings() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['settings'] });
       void qc.invalidateQueries({ queryKey: ['dashboard'] }); // tax rate affects set-aside
+    },
+  });
+}
+
+// --------------------------------------------------------------- onboarding
+
+export function useOnboarding() {
+  return useQuery({
+    queryKey: ['onboarding'],
+    queryFn: () => api.get<OnboardingState>('/onboarding'),
+    staleTime: STALE_SHORT,
+  });
+}
+
+export function useUpdateOnboarding() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: UpdateOnboardingInput) =>
+      api.patch<OnboardingState>('/onboarding', input),
+    onSuccess: (state) => {
+      qc.setQueryData(['onboarding'], state);
     },
   });
 }

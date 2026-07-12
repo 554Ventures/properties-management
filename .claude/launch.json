@@ -8,6 +8,12 @@
       "port": 5173
     },
     {
+      "name": "test-user",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:test-user"],
+      "port": 5184
+    },
+    {
       "name": "preview",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--workspace", "apps/web", "--", "--port", "5183"],

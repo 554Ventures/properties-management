@@ -23,6 +23,7 @@ import { PropertyFormModal } from '../components/forms/PropertyFormModal';
 import { TenantFormModal } from '../components/forms/TenantFormModal';
 import { TransactionEditModal } from '../components/forms/TransactionEditModal';
 import { UnitFormModal } from '../components/forms/UnitFormModal';
+import { OnboardingBanner } from '../components/onboarding/OnboardingBanner';
 import { AppShell } from '../components/shell/AppShell';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { MultiSelect } from '../components/ui/MultiSelect';
@@ -163,6 +164,18 @@ const properties: PropertyWithStats[] = [
   },
 ];
 
+// In-progress so the dashboard smoke audits the onboarding banner (incl. its
+// progress bar) alongside everything else.
+const onboardingState = {
+  status: 'in_progress',
+  steps: [
+    { id: 'add_property', state: 'completed' },
+    { id: 'add_tenant', state: 'skipped' },
+    { id: 'create_lease', state: 'pending' },
+    { id: 'log_transaction', state: 'pending' },
+  ],
+};
+
 const fixtures: Record<string, unknown> = {
   '/api/v1/dashboard/kpis': kpis,
   '/api/v1/dashboard/cashflow-series': series,
@@ -171,6 +184,7 @@ const fixtures: Record<string, unknown> = {
   '/api/v1/dashboard/activity': activity,
   '/api/v1/insights': [renewalInsight, insight],
   '/api/v1/properties': properties,
+  '/api/v1/onboarding': onboardingState,
 };
 
 function fixtureFetch(input: RequestInfo | URL): Promise<Response> {
@@ -492,6 +506,46 @@ const reviewQueue: ReviewQueueResponse = {
   nextCursor: null,
   total: 2,
 };
+
+describe('onboarding accessibility', () => {
+  const onboardingFixtures: Record<string, unknown> = {
+    '/api/v1/onboarding': onboardingState,
+    '/api/v1/properties': [],
+    '/api/v1/tenants': [],
+  };
+
+  function onboardingFetch(input: RequestInfo | URL): Promise<Response> {
+    const path = String(input).replace(/^https?:\/\/[^/]+/, '').split('?')[0] ?? '';
+    return Promise.resolve(
+      new Response(JSON.stringify(onboardingFixtures[path] ?? []), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+  }
+
+  it('OnboardingWizard (mixed step states) has no axe violations', async () => {
+    vi.stubGlobal('fetch', vi.fn(onboardingFetch));
+    render(
+      <Providers>
+        <OnboardingBanner />
+      </Providers>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue setup' }));
+    await expectNoModalViolations();
+  });
+
+  it('dismiss confirmation dialog has no axe violations', async () => {
+    vi.stubGlobal('fetch', vi.fn(onboardingFetch));
+    render(
+      <Providers>
+        <OnboardingBanner />
+      </Providers>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss' }));
+    await expectNoModalViolations();
+  });
+});
 
 describe('review queue accessibility', () => {
   it('MoneyReview with a rent match and attribution selects has no axe violations', async () => {

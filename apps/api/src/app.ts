@@ -14,6 +14,7 @@ import { documentsRoutes } from './routes/documents';
 import { insightsRoutes } from './routes/insights';
 import { internalRoutes } from './routes/internal';
 import { leasesRoutes } from './routes/leases';
+import { onboardingRoutes } from './routes/onboarding';
 import { propertiesRoutes } from './routes/properties';
 import { rentRoutes } from './routes/rent';
 import { reportsRoutes } from './routes/reports';
@@ -81,6 +82,7 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
       await api.register(dashboardRoutes);
       await api.register(settingsRoutes);
       await api.register(devicesRoutes);
+      await api.register(onboardingRoutes);
       await api.register(chatRoutes);
       await api.register(internalRoutes);
     },

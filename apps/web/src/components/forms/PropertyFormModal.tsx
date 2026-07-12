@@ -58,9 +58,18 @@ export interface PropertyFormModalProps {
   mode: Mode;
   /** Required in edit mode. */
   property?: Property;
+  /** Create mode: skip the navigate-to-detail on success (the onboarding
+      wizard sets this so the user stays in its flow). */
+  stayOnCreate?: boolean;
 }
 
-export function PropertyFormModal({ open, onClose, mode, property }: PropertyFormModalProps) {
+export function PropertyFormModal({
+  open,
+  onClose,
+  mode,
+  property,
+  stayOnCreate = false,
+}: PropertyFormModalProps) {
   const create = useCreateProperty();
   const update = useUpdateProperty();
   const { toast } = useToast();
@@ -122,7 +131,7 @@ export function PropertyFormModal({ open, onClose, mode, property }: PropertyFor
         onSuccess: (created) => {
           toast('Property added.', 'positive');
           onClose();
-          navigate(`/properties/${created.id}`);
+          if (!stayOnCreate) navigate(`/properties/${created.id}`);
         },
         onError: (err) =>
           toast(err instanceof Error ? err.message : 'Could not add the property.', 'danger'),

@@ -150,6 +150,11 @@ export type PushDevice = z.infer<typeof s.PushDeviceSchema>;
 export type RegisterDeviceInput = z.infer<typeof s.RegisterDeviceInputSchema>;
 export type PushDeviceListResponse = z.infer<typeof s.PushDeviceListResponseSchema>;
 
+// Onboarding (getting-started checklist)
+export type OnboardingStep = z.infer<typeof s.OnboardingStepSchema>;
+export type OnboardingState = z.infer<typeof s.OnboardingStateSchema>;
+export type UpdateOnboardingInput = z.infer<typeof s.UpdateOnboardingInputSchema>;
+
 // Documents
 export type Document = z.infer<typeof s.DocumentSchema>;
 export type CreateDocumentFields = z.infer<typeof s.CreateDocumentFieldsSchema>;
