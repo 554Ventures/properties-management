@@ -489,7 +489,7 @@ export async function sendReminders(
       entityId: payment.id,
       detail: { period: payment.period, tenantId: tenant?.id ?? null },
     });
-    results.push({ rentPaymentId, status: 'sent', mailto });
+    results.push({ rentPaymentId, status: 'sent', mailto, subject });
   }
   return { results };
 }

@@ -88,6 +88,7 @@ export const SendReminderResultSchema = z.object({
   status: z.enum(['sent', 'skipped']),
   reason: z.string().optional(), // present when skipped
   mailto: z.string().optional(), // present when sent — opens the composed reminder in the user's own mail client
+  subject: z.string().optional(), // present when sent — for display before opening the mail client
 });
 
 export const SendRemindersResponseSchema = z.object({

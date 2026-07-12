@@ -73,7 +73,7 @@ export function RentTracker() {
   const [payRow, setPayRow] = useState<RentTrackerRow | null>(null);
   const [payMethod, setPayMethod] = useState<RentPaymentMethod>('manual');
   const [composedReminders, setComposedReminders] = useState<
-    { tenantName: string; mailto: string }[]
+    { tenantName: string; mailto: string; subject?: string }[]
   >([]);
 
   // Exactly one contextual AI card (newest late_rent) — this page is where
@@ -99,8 +99,12 @@ export function RentTracker() {
       {
         onSuccess: (res) => {
           summarizeReminders(res.results);
-          const mailto = res.results.find((r) => r.status === 'sent')?.mailto;
-          if (mailto) window.location.href = mailto;
+          const result = res.results.find((r) => r.status === 'sent');
+          if (result?.mailto) {
+            setComposedReminders([
+              { tenantName: row.tenantName, mailto: result.mailto, subject: result.subject },
+            ]);
+          }
         },
         onError: () => toast('Could not compose the reminder. Try again.', 'danger'),
       },
@@ -117,7 +121,7 @@ export function RentTracker() {
           const composed = res.results.flatMap((r) => {
             if (r.status !== 'sent' || !r.mailto) return [];
             const row = lateRows.find((lr) => lr.rentPaymentId === r.rentPaymentId);
-            return row ? [{ tenantName: row.tenantName, mailto: r.mailto }] : [];
+            return row ? [{ tenantName: row.tenantName, mailto: r.mailto, subject: r.subject }] : [];
           });
           if (composed.length > 0) setComposedReminders(composed);
         },
@@ -380,7 +384,12 @@ export function RentTracker() {
           <ul className="flex flex-col gap-2">
             {composedReminders.map((r) => (
               <li key={r.tenantName} className="flex items-center justify-between gap-2">
-                <span className="text-sm font-medium text-ink">{r.tenantName}</span>
+                <span className="flex flex-col">
+                  <span className="text-sm font-medium text-ink">{r.tenantName}</span>
+                  {r.subject && (
+                    <span className="text-xs text-ink-muted">{r.subject}</span>
+                  )}
+                </span>
                 <a href={r.mailto} className={buttonClasses('secondary', 'sm')}>
                   <IconBell size={12} />
                   Open email

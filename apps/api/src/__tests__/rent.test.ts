@@ -78,6 +78,7 @@ describe('POST /rent/reminders', () => {
         rentPaymentId: okafor!.rentPaymentId,
         status: 'sent',
         mailto: expect.stringMatching(/^mailto:/),
+        subject: expect.stringMatching(/^Rent reminder/),
       },
       { rentPaymentId: paidRow!.rentPaymentId, status: 'skipped', reason: 'already_paid' },
     ]);
