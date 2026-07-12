@@ -7,6 +7,7 @@
 import { SEAT_LIMIT } from '@hearth/shared';
 import type { AccountMember, MemberPermission, PendingInvite, TeamResponse } from '@hearth/shared';
 import type { Invite as DbInvite, User as DbUser } from '@prisma/client';
+import { inviteSupabaseUserByEmail } from '../integrations/real/supabase-admin';
 import { iso } from '../lib/dates';
 import { HttpError, NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
@@ -101,6 +102,17 @@ export async function invite(
     entityId: invited.id,
     detail: { email, permissions: input.permissions },
   });
+
+  // Send Supabase's invitation email best-effort — the Invite row above is the
+  // source of truth for joining (matched when they log in with this email), so
+  // an email failure (rate limit, SMTP not configured, already-registered
+  // address) must never fail the invite itself.
+  try {
+    await inviteSupabaseUserByEmail(email);
+  } catch (err) {
+    console.error('[team] invite email send failed (invite still valid via signup)', err);
+  }
+
   return toPendingInvite(invited);
 }
 
