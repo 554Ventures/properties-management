@@ -8,12 +8,13 @@ import { useInsights, useRentTracker, useSendReminders, useTenants } from '../ap
 import { TenantFormModal } from '../components/forms/TenantFormModal';
 import { InsightCard } from '../components/ai/InsightCard';
 import { PageHeader } from '../components/shell/PageHeader';
-import { Button } from '../components/ui/Button';
+import { Button, buttonClasses } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorNotice } from '../components/ui/ErrorNotice';
 import { DataTable, type DataTableColumn } from '../components/ui/DataTable';
 import { LiveRegion } from '../components/ui/LiveRegion';
+import { Modal } from '../components/ui/Modal';
 import { Skeleton } from '../components/ui/Skeleton';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { useToast } from '../components/ui/Toast';
@@ -42,6 +43,9 @@ export function TenantsList() {
   // "Remind" can send from this screen (contract has no per-tenant reminder).
   const tracker = useRentTracker(currentPeriod());
   const remind = useSendReminders();
+  const [composedReminder, setComposedReminder] = useState<
+    { tenantName: string; mailto: string; subject?: string } | null
+  >(null);
   const { can } = usePermissions();
   const canTenants = can('tenants');
   const canRent = can('rent');
@@ -61,13 +65,19 @@ export function TenantsList() {
       { rentPaymentIds: [trackerRow.rentPaymentId] },
       {
         onSuccess: (res) => {
-          const sent = res.results.filter((r) => r.status === 'sent').length;
-          toast(
-            sent > 0
-              ? `Reminder sent to ${row.fullName}.`
-              : `Reminder skipped — ${res.results[0]?.reason ?? 'already reminded recently'}.`,
-            sent > 0 ? 'positive' : 'neutral',
-          );
+          const result = res.results.find((r) => r.status === 'sent');
+          if (result?.mailto) {
+            setComposedReminder({
+              tenantName: row.fullName,
+              mailto: result.mailto,
+              subject: result.subject,
+            });
+          } else {
+            toast(
+              `Reminder skipped — ${res.results[0]?.reason ?? 'already reminded recently'}.`,
+              'neutral',
+            );
+          }
         },
         onError: () => toast('Could not send the reminder. Try again.', 'danger'),
       },
@@ -236,6 +246,38 @@ export function TenantsList() {
       )}
 
       <TenantFormModal mode="create" open={createOpen} onClose={() => setCreateOpen(false)} />
+
+      <Modal
+        open={composedReminder !== null}
+        onClose={() => setComposedReminder(null)}
+        title="Reminder composed"
+        size="sm"
+      >
+        {composedReminder && (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-ink-muted">
+              Open it to review and send from your own mail app.
+            </p>
+            <div className="flex items-center justify-between gap-2">
+              <span className="flex flex-col">
+                <span className="text-sm font-medium text-ink">{composedReminder.tenantName}</span>
+                {composedReminder.subject && (
+                  <span className="text-xs text-ink-muted">{composedReminder.subject}</span>
+                )}
+              </span>
+              <a href={composedReminder.mailto} className={buttonClasses('secondary', 'sm')}>
+                <IconBell size={12} />
+                Open email
+              </a>
+            </div>
+            <div className="flex justify-end">
+              <Button variant="ghost" onClick={() => setComposedReminder(null)}>
+                Done
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }
