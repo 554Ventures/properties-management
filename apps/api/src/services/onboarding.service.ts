@@ -12,17 +12,24 @@ import { prisma } from '../lib/prisma';
 const STEP_ORDER: OnboardingStepId[] = OnboardingStepIdSchema.options;
 
 async function completedSteps(accountId: string): Promise<Set<OnboardingStepId>> {
-  const [properties, tenants, leases, transactions] = await Promise.all([
+  const [properties, tenants, leases, transactions, bankConnections] = await Promise.all([
     prisma.property.count({ where: { accountId, archivedAt: null } }),
     prisma.tenant.count({ where: { accountId, archivedAt: null } }),
     prisma.lease.count({ where: { unit: { property: { accountId } } } }),
     prisma.transaction.count({ where: { accountId } }),
+    // 'mock' is the demo seed's placeholder status (a fresh account has no
+    // integration rows at all) — counting it keeps the fully-set-up demo
+    // account deriving completed. Connecting for real flips to 'connected'.
+    prisma.integration.count({
+      where: { accountId, type: 'plaid', status: { in: ['connected', 'mock'] } },
+    }),
   ]);
   const done = new Set<OnboardingStepId>();
   if (properties > 0) done.add('add_property');
   if (tenants > 0) done.add('add_tenant');
   if (leases > 0) done.add('create_lease');
   if (transactions > 0) done.add('log_transaction');
+  if (bankConnections > 0) done.add('connect_bank');
   return done;
 }
 

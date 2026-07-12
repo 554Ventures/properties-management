@@ -41,6 +41,12 @@ const STEP_META: Record<
     description: 'Record an income or expense so your cash flow starts from day one.',
     actionLabel: 'Go to Add transaction',
   },
+  connect_bank: {
+    title: 'Connect your bank',
+    description:
+      'Link your bank once and new transactions import for review automatically — no manual entry.',
+    actionLabel: 'Connect in Settings',
+  },
 };
 
 type ActiveForm = 'property' | 'tenant' | 'lease' | null;
@@ -102,11 +108,17 @@ export function OnboardingWizard({ open, onClose, state }: OnboardingWizardProps
             {STEP_META[id].actionLabel}
           </Button>
         );
+      // Real pages, not modals — leaving the wizard is fine because progress
+      // is saved server-side and the banner offers the way back.
       case 'log_transaction':
-        // A real page, not a modal — leaving the wizard is fine because
-        // progress is saved server-side and the banner offers the way back.
         return (
           <Link to="/money/new" className={buttonClasses('primary', 'sm')} onClick={onClose}>
+            {STEP_META[id].actionLabel}
+          </Link>
+        );
+      case 'connect_bank':
+        return (
+          <Link to="/settings" className={buttonClasses('primary', 'sm')} onClick={onClose}>
             {STEP_META[id].actionLabel}
           </Link>
         );

@@ -173,6 +173,7 @@ const onboardingState = {
     { id: 'add_tenant', state: 'skipped' },
     { id: 'create_lease', state: 'pending' },
     { id: 'log_transaction', state: 'pending' },
+    { id: 'connect_bank', state: 'pending' },
   ],
 };
 

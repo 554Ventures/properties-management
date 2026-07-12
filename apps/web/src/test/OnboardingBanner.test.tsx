@@ -17,11 +17,12 @@ const STEP_IDS: OnboardingStepId[] = [
   'add_tenant',
   'create_lease',
   'log_transaction',
+  'connect_bank',
 ];
 
 function makeState(
   status: OnboardingState['status'],
-  stepStates: [OnboardingStepState, OnboardingStepState, OnboardingStepState, OnboardingStepState],
+  stepStates: OnboardingStepState[], // one per STEP_IDS entry
 ): OnboardingState {
   return { status, steps: STEP_IDS.map((id, i) => ({ id, state: stepStates[i]! })) };
 }
@@ -91,38 +92,38 @@ afterEach(() => {
 
 describe('OnboardingBanner visibility', () => {
   it('renders nothing when onboarding derived completed', async () => {
-    stubOnboardingApi(makeState('completed', ['completed', 'completed', 'completed', 'completed']));
+    stubOnboardingApi(makeState('completed', ['completed', 'completed', 'completed', 'completed', 'completed']));
     render(<Providers><OnboardingBanner /></Providers>);
     await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalled());
     expect(screen.queryByText(/set up your portfolio/i)).not.toBeInTheDocument();
   });
 
   it('renders nothing when dismissed', async () => {
-    stubOnboardingApi(makeState('dismissed', ['pending', 'pending', 'pending', 'pending']));
+    stubOnboardingApi(makeState('dismissed', ['pending', 'pending', 'pending', 'pending', 'pending']));
     render(<Providers><OnboardingBanner /></Providers>);
     await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalled());
     expect(screen.queryByRole('button', { name: /get started/i })).not.toBeInTheDocument();
   });
 
   it('shows the welcome CTA for a not-started account and never auto-opens the wizard', async () => {
-    stubOnboardingApi(makeState('not_started', ['pending', 'pending', 'pending', 'pending']));
+    stubOnboardingApi(makeState('not_started', ['pending', 'pending', 'pending', 'pending', 'pending']));
     render(<Providers><OnboardingBanner /></Providers>);
     expect(await screen.findByRole('button', { name: 'Get started' })).toBeInTheDocument();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('shows resume copy and progress once in progress', async () => {
-    stubOnboardingApi(makeState('in_progress', ['completed', 'skipped', 'pending', 'pending']));
+    stubOnboardingApi(makeState('in_progress', ['completed', 'skipped', 'pending', 'pending', 'pending']));
     render(<Providers><OnboardingBanner /></Providers>);
     expect(await screen.findByRole('button', { name: 'Continue setup' })).toBeInTheDocument();
-    expect(screen.getByText('2 of 4 steps')).toBeInTheDocument();
+    expect(screen.getByText('2 of 5 steps')).toBeInTheDocument();
   });
 });
 
 describe('starting and stopping the wizard', () => {
   it('the CTA marks onboarding in_progress and opens the wizard; closing keeps progress', async () => {
     const fetchMock = stubOnboardingApi(
-      makeState('not_started', ['pending', 'pending', 'pending', 'pending']),
+      makeState('not_started', ['pending', 'pending', 'pending', 'pending', 'pending']),
     );
     render(<Providers><OnboardingBanner /></Providers>);
 
@@ -138,7 +139,7 @@ describe('starting and stopping the wizard', () => {
   });
 
   it('the lease step is gated until a property exists', async () => {
-    stubOnboardingApi(makeState('in_progress', ['pending', 'pending', 'pending', 'pending']));
+    stubOnboardingApi(makeState('in_progress', ['pending', 'pending', 'pending', 'pending', 'pending']));
     render(<Providers><OnboardingBanner /></Providers>);
     fireEvent.click(await screen.findByRole('button', { name: 'Continue setup' }));
     await screen.findByRole('dialog', { name: 'Set up your portfolio' });
@@ -148,7 +149,7 @@ describe('starting and stopping the wizard', () => {
 
   it('skipping the last pending step derives completion and the banner goes away', async () => {
     const fetchMock = stubOnboardingApi(
-      makeState('in_progress', ['completed', 'completed', 'completed', 'pending']),
+      makeState('in_progress', ['completed', 'completed', 'completed', 'skipped', 'pending']),
     );
     render(<Providers><OnboardingBanner /></Providers>);
     fireEvent.click(await screen.findByRole('button', { name: 'Continue setup' }));
@@ -156,7 +157,7 @@ describe('starting and stopping the wizard', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Skip' }));
     await waitFor(() =>
-      expect(patchCalls(fetchMock)).toContainEqual({ skipStep: 'log_transaction' }),
+      expect(patchCalls(fetchMock)).toContainEqual({ skipStep: 'connect_bank' }),
     );
 
     // Derived completed → celebration state, then Done closes everything.
@@ -170,7 +171,7 @@ describe('starting and stopping the wizard', () => {
 describe('dismissal', () => {
   it('dismissing asks for confirmation; cancel keeps the banner', async () => {
     const fetchMock = stubOnboardingApi(
-      makeState('not_started', ['pending', 'pending', 'pending', 'pending']),
+      makeState('not_started', ['pending', 'pending', 'pending', 'pending', 'pending']),
     );
     render(<Providers><OnboardingBanner /></Providers>);
 
@@ -184,7 +185,7 @@ describe('dismissal', () => {
 
   it('confirming dismissal persists it and hides the banner', async () => {
     const fetchMock = stubOnboardingApi(
-      makeState('not_started', ['pending', 'pending', 'pending', 'pending']),
+      makeState('not_started', ['pending', 'pending', 'pending', 'pending', 'pending']),
     );
     render(<Providers><OnboardingBanner /></Providers>);
 

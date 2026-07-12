@@ -49,6 +49,7 @@ describe('onboarding derivation (fresh account, service level)', () => {
       'add_tenant',
       'create_lease',
       'log_transaction',
+      'connect_bank',
     ]);
     expect(state.steps.every((s) => s.state === 'pending')).toBe(true);
   });
@@ -104,9 +105,23 @@ describe('onboarding derivation (fresh account, service level)', () => {
       },
     });
 
-    // create_lease completed by data + log_transaction skipped earlier → done.
+    // Everything but connect_bank is now completed (data) or skipped.
+    const almost = await onboardingService.getOnboarding(freshAccountId);
+    expect(almost.steps.find((s) => s.id === 'create_lease')?.state).toBe('completed');
+    expect(almost.steps.find((s) => s.id === 'connect_bank')?.state).toBe('pending');
+    expect(almost.status).toBe('in_progress');
+
+    // A connected Plaid integration completes the bank step → all done.
+    await prisma.integration.create({
+      data: {
+        accountId: freshAccountId,
+        type: 'plaid',
+        name: 'Plaid (bank import)',
+        status: 'connected',
+      },
+    });
     const done = await onboardingService.getOnboarding(freshAccountId);
-    expect(done.steps.find((s) => s.id === 'create_lease')?.state).toBe('completed');
+    expect(done.steps.find((s) => s.id === 'connect_bank')?.state).toBe('completed');
     expect(done.status).toBe('completed');
   });
 });
