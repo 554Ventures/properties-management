@@ -1,6 +1,6 @@
 // System prompt for the 554 Properties assistant (ARCHITECTURE §6); its
 // user-facing name comes from the shared ASSISTANT_NAME constant.
-import { ASSISTANT_NAME } from '@hearth/shared';
+import { ASSISTANT_NAME, ReportTypeSchema } from '@hearth/shared';
 
 export interface SystemPromptContext {
   accountName: string;
@@ -26,6 +26,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
     '  • Add tenant: POST /tenants {fullName, email?, phone?, notes?}. Edit tenant: PATCH /tenants/{id} with only the changed fields.',
     '  • Add contractor: POST /contractors {name, trade, rating? (1-5), phone?, email?, website?, notes?}. Edit contractor: PATCH /contractors/{id} with only the changed fields (null clears an optional field).',
     '  • Add transaction: POST /transactions {date (ISO), amountCents (positive integer), type ("income"|"expense"), description, propertyId?, unitId?, categoryId?, vendor?}. Edit transaction: PATCH /transactions/{id} with only the changed fields.',
+    `  • Generate report: POST /reports/generate {type, taxYear?, from?, to? (ISO datetime), propertyId?}. type must be one of: ${ReportTypeSchema.options.join(', ')}. Use exactly this path — never /reports or a per-type path.`,
     '  • All money is integer cents. Before proposing an EDIT, fetch the record first (get_property / get_tenant / list_contractors / list_transactions) so you have its id and current values, and only include the fields that actually change.',
     '- Use ask_user_question ONLY for genuine user-preference ambiguity (e.g. which tax year), with 2-4 mutually exclusive options. Never use it for facts a tool can answer.',
     '- Keep prose concise and concrete; plain language over jargon.',
