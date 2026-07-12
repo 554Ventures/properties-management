@@ -92,6 +92,10 @@ interface LoopParams {
   blocks: ContentBlock[];
   emit: Emit;
   log?: UsageLog;
+  // Write tools the acting member lacks permission to run (docs/WHATS_NEXT.md §4);
+  // empty for owners/demo mode. Denied calls return a tool error instead of
+  // executing, so the assistant can't bypass a REST guard.
+  deniedTools?: ReadonlySet<string>;
 }
 
 async function finalize(params: LoopParams): Promise<void> {
@@ -251,6 +255,18 @@ async function runLoop(params: LoopParams): Promise<void> {
         });
         continue;
       }
+      // Authorization: a member without the matching grant can't run this
+      // write tool via chat (mirrors the REST route guard).
+      if (tool.write && params.deniedTools?.has(tool.name)) {
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: tu.id,
+          content: `You don't have permission to run ${tu.name} on this account. Ask the account owner to grant it.`,
+          is_error: true,
+        });
+        emit('tool_activity', { name: tu.name, status: 'done' });
+        continue;
+      }
       emit('tool_activity', { name: tu.name, status: 'running' });
       try {
         const input = tool.inputSchema.parse(tu.input ?? {});
@@ -300,6 +316,7 @@ export async function runUserTurn(opts: {
   text: string;
   emit: Emit;
   log?: UsageLog;
+  deniedTools?: ReadonlySet<string>;
 }): Promise<void> {
   const { accountId, session, text, emit } = opts;
   const state = parseProviderState(session.providerStateJson);
@@ -333,6 +350,7 @@ export async function runUserTurn(opts: {
     blocks: [],
     emit,
     ...(opts.log ? { log: opts.log } : {}),
+    ...(opts.deniedTools ? { deniedTools: opts.deniedTools } : {}),
   });
 }
 
@@ -408,6 +426,7 @@ export async function resumeTurn(opts: {
   prepared: PreparedResume;
   emit: Emit;
   log?: UsageLog;
+  deniedTools?: ReadonlySet<string>;
 }): Promise<void> {
   const { accountId, session, prepared, emit } = opts;
   const state = parseProviderState(session.providerStateJson);
@@ -428,5 +447,6 @@ export async function resumeTurn(opts: {
     blocks: prepared.blocks,
     emit,
     ...(opts.log ? { log: opts.log } : {}),
+    ...(opts.deniedTools ? { deniedTools: opts.deniedTools } : {}),
   });
 }

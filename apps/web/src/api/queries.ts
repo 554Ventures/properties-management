@@ -16,6 +16,7 @@ import type {
   ConfirmAllReviewResponse,
   ConfirmTransactionInput,
   Contractor,
+  CurrentUser,
   ContractorDetailResponse,
   ContractorListRow,
   CreateContractorInput,
@@ -36,6 +37,8 @@ import type {
   ImportTransactionsResponse,
   IncomeExpenseSeriesResponse,
   Insight,
+  InviteMemberInput,
+  PendingInvite,
   InsightScope,
   InsightStatus,
   Integration,
@@ -65,6 +68,7 @@ import type {
   ReviewQueueResponse,
   SendRemindersInput,
   SendRemindersResponse,
+  TeamResponse,
   Tenant,
   TenantDetailResponse,
   TenantListRow,
@@ -77,6 +81,7 @@ import type {
   UpdateContractorInput,
   UpdateDocumentInput,
   UpdateLeaseInput,
+  UpdateMemberInput,
   UpdateOnboardingInput,
   UpdatePropertyInput,
   UpdateTenantInput,
@@ -802,6 +807,61 @@ export function useUpdateSettings() {
       void qc.invalidateQueries({ queryKey: ['settings'] });
       void qc.invalidateQueries({ queryKey: ['dashboard'] }); // tax rate affects set-aside
     },
+  });
+}
+
+// --------------------------------------------------------------- team
+
+/** The signed-in user's own role + granted permissions (drives write-UI gating). */
+export function useCurrentUser() {
+  return useQuery({
+    queryKey: ['current-user'],
+    queryFn: () => api.get<CurrentUser>('/settings/me'),
+    staleTime: STALE_LONG,
+  });
+}
+
+export function useTeam() {
+  return useQuery({
+    queryKey: ['team'],
+    queryFn: () => api.get<TeamResponse>('/team'),
+    staleTime: STALE_SHORT,
+  });
+}
+
+export function useInviteMember() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: InviteMemberInput) => api.post<PendingInvite>('/team/invites', input),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['team'] }),
+  });
+}
+
+export function useRevokeInvite() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete(`/team/invites/${id}`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['team'] }),
+  });
+}
+
+export function useUpdateMember() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ userId, input }: { userId: string; input: UpdateMemberInput }) =>
+      api.patch(`/team/members/${userId}`, input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['team'] });
+      void qc.invalidateQueries({ queryKey: ['current-user'] });
+    },
+  });
+}
+
+export function useRemoveMember() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (userId: string) => api.delete(`/team/members/${userId}`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['team'] }),
   });
 }
 

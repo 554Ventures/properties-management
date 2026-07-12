@@ -6,6 +6,8 @@ import type {
   ChatSessionStatus,
   ContentBlock,
   CreateChatSessionInput,
+  MemberPermission,
+  UserRole,
 } from '@hearth/shared';
 import type { ChatSession as DbChatSession, ChatMessage as DbChatMessage } from '@prisma/client';
 import type { FastifyReply } from 'fastify';
@@ -14,6 +16,13 @@ import { ConflictError, NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { sseEnd, sseSend, sseStart } from '../plugins/sse';
 import { prepareResume, resumeTurn, runUserTurn, type Emit, type UsageLog } from '../ai/agent-loop';
+import { deniedWriteTools } from '../ai/tools';
+
+/** The acting user's chat write authorization (docs/WHATS_NEXT.md §4). */
+export interface ChatWriteAccess {
+  role: UserRole;
+  permissions: MemberPermission[];
+}
 
 export function toApiSession(s: DbChatSession): ChatSession {
   return {
@@ -79,6 +88,7 @@ export async function sendMessage(
   sessionId: string,
   text: string,
   reply: FastifyReply,
+  writeAccess: ChatWriteAccess,
 ): Promise<void> {
   const session = await getOwned(accountId, sessionId);
   if (session.status === 'awaiting_user') {
@@ -88,11 +98,12 @@ export async function sendMessage(
     throw new ConflictError('a turn is already running on this session');
   }
 
+  const deniedTools = deniedWriteTools(writeAccess.role, writeAccess.permissions);
   sseStart(reply);
   const emit: Emit = (event, data) => sseSend(reply, event, data);
   const log: UsageLog = (data, message) => reply.log.info(data, message);
   try {
-    await runUserTurn({ accountId, session, text, emit, log });
+    await runUserTurn({ accountId, session, text, emit, log, deniedTools });
   } finally {
     sseEnd(reply);
   }
@@ -104,6 +115,7 @@ export async function answerQuestion(
   sessionId: string,
   answer: AskUserQuestionAnswer,
   reply: FastifyReply,
+  writeAccess: ChatWriteAccess,
 ): Promise<void> {
   const session = await getOwned(accountId, sessionId);
   if (session.status !== 'awaiting_user') {
@@ -112,11 +124,12 @@ export async function answerQuestion(
   // Validate before hijacking so bad answers get a normal 4xx JSON response.
   const prepared = await prepareResume(session, answer);
 
+  const deniedTools = deniedWriteTools(writeAccess.role, writeAccess.permissions);
   sseStart(reply);
   const emit: Emit = (event, data) => sseSend(reply, event, data);
   const log: UsageLog = (data, message) => reply.log.info(data, message);
   try {
-    await resumeTurn({ accountId, session, prepared, emit, log });
+    await resumeTurn({ accountId, session, prepared, emit, log, deniedTools });
   } finally {
     sseEnd(reply);
   }

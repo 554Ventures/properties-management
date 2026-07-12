@@ -1,6 +1,7 @@
 import { CreatePropertyInputSchema, UpdatePropertyInputSchema } from '@hearth/shared';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { requirePermission } from '../lib/authz';
 import { yearRange } from '../lib/dates';
 import { parseBody, parseQuery } from '../plugins/zod-validation';
 import * as propertyService from '../services/property.service';
@@ -11,9 +12,11 @@ const PnlQuerySchema = z.object({
 });
 
 export async function propertiesRoutes(app: FastifyInstance): Promise<void> {
+  const needsProperties = { preHandler: requirePermission('properties') };
+
   app.get('/properties', async (req) => propertyService.list(req.accountId));
 
-  app.post('/properties', async (req, reply) => {
+  app.post('/properties', needsProperties, async (req, reply) => {
     const input = parseBody(CreatePropertyInputSchema, req.body);
     const property = await propertyService.create(req.accountId, input);
     return reply.code(201).send(property);
@@ -23,17 +26,17 @@ export async function propertiesRoutes(app: FastifyInstance): Promise<void> {
     propertyService.getDetail(req.accountId, req.params.id),
   );
 
-  app.patch<{ Params: { id: string } }>('/properties/:id', async (req) => {
+  app.patch<{ Params: { id: string } }>('/properties/:id', needsProperties, async (req) => {
     const input = parseBody(UpdatePropertyInputSchema, req.body);
     return propertyService.update(req.accountId, req.params.id, input);
   });
 
-  app.delete<{ Params: { id: string } }>('/properties/:id', async (req, reply) => {
+  app.delete<{ Params: { id: string } }>('/properties/:id', needsProperties, async (req, reply) => {
     await propertyService.remove(req.accountId, req.params.id);
     return reply.code(204).send();
   });
 
-  app.post<{ Params: { id: string } }>('/properties/:id/restore', async (req) =>
+  app.post<{ Params: { id: string } }>('/properties/:id/restore', needsProperties, async (req) =>
     propertyService.restore(req.accountId, req.params.id),
   );
 

@@ -21,7 +21,13 @@ import {
   SendRemindersInputSchema,
   TransactionListQuerySchema,
 } from '@hearth/shared';
-import type { ContentBlock, InsightScope, LeaseStatus } from '@hearth/shared';
+import type {
+  ContentBlock,
+  InsightScope,
+  LeaseStatus,
+  MemberPermission,
+  UserRole,
+} from '@hearth/shared';
 import type { Tool } from '@anthropic-ai/sdk/resources/messages/messages';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
@@ -404,6 +410,35 @@ export const renderTools: RenderToolDef[] = [
 
 export function findServiceTool(name: string): ServiceToolDef | undefined {
   return serviceTools.find((t) => t.name === name);
+}
+
+// Maps each write tool to the MemberPermission area that gates the equivalent
+// REST route, so a member can't bypass a route guard via the assistant
+// (docs/WHATS_NEXT.md §4). Write tools absent from this map (e.g. dismiss_insight,
+// which has no gated REST area) require only the 'ai' capability below.
+export const WRITE_TOOL_PERMISSIONS: Partial<Record<string, MemberPermission>> = {
+  create_transaction: 'money',
+  confirm_transaction: 'money',
+  create_contractor: 'properties',
+  record_rent_payment: 'rent',
+  send_rent_reminders: 'rent',
+  generate_report: 'reports',
+  email_report: 'reports',
+};
+
+/** Names of write tools the acting user may NOT run in chat. Owners (and demo
+ *  mode) are unrestricted. A member needs the 'ai' capability to run any write
+ *  tool at all, plus the tool's mapped area permission where one applies. */
+export function deniedWriteTools(role: UserRole, permissions: MemberPermission[]): Set<string> {
+  if (role === 'owner') return new Set();
+  const writeNames = serviceTools.filter((t) => t.write).map((t) => t.name);
+  if (!permissions.includes('ai')) return new Set(writeNames);
+  return new Set(
+    writeNames.filter((name) => {
+      const area = WRITE_TOOL_PERMISSIONS[name];
+      return area !== undefined && !permissions.includes(area);
+    }),
+  );
 }
 
 export function findRenderTool(name: string): RenderToolDef | undefined {

@@ -5,6 +5,7 @@ import {
 } from '@hearth/shared';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { requirePermission } from '../lib/authz';
 import { coerceNumbers, parseBody, parseQuery } from '../plugins/zod-validation';
 import * as reportService from '../services/report.service';
 
@@ -26,7 +27,7 @@ export async function reportsRoutes(app: FastifyInstance): Promise<void> {
     return reportService.listGenerated(req.accountId, q);
   });
 
-  app.post('/reports/generate', async (req, reply) => {
+  app.post('/reports/generate', { preHandler: requirePermission('reports') }, async (req, reply) => {
     const input = parseBody(GenerateReportInputSchema, req.body);
     const report = await reportService.generate(req.accountId, input);
     return reply.code(201).send(report);
@@ -52,9 +53,13 @@ export async function reportsRoutes(app: FastifyInstance): Promise<void> {
       .send(buffer);
   });
 
-  app.post<{ Params: { id: string } }>('/reports/:id/email', async (req, reply) => {
-    const input = parseBody(EmailReportInputSchema, req.body);
-    await reportService.emailToAccountant(req.accountId, req.params.id, input.to);
-    return reply.code(202).send();
-  });
+  app.post<{ Params: { id: string } }>(
+    '/reports/:id/email',
+    { preHandler: requirePermission('reports') },
+    async (req, reply) => {
+      const input = parseBody(EmailReportInputSchema, req.body);
+      await reportService.emailToAccountant(req.accountId, req.params.id, input.to);
+      return reply.code(202).send();
+    },
+  );
 }

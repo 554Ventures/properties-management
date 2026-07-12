@@ -50,6 +50,8 @@ Never duplicate a business rule in a route/tool/component — fix it once in the
 
 **Write auditing:** every money/tenant-touching write logs to `AuditLog` with an actor — `user` (REST), `ai_suggested_user_confirmed` (user accepting an AI suggestion), or `system` (model- or MCP-invoked, and the scheduler). When adding a write path, thread the `actor` param through; tests assert attribution.
 
+**Authorization (multi-user):** an account has an owner plus invited `member`s (`User.role` + `permissionsJson`; `MemberPermission` = `properties`/`tenants`/`money`/`rent`/`reports`/`ai`). Reads are open to any member; **writes are gated**. Add a `requirePermission('<area>')` (or `requireOwner()`) preHandler from `lib/authz.ts` to every new write route, and — if the write is also a chat tool — map it in `ai/tools.ts` `WRITE_TOOL_PERMISSIONS` so the assistant can't bypass the route guard. Owners and demo mode bypass all checks; guards return `403 forbidden`. Owner-only surfaces (team, billing, account settings, integrations, deletion) use `requireOwner()`. Permissions are read live — team mutations clear the auth-service identity cache.
+
 ## Binding conventions
 
 - **Money is integer cents** everywhere (`*Cents` fields); format only at the edge with `formatUsd`/`formatUsdWhole` from `@hearth/shared`.

@@ -21,6 +21,7 @@ import { RowActions } from '../components/ui/RowActions';
 import { IconBell, IconPlus, IconUsers } from '../components/ui/icons';
 import { currentPeriod, formatDate } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
+import { usePermissions } from '../lib/usePermissions';
 
 // ?status= deep links (the renewal-window insight) → the status column's
 // select-filter value. Filter values are the visible labels.
@@ -41,6 +42,9 @@ export function TenantsList() {
   // "Remind" can send from this screen (contract has no per-tenant reminder).
   const tracker = useRentTracker(currentPeriod());
   const remind = useSendReminders();
+  const { can } = usePermissions();
+  const canTenants = can('tenants');
+  const canRent = can('rent');
   const { toast } = useToast();
 
   const renewalInsight = insights.data?.find((i) => i.type === 'renewal_window');
@@ -149,7 +153,7 @@ export function TenantsList() {
       stickyRight: true,
       cell: (row) => {
         const late = lateByTenant.get(row.id);
-        return row.status === 'late' && late ? (
+        return row.status === 'late' && late && canRent ? (
           <RowActions
             context={row.fullName}
             actions={[
@@ -173,10 +177,12 @@ export function TenantsList() {
         title="Tenants & Leases"
         breadcrumbs={[{ label: 'Dashboard', to: '/' }, { label: 'Tenants & Leases' }]}
         actions={
-          <Button onClick={() => setCreateOpen(true)}>
-            <IconPlus size={16} />
-            Add tenant
-          </Button>
+          canTenants ? (
+            <Button onClick={() => setCreateOpen(true)}>
+              <IconPlus size={16} />
+              Add tenant
+            </Button>
+          ) : undefined
         }
       />
 
@@ -197,10 +203,12 @@ export function TenantsList() {
             title="No tenants yet"
             body="Add a tenant, then create a lease from a vacant unit on a property."
             action={
-              <Button onClick={() => setCreateOpen(true)}>
-                <IconPlus size={16} />
-                Add tenant
-              </Button>
+              canTenants ? (
+                <Button onClick={() => setCreateOpen(true)}>
+                  <IconPlus size={16} />
+                  Add tenant
+                </Button>
+              ) : undefined
             }
           />
         </Card>

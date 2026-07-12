@@ -37,7 +37,10 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
     { config: chatWriteLimit() },
     async (req, reply) => {
       const input = parseBody(SendChatMessageInputSchema, req.body);
-      await chatService.sendMessage(req.accountId, req.params.id, input.text, reply);
+      await chatService.sendMessage(req.accountId, req.params.id, input.text, reply, {
+        role: req.userRole,
+        permissions: req.userPermissions,
+      });
     },
   );
 
@@ -47,7 +50,10 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
     { config: chatWriteLimit() },
     async (req, reply) => {
       const answer = parseBody(AskUserQuestionAnswerSchema, req.body);
-      await chatService.answerQuestion(req.accountId, req.params.id, answer, reply);
+      await chatService.answerQuestion(req.accountId, req.params.id, answer, reply, {
+        role: req.userRole,
+        permissions: req.userPermissions,
+      });
     },
   );
 }

@@ -27,6 +27,7 @@ import { useToast } from '../components/ui/Toast';
 import { IconBell, IconCalendarCheck, IconCheck } from '../components/ui/icons';
 import { currentPeriod, formatDate, formatMonthLong, recentPeriods } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
+import { usePermissions } from '../lib/usePermissions';
 
 function statusInfo(row: RentTrackerRow): { tone: BadgeTone; label: string; clock?: boolean } {
   switch (row.status) {
@@ -67,6 +68,8 @@ export function RentTracker() {
   const tracker = useRentTracker(period);
   const remind = useSendReminders();
   const record = useRecordPayment();
+  const { can } = usePermissions();
+  const canRent = can('rent');
   const { toast } = useToast();
 
   const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
@@ -243,14 +246,16 @@ export function RentTracker() {
             <h2 className="text-base font-semibold text-ink">
               {formatMonthLong(period)} — per tenant
             </h2>
-            <Button
-              variant="secondary"
-              disabled={lateRows.length === 0}
-              onClick={() => setBulkConfirmOpen(true)}
-            >
-              <IconBell size={14} />
-              Remind all late ({lateRows.length})
-            </Button>
+            {canRent && (
+              <Button
+                variant="secondary"
+                disabled={lateRows.length === 0}
+                onClick={() => setBulkConfirmOpen(true)}
+              >
+                <IconBell size={14} />
+                Remind all late ({lateRows.length})
+              </Button>
+            )}
           </div>
 
           {rows.length === 0 ? (
@@ -309,6 +314,7 @@ export function RentTracker() {
                           )}
                         </Td>
                         <Td stickyRight>
+                          {canRent && (
                           <RowActions
                             context={row.tenantName}
                             actions={[
@@ -337,6 +343,7 @@ export function RentTracker() {
                                 : []),
                             ]}
                           />
+                          )}
                         </Td>
                       </Tr>
                     );

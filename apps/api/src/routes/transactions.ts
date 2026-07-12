@@ -8,6 +8,7 @@ import {
 } from '@hearth/shared';
 import type { FastifyInstance } from 'fastify';
 import { isReceiptImageMimetype, RECEIPT_IMAGE_MIMETYPES, type ReceiptImageMimetype } from '../ai/receipt';
+import { requirePermission } from '../lib/authz';
 import { BadRequestError } from '../lib/errors';
 import { UnverifiableFileTypeError, verifyFileContentType } from '../lib/file-sniff';
 import { coerceNumbers, parseBody, parseQuery } from '../plugins/zod-validation';
@@ -27,6 +28,8 @@ function receiptScanLimit() {
 }
 
 export async function transactionsRoutes(app: FastifyInstance): Promise<void> {
+  const needsMoney = { preHandler: requirePermission('money') };
+
   app.get('/transactions', async (req) => {
     const q = parseQuery(
       TransactionListQuerySchema,
@@ -35,7 +38,7 @@ export async function transactionsRoutes(app: FastifyInstance): Promise<void> {
     return transactionService.list(req.accountId, q);
   });
 
-  app.post('/transactions', async (req, reply) => {
+  app.post('/transactions', needsMoney, async (req, reply) => {
     const input = parseBody(CreateTransactionInputSchema, req.body);
     const txn = await transactionService.create(req.accountId, input);
     return reply.code(201).send(txn);
@@ -52,17 +55,20 @@ export async function transactionsRoutes(app: FastifyInstance): Promise<void> {
 
   // Bulk actions take the same filter shape the queue was loaded with, so
   // "confirm all"/"dismiss all" apply to exactly the set the user is viewing.
-  app.post('/transactions/review/confirm-all', async (req) => {
+  app.post('/transactions/review/confirm-all', needsMoney, async (req) => {
     const filter = parseBody(ReviewQueueFilterSchema, req.body ?? {});
     return transactionService.confirmAllInReview(req.accountId, filter);
   });
 
-  app.post('/transactions/review/dismiss-all', async (req) => {
+  app.post('/transactions/review/dismiss-all', needsMoney, async (req) => {
     const filter = parseBody(ReviewQueueFilterSchema, req.body ?? {});
     return transactionService.dismissAllInReview(req.accountId, filter);
   });
 
-  app.post('/transactions/receipt', { config: receiptScanLimit() }, async (req) => {
+  app.post(
+    '/transactions/receipt',
+    { config: receiptScanLimit(), preHandler: requirePermission('money') },
+    async (req) => {
     const file = await req.file();
     if (!file) throw new BadRequestError('multipart image field is required');
     if (!isReceiptImageMimetype(file.mimetype)) {
@@ -88,24 +94,26 @@ export async function transactionsRoutes(app: FastifyInstance): Promise<void> {
     );
   });
 
-  app.post('/transactions/import', async (req) => transactionService.importFromBank(req.accountId));
+  app.post('/transactions/import', needsMoney, async (req) =>
+    transactionService.importFromBank(req.accountId),
+  );
 
-  app.patch<{ Params: { id: string } }>('/transactions/:id', async (req) => {
+  app.patch<{ Params: { id: string } }>('/transactions/:id', needsMoney, async (req) => {
     const input = parseBody(UpdateTransactionInputSchema, req.body);
     return transactionService.update(req.accountId, req.params.id, input);
   });
 
-  app.delete<{ Params: { id: string } }>('/transactions/:id', async (req, reply) => {
+  app.delete<{ Params: { id: string } }>('/transactions/:id', needsMoney, async (req, reply) => {
     await transactionService.remove(req.accountId, req.params.id);
     return reply.code(204).send();
   });
 
-  app.post<{ Params: { id: string } }>('/transactions/:id/confirm', async (req) => {
+  app.post<{ Params: { id: string } }>('/transactions/:id/confirm', needsMoney, async (req) => {
     const input = parseBody(ConfirmTransactionInputSchema, req.body);
     return transactionService.confirm(req.accountId, req.params.id, input);
   });
 
-  app.post<{ Params: { id: string } }>('/transactions/:id/dismiss', async (req) =>
+  app.post<{ Params: { id: string } }>('/transactions/:id/dismiss', needsMoney, async (req) =>
     transactionService.dismiss(req.accountId, req.params.id),
   );
 }

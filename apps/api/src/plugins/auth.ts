@@ -7,6 +7,7 @@
 //     optionally gated by a static DEV_BEARER_TOKEN. Keeps the offline demo
 //     and the test suite working with no Supabase project.
 // Env is read per request so tests can flip modes without rebuilding the app.
+import { ALL_MEMBER_PERMISSIONS, type MemberPermission, type UserRole } from '@hearth/shared';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
 import { prisma } from '../lib/prisma';
@@ -20,6 +21,11 @@ declare module 'fastify' {
     // used for per-identity records like policy-consent acceptance. Absent
     // in demo mode, where there is no User row at all.
     userId: string | null;
+    // Authorization context (docs/WHATS_NEXT.md §4). In demo mode there is no
+    // User row, so the single operator is treated as an owner with every
+    // permission and all guards no-op.
+    userRole: UserRole;
+    userPermissions: MemberPermission[];
   }
 }
 
@@ -70,6 +76,11 @@ function unauthorized(reply: FastifyReply, message: string): FastifyReply {
 export function registerAuth(app: FastifyInstance): void {
   app.decorateRequest('accountId', '');
   app.decorateRequest('userId', null);
+  app.decorateRequest('userRole', 'owner');
+  // Fastify forbids reference-type decorator defaults (shared-state hazard), so
+  // seed with null and let the onRequest hook assign the real array per request
+  // before any handler runs.
+  app.decorateRequest('userPermissions', null as unknown as MemberPermission[]);
   app.addHook('onRequest', async (req, reply) => {
     if (req.url.startsWith('/api/v1/healthz')) return;
     // Internal automation endpoints authenticate with their own shared secret
@@ -92,6 +103,8 @@ export function registerAuth(app: FastifyInstance): void {
       const identity = await resolveAccountForIdentity(payload.sub, email);
       req.accountId = identity.accountId;
       req.userId = identity.userId;
+      req.userRole = identity.role;
+      req.userPermissions = identity.permissions;
       return;
     }
 
@@ -101,5 +114,8 @@ export function registerAuth(app: FastifyInstance): void {
     }
     req.accountId = await getDemoAccountId();
     req.userId = null;
+    // Demo mode: no User row → the single operator is an owner with everything.
+    req.userRole = 'owner';
+    req.userPermissions = [...ALL_MEMBER_PERMISSIONS];
   });
 }

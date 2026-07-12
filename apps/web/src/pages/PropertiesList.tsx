@@ -19,6 +19,7 @@ import { useToast } from '../components/ui/Toast';
 import { RowActions } from '../components/ui/RowActions';
 import { IconArchive, IconBuilding, IconPencil, IconPlus } from '../components/ui/icons';
 import { usePageTitle } from '../lib/usePageTitle';
+import { usePermissions } from '../lib/usePermissions';
 
 function statusTone(label: string): BadgeTone {
   const lower = label.toLowerCase();
@@ -32,6 +33,8 @@ export function PropertiesList() {
   usePageTitle('Properties');
   const properties = useProperties();
   const archive = useArchiveProperty();
+  const { can } = usePermissions();
+  const canEdit = can('properties');
   const { toast } = useToast();
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<PropertyWithStats | null>(null);
@@ -93,15 +96,16 @@ export function PropertiesList() {
       header: <span className="sr-only">Actions</span>,
       align: 'right',
       stickyRight: true,
-      cell: (p) => (
-        <RowActions
-          context={p.nickname ?? p.addressLine1}
-          actions={[
-            { label: 'Edit', icon: <IconPencil size={14} />, onClick: () => setEditing(p) },
-            { label: 'Archive', icon: <IconArchive size={14} />, onClick: () => setArchiving(p) },
-          ]}
-        />
-      ),
+      cell: (p) =>
+        canEdit ? (
+          <RowActions
+            context={p.nickname ?? p.addressLine1}
+            actions={[
+              { label: 'Edit', icon: <IconPencil size={14} />, onClick: () => setEditing(p) },
+              { label: 'Archive', icon: <IconArchive size={14} />, onClick: () => setArchiving(p) },
+            ]}
+          />
+        ) : null,
     },
   ];
 
@@ -123,10 +127,12 @@ export function PropertiesList() {
         title="Properties"
         breadcrumbs={[{ label: 'Dashboard', to: '/' }, { label: 'Properties' }]}
         actions={
-          <Button onClick={() => setCreateOpen(true)}>
-            <IconPlus size={16} />
-            Property
-          </Button>
+          canEdit ? (
+            <Button onClick={() => setCreateOpen(true)}>
+              <IconPlus size={16} />
+              Property
+            </Button>
+          ) : undefined
         }
       />
 
@@ -143,10 +149,12 @@ export function PropertiesList() {
             title="No properties yet"
             body="Add your first property to start tracking rent, expenses, and taxes."
             action={
-              <Button onClick={() => setCreateOpen(true)}>
-                <IconPlus size={16} />
-                Add property
-              </Button>
+              canEdit ? (
+                <Button onClick={() => setCreateOpen(true)}>
+                  <IconPlus size={16} />
+                  Add property
+                </Button>
+              ) : undefined
             }
           />
         </Card>

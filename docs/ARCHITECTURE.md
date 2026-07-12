@@ -114,10 +114,16 @@ Enums (defined in `packages/shared/src/enums.ts`):
 - `IntegrationStatus`: `connected | disconnected | mock`
 - `ChatRole`: `user | assistant`
 - `ChatSessionStatus`: `idle | running | awaiting_user`
+- `UserRole`: `owner | member`
+- `MemberPermission`: `properties | tenants | money | rent | reports | ai` (grantable write areas; owners hold all implicitly)
 
 Models (field → type; `?` optional; relations noted):
 
-**Account** — `id`, `name String`, `email String @unique`, `timezone String @default("America/New_York")`, `taxRatePct Int @default(20)`, `taxYearStartMonth Int @default(1)`, `graceDays Int @default(0)`, `createdAt DateTime`. Relations: has many of everything below. (Future `Membership` table attaches here without reshaping.)
+**Account** — `id`, `name String`, `email String @unique`, `timezone String @default("America/New_York")`, `taxRatePct Int @default(20)`, `taxYearStartMonth Int @default(1)`, `graceDays Int @default(0)`, `createdAt DateTime`. Relations: has many of everything below, incl. `users User[]` and `invites Invite[]`.
+
+**User** — auth identity → account (`services/auth.service.resolveAccountForIdentity`). `id`, `accountId`, `supabaseUserId String @unique` (JWT `sub`), `email String`, `role String @default("owner")` (UserRole), `permissionsJson String @default("[]")` (granted `MemberPermission[]`; owners ignore it), `policyConsentAcceptedAt DateTime?`, `policyConsentVersion String?`, `createdAt`. Multiple users per account are supported (invited members); a user still belongs to exactly one account (no `Membership` join table yet). The request's role + **live** permissions are decorated onto `req` in `plugins/auth.ts` and enforced by `lib/authz.ts` guards.
+
+**Invite** — pending team invite (multi-user, docs/WHATS_NEXT.md §4). `id`, `accountId`, `email String`, `role String @default("member")`, `permissionsJson String @default("[]")`, `status String @default("pending")` (`pending | accepted | revoked`), `invitedByUserId String?`, `createdAt`, `acceptedAt DateTime?`. `@@index([accountId])`, `@@index([email])`. Matched by email (case-insensitive) on the invitee's first authenticated request → they join `accountId` as a member; no email is sent. Seats are capped at `SEAT_LIMIT` (2) — active users + pending invites.
 
 **Property** — `id`, `accountId`, `nickname String?`, `addressLine1 String`, `city String`, `state String`, `zip String`, `acquisitionDate DateTime?`, `acquisitionCostCents Int?`, `notes String?`, `archivedAt DateTime?`, `createdAt`. Relations: `units Unit[]`, `transactions Transaction[]`, `insights Insight[]`. (`unitCount`, occupancy, status are **derived** in the service, not stored.)
 
@@ -210,6 +216,8 @@ Base path `/api/v1`. All request/response Zod schemas live in `packages/shared/s
 
 **Settings / Integrations** — GET/PATCH `/settings/account` (`AccountSettings`, `UpdateAccountSettingsInput`); GET `/integrations` → `Integration[]`; POST `/integrations/:type/connect` → `Integration` (flips mock status); DELETE `/integrations/:id` → 204. GET `/healthz`.
 
+**Team (multi-user)** — GET `/settings/me` → `CurrentUser` (the caller's own `role` + `permissions`; demo mode reports owner/all). GET `/team` → `TeamResponse` (members, pending invites, `seatsUsed`/`seatLimit`). Owner-only (`requireOwner`): POST `/team/invites` (`InviteMemberInput`) → `PendingInvite` (`402 seat_limit_reached` past the cap); DELETE `/team/invites/:id` → 204; PATCH `/team/members/:userId` (`UpdateMemberInput`) → `AccountMember`; DELETE `/team/members/:userId` → 204.
+
 ---
 
 ## 4. Service layer
@@ -226,8 +234,9 @@ All functions: `(accountId: string, ...) => Promise<...>`, typed with `@hearth/s
 - **reportService** — `listLibrary()` R · `listGenerated(accountId, filter)` R M · `generate(accountId, input)` R A(write) M(write) · `getById(accountId, id)` R M · `exportCsv/exportPdf(accountId, id)` R · `emailToAccountant(accountId, id, to)` R A(write)
 - **insightService** — `listActive(accountId, scope?)` R A M · `dismiss(accountId, id)` R A(write) M(write) · `markActioned(accountId, id)` R (user executed the suggested action; audited `ai_suggested_user_confirmed`) · `getDashboardInsight(accountId)` R (highest-severity active, cached per day via dedupeKey) · `generateInsights(accountId)` internal/cron+seed · `generateMonthlyReview(accountId, month)` R(dev trigger) internal — snapshots a `monthly_review` Report + Insights
 - **dashboardService** — `getKpis(accountId)` R A M · `getIncomeExpenseSeries(accountId, months)` R A M · `getActivity(accountId, limit)` R · `getPortfolioSummary(accountId)` A M (one-paragraph + key numbers; the MCP resource body)
-- **chatService** — `createSession`, `listSessions`, `getMessages`, `sendMessage(accountId, sessionId, text, sse)`, `answerQuestion(accountId, sessionId, answer, sse)` — R only; drives `agent-loop.ts`
+- **chatService** — `createSession`, `listSessions`, `getMessages`, `sendMessage(accountId, sessionId, text, sse, writeAccess)`, `answerQuestion(accountId, sessionId, answer, sse, writeAccess)` — R only; drives `agent-loop.ts`. `writeAccess` (`{role, permissions}`) → `deniedWriteTools` so a member can't invoke via chat a write their REST guard would block.
 - **integrationService** — `list`, `connectMock`, `disconnect` R
+- **teamService** — `listTeam(accountId)` R · `invite(accountId, invitedByUserId, input)` R (owner-only; `SEAT_LIMIT` cap → `402`) · `updateMemberPermissions(accountId, memberUserId, permissions)` R · `removeMember(accountId, memberUserId)` R · `revokeInvite(accountId, inviteId)` R. All audited (`member.invited` / `member.updated` / `member.removed` / `invite.revoked`); mutations clear the auth-service identity cache so live permission changes take effect immediately.
 
 **Derivation rules (binding, unit-tested):**
 - **Rent status** (per RentPayment for the viewed period): `paid` if status `paid`; `processing`/`failed` pass through; else `due` if `today ≤ dueDate + account.graceDays` (v1 default 0), else `late` with `daysLate = floor(today − dueDate)` — always rendered as text ("6 days late"), never color alone. Tracker `collected% (by units) = paidUnits / totalActiveLeaseUnits`.

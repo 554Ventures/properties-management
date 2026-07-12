@@ -15,6 +15,9 @@ export const ApiErrorSchema = z.object({
 // Settings / account
 export * from './account';
 
+// Team / multi-user account (members, invites, per-member permissions)
+export * from './team';
+
 // Privacy Policy / ToS consent capture
 export * from './consent';
 

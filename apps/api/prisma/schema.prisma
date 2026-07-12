@@ -52,6 +52,7 @@ model Account {
   integrations Integration[]
   auditLogs    AuditLog[]
   users        User[]
+  invites      Invite[]
   documents    Document[]
   contractors  Contractor[]
   pushDevices  PushDevice[]
@@ -80,7 +81,12 @@ model User {
   accountId      String
   supabaseUserId String   @unique // Supabase Auth `sub` claim
   email          String
-  role           String   @default("owner") // UserRole (@hearth/shared): owner
+  role           String   @default("owner") // UserRole (@hearth/shared): owner | member
+  // MemberPermission[] (@hearth/shared) granted to a member — string-array JSON
+  // (same convention as Integration.scopesJson; owners hold all implicitly and
+  // ignore this field). Read live on every request so a revoked grant applies
+  // immediately.
+  permissionsJson String   @default("[]")
   createdAt      DateTime @default(now())
   // Consent capture (docs/SECURITY_PRIVACY_AUDIT.md §B5): recorded when this
   // identity accepts the Privacy Policy + Terms of Service at signup.
@@ -90,6 +96,28 @@ model User {
   policyConsentVersion    String?
 
   account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+}
+
+// Pending team invite (docs/WHATS_NEXT.md §4). The owner invites a teammate by
+// email; on that teammate's first authenticated request, resolveAccountForIdentity
+// matches a pending invite by email and attaches them to this account (rather
+// than provisioning a fresh one), then flips status to 'accepted'. No email is
+// sent — the invite is just a matcher keyed on the address the owner entered.
+model Invite {
+  id              String    @id @default(cuid())
+  accountId       String
+  email           String
+  role            String    @default("member") // UserRole (@hearth/shared)
+  permissionsJson String    @default("[]") // MemberPermission[] granted on accept
+  status          String    @default("pending") // pending | accepted | revoked
+  invitedByUserId String?
+  createdAt       DateTime  @default(now())
+  acceptedAt      DateTime?
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+  @@index([email])
 }
 
 model Property {

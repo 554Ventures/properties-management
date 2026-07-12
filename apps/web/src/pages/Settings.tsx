@@ -5,14 +5,27 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { usePlaidLink } from 'react-plaid-link';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import type { AccountSettings, Integration, IntegrationType } from '@hearth/shared';
+import type {
+  AccountMember,
+  AccountSettings,
+  Integration,
+  IntegrationType,
+  MemberPermission,
+} from '@hearth/shared';
+import { MemberPermissionSchema } from '@hearth/shared';
 import {
   useCreatePlaidLinkToken,
+  useCurrentUser,
   useDisconnectIntegration,
   useExchangePlaidPublicToken,
   useIntegrations,
+  useInviteMember,
   usePushDevices,
+  useRemoveMember,
+  useRevokeInvite,
   useSettings,
+  useTeam,
+  useUpdateMember,
   useUpdateSettings,
 } from '../api/queries';
 import { PageHeader } from '../components/shell/PageHeader';
@@ -101,6 +114,8 @@ export function Settings() {
               )}
             </Card>
           </section>
+
+          <TeamSection />
 
           <section aria-label="Legal">
             <Card>
@@ -206,6 +221,272 @@ function MobileAppSection() {
         </div>
       </Card>
     </section>
+  );
+}
+
+const PERMISSION_LABELS: Record<MemberPermission, string> = {
+  properties: 'Properties & units',
+  tenants: 'Tenants & leases',
+  money: 'Money & transactions',
+  rent: 'Rent & reminders',
+  reports: 'Reports',
+  ai: 'AI assistant actions',
+};
+
+const ALL_PERMISSIONS = MemberPermissionSchema.options;
+
+/** Team / multi-user account management (docs/WHATS_NEXT.md §4). Owner-only
+ *  controls; members see their own access; demo mode shows a sign-in note. */
+function TeamSection() {
+  const { enabled } = useAuth();
+  const me = useCurrentUser();
+  const team = useTeam();
+
+  // Demo mode has no login / User rows — team management isn't meaningful.
+  if (!enabled) {
+    return (
+      <section aria-label="Team">
+        <Card>
+          <h2 className="mb-2 text-sm font-semibold text-ink">Team</h2>
+          <p className="text-sm text-ink-muted">
+            Sign in to invite teammates and manage what they can do.
+          </p>
+        </Card>
+      </section>
+    );
+  }
+
+  return (
+    <section aria-label="Team">
+      <Card>
+        <h2 className="mb-3 text-sm font-semibold text-ink">Team</h2>
+        {me.isPending || team.isPending ? (
+          <Skeleton className="h-40 w-full" />
+        ) : me.isError ? (
+          <ErrorNotice error={me.error} onRetry={() => void me.refetch()} />
+        ) : me.data.role !== 'owner' ? (
+          <MemberTeamView permissions={me.data.permissions} />
+        ) : team.isError ? (
+          <ErrorNotice error={team.error} onRetry={() => void team.refetch()} />
+        ) : (
+          <OwnerTeamView
+            members={team.data.members}
+            pendingInvites={team.data.pendingInvites}
+            seatsUsed={team.data.seatsUsed}
+            seatLimit={team.data.seatLimit}
+          />
+        )}
+      </Card>
+    </section>
+  );
+}
+
+/** What a non-owner member sees: their own granted access, read-only. */
+function MemberTeamView({ permissions }: { permissions: MemberPermission[] }) {
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-sm text-ink-muted">
+        You&rsquo;re a member of this account. The owner controls what you can do.
+      </p>
+      <div>
+        <p className="mb-1 text-sm font-medium text-ink">Your access</p>
+        {permissions.length === 0 ? (
+          <p className="text-sm text-ink-muted">View-only — no edit permissions granted yet.</p>
+        ) : (
+          <ul className="flex flex-wrap gap-1.5">
+            {permissions.map((p) => (
+              <li key={p}>
+                <StatusBadge tone="positive">{PERMISSION_LABELS[p]}</StatusBadge>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function OwnerTeamView({
+  members,
+  pendingInvites,
+  seatsUsed,
+  seatLimit,
+}: {
+  members: AccountMember[];
+  pendingInvites: { id: string; email: string; permissions: MemberPermission[] }[];
+  seatsUsed: number;
+  seatLimit: number;
+}) {
+  const removeMember = useRemoveMember();
+  const revokeInvite = useRevokeInvite();
+  const { toast } = useToast();
+  const seatsFull = seatsUsed >= seatLimit;
+
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-sm text-ink-muted">
+        {seatsUsed} of {seatLimit} seats used.
+      </p>
+
+      <ul className="flex flex-col divide-y divide-border">
+        {members.map((m) => (
+          <MemberRow key={m.userId} member={m} onRemove={() => removeMember.mutate(m.userId)} />
+        ))}
+        {pendingInvites.map((inv) => (
+          <li key={inv.id} className="flex flex-col gap-1 py-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm font-medium text-ink">{inv.email}</span>
+              <div className="flex items-center gap-2">
+                <StatusBadge tone="warning" icon="clock">
+                  Invite pending
+                </StatusBadge>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  busy={revokeInvite.isPending}
+                  onClick={() => revokeInvite.mutate(inv.id)}
+                >
+                  Revoke
+                </Button>
+              </div>
+            </div>
+            {inv.permissions.length > 0 && (
+              <p className="text-xs text-ink-muted">
+                Will get: {inv.permissions.map((p) => PERMISSION_LABELS[p]).join(', ')}
+              </p>
+            )}
+          </li>
+        ))}
+      </ul>
+
+      {seatsFull ? (
+        <div className="rounded-md bg-neutral-soft p-3">
+          <p className="text-sm font-medium text-ink">You&rsquo;ve used all your seats.</p>
+          <p className="mt-0.5 text-sm text-ink-muted">
+            Upgrade your plan to add more teammates.
+          </p>
+          <Button
+            variant="secondary"
+            size="sm"
+            className="mt-2"
+            onClick={() => toast('Seat upgrades are coming soon — contact us to add more.', 'neutral')}
+          >
+            Upgrade for more seats
+          </Button>
+        </div>
+      ) : (
+        <InviteForm />
+      )}
+    </div>
+  );
+}
+
+/** One active member with editable permission toggles (owner shows full access). */
+function MemberRow({ member, onRemove }: { member: AccountMember; onRemove: () => void }) {
+  const updateMember = useUpdateMember();
+  const isOwner = member.role === 'owner';
+
+  const toggle = (permission: MemberPermission, checked: boolean) => {
+    const next = checked
+      ? [...member.permissions, permission]
+      : member.permissions.filter((p) => p !== permission);
+    updateMember.mutate({ userId: member.userId, input: { permissions: next } });
+  };
+
+  return (
+    <li className="flex flex-col gap-2 py-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm font-medium text-ink">{member.email}</span>
+        {isOwner ? (
+          <StatusBadge tone="ai">Owner</StatusBadge>
+        ) : (
+          <Button variant="ghost" size="sm" onClick={onRemove}>
+            Remove
+          </Button>
+        )}
+      </div>
+      {isOwner ? (
+        <p className="text-xs text-ink-muted">Full access to everything.</p>
+      ) : (
+        <fieldset className="flex flex-wrap gap-x-4 gap-y-1.5">
+          <legend className="sr-only">Permissions for {member.email}</legend>
+          {ALL_PERMISSIONS.map((p) => (
+            <label key={p} className="flex items-center gap-1.5 text-sm text-ink">
+              <input
+                type="checkbox"
+                checked={member.permissions.includes(p)}
+                disabled={updateMember.isPending}
+                onChange={(e) => toggle(p, e.target.checked)}
+              />
+              {PERMISSION_LABELS[p]}
+            </label>
+          ))}
+        </fieldset>
+      )}
+    </li>
+  );
+}
+
+/** Invite a teammate by email with an initial set of permissions. */
+function InviteForm() {
+  const invite = useInviteMember();
+  const { toast } = useToast();
+  const [email, setEmail] = useState('');
+  const [permissions, setPermissions] = useState<MemberPermission[]>([]);
+
+  const toggle = (permission: MemberPermission, checked: boolean) => {
+    setPermissions((prev) =>
+      checked ? [...prev, permission] : prev.filter((p) => p !== permission),
+    );
+  };
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    invite.mutate(
+      { email: email.trim(), permissions },
+      {
+        onSuccess: () => {
+          toast('Invite sent — they join when they sign in with this email.', 'positive');
+          setEmail('');
+          setPermissions([]);
+        },
+        onError: (err) =>
+          toast(err instanceof Error ? err.message : 'Could not send the invite.', 'danger'),
+      },
+    );
+  };
+
+  return (
+    <form onSubmit={submit} className="flex flex-col gap-3 border-t border-border pt-4">
+      <p className="text-sm font-medium text-ink">Invite a teammate</p>
+      <FormField label="Email" htmlFor="invite-email" required>
+        <Input
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          autoComplete="off"
+          placeholder="teammate@example.com"
+        />
+      </FormField>
+      <fieldset className="flex flex-wrap gap-x-4 gap-y-1.5">
+        <legend className="mb-1 text-sm font-medium text-ink">Permissions</legend>
+        {ALL_PERMISSIONS.map((p) => (
+          <label key={p} className="flex items-center gap-1.5 text-sm text-ink">
+            <input
+              type="checkbox"
+              checked={permissions.includes(p)}
+              onChange={(e) => toggle(p, e.target.checked)}
+            />
+            {PERMISSION_LABELS[p]}
+          </label>
+        ))}
+      </fieldset>
+      <div className="flex justify-end">
+        <Button type="submit" size="sm" busy={invite.isPending} disabled={!email.trim()}>
+          Send invite
+        </Button>
+      </div>
+    </form>
   );
 }
 

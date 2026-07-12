@@ -59,8 +59,28 @@ export type IntegrationType = z.infer<typeof IntegrationTypeSchema>;
 export const IntegrationStatusSchema = z.enum(['connected', 'disconnected', 'mock']);
 export type IntegrationStatus = z.infer<typeof IntegrationStatusSchema>;
 
-export const UserRoleSchema = z.enum(['owner']);
+// 'owner' is the account creator (full control, incl. team/billing/settings);
+// 'member' is an invited teammate whose write access is the set of
+// MemberPermissions the owner granted them. Reads are open to both.
+export const UserRoleSchema = z.enum(['owner', 'member']);
 export type UserRole = z.infer<typeof UserRoleSchema>;
+
+// Grantable write areas for a member (owner-configurable per member). Reads are
+// always allowed; only writes are gated. Owner-only actions (team management,
+// billing/seats, account settings, account deletion, integrations) are never
+// grantable and are gated by role instead.
+export const MemberPermissionSchema = z.enum([
+  'properties', // create/edit/archive properties & units
+  'tenants', // create/edit tenants & leases
+  'money', // transactions, categories, bank import/review-queue confirms
+  'rent', // rent tracker, record payments, send reminders
+  'reports', // generate/email reports
+  'ai', // use the chat assistant's write tools
+]);
+export type MemberPermission = z.infer<typeof MemberPermissionSchema>;
+
+/** Every grantable permission — the full set an owner implicitly holds. */
+export const ALL_MEMBER_PERMISSIONS: MemberPermission[] = MemberPermissionSchema.options;
 
 export const ChatRoleSchema = z.enum(['user', 'assistant']);
 export type ChatRole = z.infer<typeof ChatRoleSchema>;
