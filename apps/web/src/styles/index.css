@@ -84,12 +84,13 @@
   animation: drawer-enter var(--motion-slow) var(--motion-ease) both;
 }
 
-/* Insight-deck card transition (cycling / a card surfacing after dismiss) —
-   zeroed by the reduced-motion override in tokens.css. */
-@keyframes card-enter {
+/* Insight-deck shuffle — the incoming card rises from the stacked-layer
+   position while the outgoing card lifts up and fades. Both zeroed by the
+   reduced-motion override in tokens.css. */
+@keyframes card-shuffle-in {
   from {
-    opacity: 0;
-    transform: translateY(5px) scale(0.985);
+    opacity: 0.4;
+    transform: translateY(16px) scale(0.94);
   }
   to {
     opacity: 1;
@@ -97,8 +98,23 @@
   }
 }
 
-.animate-card-enter {
-  animation: card-enter var(--motion-slow) var(--motion-ease) both;
+.animate-card-shuffle-in {
+  animation: card-shuffle-in var(--motion-slow) var(--motion-ease) both;
+}
+
+@keyframes card-shuffle-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-14px) scale(0.98);
+  }
+}
+
+.animate-card-shuffle-out {
+  animation: card-shuffle-out var(--motion-slow) var(--motion-ease) both;
 }
 
 /* Mobile "More" bottom sheet slide-up — zeroed by the reduced-motion override in tokens.css. */
