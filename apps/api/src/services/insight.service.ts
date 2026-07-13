@@ -181,16 +181,18 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
   const period = currentPeriod();
   const candidates: InsightCandidate[] = [];
 
-  // Rule 1 — late_rent: any payment more than 5 days late.
+  // Rule 1 — late_rent: any payment more than 5 days late. 'partial' past
+  // grace carries daysLate too — a half-paid tenant 6+ days past due still
+  // warrants the nudge, with the shortfall (not the full charge) in the body.
   const tracker = await rentService.getMonthStatus(accountId, period);
   for (const row of tracker.rows) {
-    if (row.status === 'late' && (row.daysLate ?? 0) > LATE_RENT_MIN_DAYS) {
+    if ((row.status === 'late' || row.status === 'partial') && (row.daysLate ?? 0) > LATE_RENT_MIN_DAYS) {
       candidates.push({
         scope: 'tenant',
         type: 'late_rent',
         severity: 'warning',
         title: `${row.tenantName} is ${row.daysLate} days late on rent`,
-        body: `${formatUsdWhole(row.amountCents)} for ${row.propertyLabel} ${row.unitLabel} was due on the ${new Date(row.dueDate).getUTCDate()}. Consider sending a reminder.`,
+        body: `${formatUsdWhole(row.amountCents - row.paidCents)} for ${row.propertyLabel} ${row.unitLabel} was due on the ${new Date(row.dueDate).getUTCDate()}. Consider sending a reminder.`,
         actionLabel: 'Review',
         actionTarget: `/rent?period=${period}`,
         // One-click reminder for exactly this payment; sendReminders skips

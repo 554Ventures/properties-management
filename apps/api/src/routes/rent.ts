@@ -28,6 +28,14 @@ export async function rentRoutes(app: FastifyInstance): Promise<void> {
     async (req) => rentService.createPaymentLink(req.accountId, req.params.id),
   );
 
+  // Undo one deposit link (plan §B4): recomputes paidCents/status; the ledger
+  // transaction survives as an ordinary confirmed row.
+  app.delete<{ Params: { id: string; depositId: string } }>(
+    '/rent/payments/:id/deposits/:depositId',
+    needsRent,
+    async (req) => rentService.unlinkDeposit(req.accountId, req.params.id, req.params.depositId),
+  );
+
   app.post('/rent/reminders', needsRent, async (req) => {
     const input = parseBody(SendRemindersInputSchema, req.body);
     return rentService.sendReminders(req.accountId, input, 'user', (data, message) =>

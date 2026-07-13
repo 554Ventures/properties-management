@@ -209,11 +209,15 @@ async function main(): Promise<void> {
         period: p,
         dueDate,
         amountCents: lease.rentCents,
+        paidCents: lease.rentCents, // paid in full — deposits sum to the charge
         method,
         status: 'paid',
         paidAt,
         externalRef: method === 'online' ? `pi_mock_seed_${lease.leaseId.slice(-6)}_${p}` : null,
         transactionId: txn.id,
+        deposits: {
+          create: { transactionId: txn.id, amountCents: lease.rentCents, method, paidAt },
+        },
       },
     });
   };

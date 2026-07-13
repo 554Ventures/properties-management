@@ -37,6 +37,7 @@ export function toApiRentPayment(p: DbRentPayment): RentPayment {
     period: p.period,
     dueDate: iso(p.dueDate),
     amountCents: p.amountCents,
+    paidCents: p.paidCents,
     method: p.method as RentPaymentMethod | null,
     status: p.status as RentPaymentStatus,
     paidAt: isoOrNull(p.paidAt),
@@ -48,11 +49,14 @@ export function toApiRentPayment(p: DbRentPayment): RentPayment {
 
 /**
  * Derivation rule (ARCHITECTURE §4, binding): paid/processing/failed pass
- * through; else `due` while today ≤ dueDate + graceDays, otherwise `late`
- * with daysLate = whole days past dueDate.
+ * through; a row whose deposits cover the charge derives `paid` even if the
+ * stored status lagged; 0 < paidCents < amountCents derives `partial` (with
+ * daysLate once past dueDate + graceDays — partially paid rent can still be
+ * late); else `due` while today ≤ dueDate + graceDays, otherwise `late` with
+ * daysLate = whole days past dueDate.
  */
 export function deriveRentStatus(
-  payment: { status: string; dueDate: Date },
+  payment: { status: string; dueDate: Date; amountCents: number; paidCents: number },
   graceDays: number,
   today: Date = new Date(),
 ): { status: RentStatus; daysLate?: number } {
@@ -60,8 +64,15 @@ export function deriveRentStatus(
   if (stored === 'paid' || stored === 'processing' || stored === 'failed') {
     return { status: stored };
   }
+  if (payment.paidCents >= payment.amountCents && payment.amountCents > 0) {
+    return { status: 'paid' };
+  }
   const daysPastDue = calendarDaysBetween(payment.dueDate, today);
-  if (daysPastDue > graceDays) return { status: 'late', daysLate: daysPastDue };
+  const pastGrace = daysPastDue > graceDays;
+  if (payment.paidCents > 0) {
+    return pastGrace ? { status: 'partial', daysLate: daysPastDue } : { status: 'partial' };
+  }
+  if (pastGrace) return { status: 'late', daysLate: daysPastDue };
   return { status: 'due' };
 }
 
@@ -194,6 +205,7 @@ export async function getMonthStatus(
           leaseTenants: { include: { tenant: true }, orderBy: { isPrimary: 'desc' } },
         },
       },
+      deposits: { orderBy: { paidAt: 'asc' } },
     },
     orderBy: { dueDate: 'asc' },
   });
@@ -212,22 +224,31 @@ export async function getMonthStatus(
       propertyId: property.id,
       propertyLabel: property.nickname ?? property.addressLine1,
       amountCents: p.amountCents,
+      paidCents: p.paidCents,
       dueDate: iso(p.dueDate),
       status: derived.status,
       ...(derived.daysLate !== undefined ? { daysLate: derived.daysLate } : {}),
       method: p.method as RentPaymentMethod | null,
       paidAt: isoOrNull(p.paidAt),
+      deposits: p.deposits.map((d) => ({
+        id: d.id,
+        transactionId: d.transactionId,
+        amountCents: d.amountCents,
+        tenantId: d.tenantId,
+        method: d.method as RentPaymentMethod | null,
+        paidAt: iso(d.paidAt),
+      })),
     };
   });
 
-  const paidRows = rows.filter((r) => r.status === 'paid');
+  // Partials count toward collected and shrink (not zero) outstanding — the
+  // received/receivable split stays exact whatever mix of full and partial.
   return {
     period,
-    collectedCents: paidRows.reduce((sum, r) => sum + r.amountCents, 0),
-    outstandingCents: rows
-      .filter((r) => r.status !== 'paid')
-      .reduce((sum, r) => sum + r.amountCents, 0),
-    paidUnits: paidRows.length,
+    collectedCents: rows.reduce((sum, r) => sum + Math.min(r.paidCents, r.amountCents), 0),
+    outstandingCents: rows.reduce((sum, r) => sum + Math.max(0, r.amountCents - r.paidCents), 0),
+    paidUnits: rows.filter((r) => r.status === 'paid').length,
+    partialUnits: rows.filter((r) => r.status === 'partial').length,
     totalUnits: rows.length,
     rows,
   };
@@ -249,6 +270,7 @@ export interface RentMatchCandidate {
   period: string;
   dueDate: Date;
   amountCents: number;
+  paidCents: number; // remaining = amountCents − paidCents is what deposits match against
 }
 
 /** Open (due/processing) expected rents with a dueDate inside `range`, account-scoped. */
@@ -284,14 +306,19 @@ export async function findRentMatchCandidates(
       period: p.period,
       dueDate: p.dueDate,
       amountCents: p.amountCents,
+      paidCents: p.paidCents,
     };
   });
 }
 
 /**
- * Pick the expected rent a bank deposit looks like: exact amount, dated within
- * RENT_MATCH_WINDOW_DAYS of the due date. Two same-rent candidates in window
- * is ambiguous — suppress the suggestion rather than guess.
+ * Pick the expected rent a bank deposit looks like: exactly the charge's
+ * *remaining* balance (full amount for untouched charges, the shortfall for
+ * partials — so the second roommate check matches, and a completed charge
+ * never does), dated within RENT_MATCH_WINDOW_DAYS of the due date. Two
+ * same-remaining candidates in window is ambiguous — suppress the suggestion
+ * rather than guess. Below-remaining partials are deliberately not suggested
+ * here (that's the Rent-page nudge's broader tier, plan §C5).
  */
 export function pickRentMatch(
   txn: { amountCents: number; date: Date },
@@ -299,7 +326,8 @@ export function pickRentMatch(
 ): RentMatchCandidate | null {
   const matches = candidates.filter(
     (c) =>
-      c.amountCents === txn.amountCents &&
+      c.amountCents - c.paidCents === txn.amountCents &&
+      c.amountCents - c.paidCents > 0 &&
       Math.abs(calendarDaysBetween(c.dueDate, txn.date)) <= RENT_MATCH_WINDOW_DAYS,
   );
   return matches.length === 1 ? (matches[0] ?? null) : null;
@@ -346,16 +374,16 @@ export async function recordPayment(
       });
     }
   }
-  if (payment.status === 'paid') {
+  if (payment.status === 'paid' || payment.paidCents >= payment.amountCents) {
     throw new BadRequestError(`rent for ${input.period} is already recorded as paid`);
   }
-  // A mismatched amount used to flip the row to paid anyway and overwrite the
-  // charge, silently erasing the shortfall from outstandingCents and the tenant
-  // ledger. Partial/adjusted payments aren't modeled yet, so reject instead.
-  if (input.amountCents !== payment.amountCents) {
+  // Deposits may undershoot the remaining balance (partial payment) but never
+  // overshoot it — an overpayment would silently inflate collectedCents past
+  // the charge and hide a real bookkeeping problem (wrong unit, wrong month).
+  if (input.amountCents > payment.amountCents - payment.paidCents) {
     throw new BadRequestError(
-      `payment of ${formatUsd(input.amountCents)} doesn't match the ${formatUsd(payment.amountCents)} due for ${input.period} — ` +
-        `partial payments aren't supported yet; log the received amount as a manual income transaction instead`,
+      `payment of ${formatUsd(input.amountCents)} exceeds the ${formatUsd(payment.amountCents - payment.paidCents)} remaining for ${input.period} — ` +
+        `record the rent portion here and log any excess as a separate income transaction`,
     );
   }
 
@@ -373,14 +401,20 @@ export async function recordPayment(
     orderBy: { isSystem: 'desc' },
   });
 
-  // Ledger transaction + RentPayment update commit or roll back together; the
-  // status re-check inside the transaction makes the double-pay guard hold
-  // under concurrent requests.
+  // Ledger transaction + deposit + RentPayment update commit or roll back
+  // together; the re-read inside the transaction makes the double-pay and
+  // over-remaining guards hold under concurrent requests (two concurrent
+  // partials must not overshoot the charge between them).
   const paymentId = payment.id;
   const { ledgerTxn, updated } = await prisma.$transaction(async (tx) => {
     const fresh = await tx.rentPayment.findUniqueOrThrow({ where: { id: paymentId } });
-    if (fresh.status === 'paid') {
+    if (fresh.status === 'paid' || fresh.paidCents >= fresh.amountCents) {
       throw new BadRequestError(`rent for ${input.period} is already recorded as paid`);
+    }
+    if (input.amountCents > fresh.amountCents - fresh.paidCents) {
+      throw new BadRequestError(
+        `payment of ${formatUsd(input.amountCents)} exceeds the ${formatUsd(fresh.amountCents - fresh.paidCents)} remaining for ${input.period}`,
+      );
     }
     const createdTxn = await tx.transaction.create({
       data: {
@@ -396,16 +430,35 @@ export async function recordPayment(
         status: 'confirmed',
       },
     });
-    // amountCents is untouched: the charge is validated equal to the payment
-    // above, so the expected amount is never overwritten.
+    await tx.rentPaymentDeposit.create({
+      data: {
+        rentPaymentId: paymentId,
+        transactionId: createdTxn.id,
+        amountCents: input.amountCents,
+        method: input.method,
+        paidAt,
+      },
+    });
+    // amountCents (the charge) is never overwritten; paidCents accumulates.
+    // Stored status flips to 'paid' only when fully covered — a shortfall
+    // stays stored 'due' and derives 'partial'. The legacy transactionId link
+    // is set only for the single-full-payment case; deposits are the source
+    // of truth either way.
+    const newPaidCents = fresh.paidCents + input.amountCents;
+    const covered = newPaidCents >= fresh.amountCents;
     const updatedPayment = await tx.rentPayment.update({
       where: { id: paymentId },
       data: {
-        status: 'paid',
-        method: input.method,
-        paidAt,
-        externalRef,
-        transactionId: createdTxn.id,
+        paidCents: newPaidCents,
+        ...(covered
+          ? {
+              status: 'paid',
+              method: input.method,
+              paidAt,
+              externalRef,
+              ...(fresh.paidCents === 0 ? { transactionId: createdTxn.id } : {}),
+            }
+          : {}),
       },
     });
     return { ledgerTxn: createdTxn, updated: updatedPayment };
@@ -423,13 +476,84 @@ export async function recordPayment(
     action: 'rent_payment.recorded',
     entityType: 'rent_payment',
     entityId: updated.id,
-    detail: { period: input.period, amountCents: input.amountCents, method: input.method },
+    detail: {
+      period: input.period,
+      amountCents: input.amountCents,
+      method: input.method,
+      paidCents: updated.paidCents,
+      outstandingCents: Math.max(0, updated.amountCents - updated.paidCents),
+    },
   });
   // Landlord push notification — never throws, must not fail the payment.
+  const paidInFull = updated.paidCents >= updated.amountCents;
   await notifyAccount(accountId, {
     title: 'Rent received',
-    body: `${tenantName} paid ${formatUsd(input.amountCents)} for ${input.period}`,
+    body: paidInFull
+      ? `${tenantName} paid ${formatUsd(input.amountCents)} for ${input.period}`
+      : `${tenantName} paid ${formatUsd(input.amountCents)} of ${formatUsd(updated.amountCents)} for ${input.period}`,
     deepLink: '/rent',
+  });
+  return toApiRentPayment(updated);
+}
+
+/**
+ * Remove one deposit from a charge (plan §B4): deletes the RentPaymentDeposit
+ * link, recomputes paidCents from the surviving deposits, and reverts the
+ * stored status/method/paidAt when the charge is no longer fully covered. The
+ * ledger Transaction itself survives — unlinked, it's an ordinary confirmed
+ * row again (editable/deletable now that no link guard sees it).
+ */
+export async function unlinkDeposit(
+  accountId: string,
+  rentPaymentId: string,
+  depositId: string,
+  actor: AuditActor = 'user',
+): Promise<RentPayment> {
+  const deposit = await prisma.rentPaymentDeposit.findFirst({
+    where: {
+      id: depositId,
+      rentPaymentId,
+      rentPayment: { lease: { unit: { property: { accountId } } } },
+    },
+    include: { rentPayment: true },
+  });
+  if (!deposit) throw new NotFoundError('rent deposit', depositId);
+
+  const updated = await prisma.$transaction(async (tx) => {
+    await tx.rentPaymentDeposit.delete({ where: { id: deposit.id } });
+    const remaining = await tx.rentPaymentDeposit.aggregate({
+      where: { rentPaymentId },
+      _sum: { amountCents: true },
+    });
+    const paidCents = remaining._sum.amountCents ?? 0;
+    const fresh = await tx.rentPayment.findUniqueOrThrow({ where: { id: rentPaymentId } });
+    const covered = paidCents >= fresh.amountCents && paidCents > 0;
+    return tx.rentPayment.update({
+      where: { id: rentPaymentId },
+      data: {
+        paidCents,
+        // Clear the legacy single-payment link when it pointed at the deposit
+        // being removed — otherwise remove()/update() guards would keep
+        // protecting a transaction that no longer backs the charge.
+        ...(fresh.transactionId === deposit.transactionId ? { transactionId: null } : {}),
+        ...(covered
+          ? {}
+          : { status: 'due', method: null, paidAt: null, externalRef: null }),
+      },
+    });
+  });
+
+  await writeAudit(accountId, {
+    actor,
+    action: 'rent_payment.deposit_unlinked',
+    entityType: 'rent_payment',
+    entityId: rentPaymentId,
+    detail: {
+      period: updated.period,
+      amountCents: deposit.amountCents,
+      transactionId: deposit.transactionId,
+      paidCents: updated.paidCents,
+    },
   });
   return toApiRentPayment(updated);
 }
@@ -470,7 +594,7 @@ export async function sendReminders(
       results.push({ rentPaymentId, status: 'skipped', reason: 'not_found' });
       continue;
     }
-    if (payment.status === 'paid') {
+    if (payment.status === 'paid' || payment.paidCents >= payment.amountCents) {
       results.push({ rentPaymentId, status: 'skipped', reason: 'already_paid' });
       continue;
     }
@@ -482,7 +606,8 @@ export async function sendReminders(
       tenantName: tenant?.fullName ?? 'there',
       propertyLabel: property.nickname ?? property.addressLine1,
       unitLabel: payment.lease.unit.label,
-      amountCents: payment.amountCents,
+      // A partially paid charge reminds for what's still owed, not the full rent.
+      amountCents: payment.amountCents - payment.paidCents,
       dueDate: payment.dueDate.toISOString(),
       period: payment.period,
       log,

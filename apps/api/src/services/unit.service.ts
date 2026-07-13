@@ -102,9 +102,10 @@ export async function getDetail(accountId: string, id: string): Promise<UnitDeta
         period: p.period,
         dueDate: iso(p.dueDate),
         amountCents: p.amountCents,
+        paidCents: p.paidCents,
         status: derived.status,
         ...(derived.daysLate !== undefined ? { daysLate: derived.daysLate } : {}),
-        method: p.method as 'online' | 'manual' | null,
+        method: p.method as 'online' | 'manual' | 'bank' | null,
         paidAt: isoOrNull(p.paidAt),
       };
     });

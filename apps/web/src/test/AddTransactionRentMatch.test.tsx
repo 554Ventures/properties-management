@@ -34,6 +34,7 @@ const rentMatch: RentMatchSuggestion = {
   period: '2026-07',
   dueDate: '2026-07-01T00:00:00.000Z',
   amountCents: 115000,
+  paidCents: 0,
   confidence: 0.9,
 };
 

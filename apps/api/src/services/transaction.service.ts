@@ -135,17 +135,42 @@ export async function list(
       });
   const [rows, total] = await Promise.all([rowsPromise, prisma.transaction.count({ where })]);
 
-  if (useOffset) {
-    return { items: rows.map(toApiTransaction), nextCursor: null, total };
-  }
-  const hasMore = rows.length > limit;
+  const hasMore = !useOffset && rows.length > limit;
   const items = hasMore ? rows.slice(0, limit) : rows;
+  const rentLinkedIds = await rentLinkedTransactionIds(items.map((r) => r.id));
+  const toItem = (r: DbTransaction): Transaction => ({
+    ...toApiTransaction(r),
+    ...(rentLinkedIds.has(r.id) ? { rentLinked: true } : {}),
+  });
+
+  if (useOffset) {
+    return { items: items.map(toItem), nextCursor: null, total };
+  }
   const last = items[items.length - 1];
   return {
-    items: items.map(toApiTransaction),
+    items: items.map(toItem),
     nextCursor: hasMore && last ? last.id : null,
     total,
   };
+}
+
+/** Which of these transactions back a rent deposit (or legacy paid link). */
+async function rentLinkedTransactionIds(ids: string[]): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+  const [deposits, legacy] = await Promise.all([
+    prisma.rentPaymentDeposit.findMany({
+      where: { transactionId: { in: ids } },
+      select: { transactionId: true },
+    }),
+    prisma.rentPayment.findMany({
+      where: { transactionId: { in: ids } },
+      select: { transactionId: true },
+    }),
+  ]);
+  return new Set([
+    ...deposits.map((d) => d.transactionId),
+    ...legacy.map((p) => p.transactionId as string),
+  ]);
 }
 
 // ── AI category suggestion ───────────────────────────────────────────────────
@@ -358,8 +383,8 @@ export async function update(
       input.unitId !== undefined ? input.unitId : prior.unitId,
     );
   }
-  // Same desync remove() blocks below: this ledger row may back a `paid`
-  // RentPayment, whose amountCents/paidAt would silently stop matching (and a
+  // Same desync remove() blocks below: this ledger row may back a rent
+  // deposit whose amountCents contributes to a charge's paidCents (and a
   // type flip would erase the rent from reports while the tracker shows paid).
   // Category/property/unit edits don't touch the link and stay allowed.
   const changesLinkedFields =
@@ -367,10 +392,10 @@ export async function update(
     (input.date !== undefined && new Date(input.date).getTime() !== prior.date.getTime()) ||
     (input.type !== undefined && input.type !== prior.type);
   if (changesLinkedFields) {
-    const linkedPayment = await prisma.rentPayment.findUnique({ where: { transactionId: id } });
-    if (linkedPayment) {
+    const period = await rentLinkPeriod(id);
+    if (period) {
       throw new BadRequestError(
-        `this transaction backs the recorded rent payment for ${linkedPayment.period} — its amount, date, and type can't be changed`,
+        `this transaction backs a recorded rent payment for ${period} — its amount, date, and type can't be changed; unlink the deposit on the Rent page first`,
       );
     }
   }
@@ -409,19 +434,38 @@ export async function update(
   return toApiTransaction(row);
 }
 
+/**
+ * Period of the rent charge this transaction backs, or null. Checks both link
+ * shapes: the deposit ledger (source of truth) and the legacy single-payment
+ * RentPayment.transactionId — deleting either through the DB cascade/SetNull
+ * would silently corrupt paidCents or leave paid rent with no ledger entry.
+ */
+async function rentLinkPeriod(transactionId: string): Promise<string | null> {
+  const deposit = await prisma.rentPaymentDeposit.findUnique({
+    where: { transactionId },
+    include: { rentPayment: { select: { period: true } } },
+  });
+  if (deposit) return deposit.rentPayment.period;
+  const linkedPayment = await prisma.rentPayment.findUnique({
+    where: { transactionId },
+    select: { period: true },
+  });
+  return linkedPayment?.period ?? null;
+}
+
 export async function remove(
   accountId: string,
   id: string,
   actor: AuditActor = 'user',
 ): Promise<void> {
   const prior = await getOwned(accountId, id);
-  // A rent-linked ledger row backs a `paid` RentPayment; deleting it would
-  // SetNull the link and leave the tracker showing paid rent with no ledger
-  // entry (the desync noted in schema.prisma) — block instead.
-  const linkedPayment = await prisma.rentPayment.findUnique({ where: { transactionId: id } });
-  if (linkedPayment) {
+  // A rent-linked ledger row backs a deposit (or legacy paid link); deleting
+  // it would cascade the deposit away leaving paidCents stale — block and
+  // point at the sanctioned path (unlink first).
+  const period = await rentLinkPeriod(id);
+  if (period) {
     throw new BadRequestError(
-      `this transaction backs the recorded rent payment for ${linkedPayment.period} and cannot be deleted`,
+      `this transaction backs a recorded rent payment for ${period} and cannot be deleted — unlink the deposit on the Rent page first`,
     );
   }
   await prisma.transaction.delete({ where: { id } });
@@ -560,6 +604,7 @@ async function computeRentMatches(
       period: match.period,
       dueDate: iso(match.dueDate),
       amountCents: match.amountCents,
+      paidCents: match.paidCents,
       confidence: RENT_MATCH_CONFIDENCE,
     });
   }
@@ -649,12 +694,16 @@ async function confirmWithRentLink(
     include: { lease: { include: { unit: true } } },
   });
   if (!payment) throw new NotFoundError('rent payment', rentPaymentId);
-  // The heuristic only ever suggests exact-amount matches, but the endpoint
-  // accepts any rentPaymentId — a mismatched link would mark a partial (or
-  // unrelated) deposit as rent paid in full. Mirrors recordPayment's guard.
-  if (existing.amountCents !== payment.amountCents) {
+  // The heuristic only ever suggests exact-remaining matches, but the endpoint
+  // accepts any rentPaymentId — a deposit may undershoot the remaining balance
+  // (partial payment) but never overshoot it. Mirrors recordPayment's guard.
+  if (payment.paidCents >= payment.amountCents) {
+    throw new BadRequestError(`rent for ${payment.period} is already recorded as paid`);
+  }
+  if (existing.amountCents > payment.amountCents - payment.paidCents) {
     throw new BadRequestError(
-      `transaction of ${formatUsd(existing.amountCents)} doesn't match the ${formatUsd(payment.amountCents)} due for ${payment.period} — only an exact-amount transaction can be linked to a rent payment`,
+      `transaction of ${formatUsd(existing.amountCents)} exceeds the ${formatUsd(payment.amountCents - payment.paidCents)} remaining for ${payment.period} — ` +
+        `it can't be linked to this rent payment`,
     );
   }
   // Scoped like suggestCategory: never pick up another account's custom "Rent".
@@ -666,13 +715,18 @@ async function confirmWithRentLink(
   // matched an expected rent links as 'manual'.
   const method = existing.source === 'bank' ? 'bank' : 'manual';
 
-  // Confirm + link commit or roll back together; the status re-check inside
-  // the transaction makes the double-pay guard hold under concurrent requests
-  // (mirrors recordPayment).
+  // Confirm + deposit + charge update commit or roll back together; the
+  // re-read inside the transaction makes the double-pay/over-remaining guards
+  // hold under concurrent requests (mirrors recordPayment).
   const { row, updatedPayment } = await prisma.$transaction(async (tx) => {
     const fresh = await tx.rentPayment.findUniqueOrThrow({ where: { id: payment.id } });
-    if (fresh.status === 'paid') {
+    if (fresh.status === 'paid' || fresh.paidCents >= fresh.amountCents) {
       throw new BadRequestError(`rent for ${payment.period} is already recorded as paid`);
+    }
+    if (existing.amountCents > fresh.amountCents - fresh.paidCents) {
+      throw new BadRequestError(
+        `transaction of ${formatUsd(existing.amountCents)} exceeds the ${formatUsd(fresh.amountCents - fresh.paidCents)} remaining for ${payment.period}`,
+      );
     }
     const confirmedRow = await tx.transaction.update({
       where: { id: existing.id },
@@ -683,13 +737,29 @@ async function confirmWithRentLink(
         unitId: payment.lease.unitId,
       },
     });
+    await tx.rentPaymentDeposit.create({
+      data: {
+        rentPaymentId: payment.id,
+        transactionId: existing.id,
+        amountCents: existing.amountCents,
+        method,
+        paidAt: existing.date,
+      },
+    });
+    const newPaidCents = fresh.paidCents + existing.amountCents;
+    const covered = newPaidCents >= fresh.amountCents;
     const linkedPayment = await tx.rentPayment.update({
       where: { id: payment.id },
       data: {
-        status: 'paid',
-        method,
-        paidAt: existing.date,
-        transactionId: existing.id,
+        paidCents: newPaidCents,
+        ...(covered
+          ? {
+              status: 'paid',
+              method,
+              paidAt: existing.date,
+              ...(fresh.paidCents === 0 ? { transactionId: existing.id } : {}),
+            }
+          : {}),
       },
     });
     return { row: confirmedRow, updatedPayment: linkedPayment };
@@ -711,7 +781,8 @@ async function confirmWithRentLink(
     entityId: updatedPayment.id,
     detail: {
       period: updatedPayment.period,
-      amountCents: updatedPayment.amountCents,
+      amountCents: existing.amountCents,
+      paidCents: updatedPayment.paidCents,
       method,
       via: existing.source === 'bank' ? 'bank_import' : 'transaction_link',
     },

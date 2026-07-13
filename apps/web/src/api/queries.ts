@@ -691,6 +691,21 @@ export function useRecordPayment() {
   });
 }
 
+// Undo one deposit link — recomputes the charge's paidCents/status; the
+// ledger transaction survives as an ordinary confirmed row.
+export function useUnlinkDeposit() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { rentPaymentId: string; depositId: string }) =>
+      api.delete(`/rent/payments/${input.rentPaymentId}/deposits/${input.depositId}`),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['rent'] });
+      void qc.invalidateQueries({ queryKey: ['tenants'] });
+      invalidateLedger(qc);
+    },
+  });
+}
+
 export function useSendReminders() {
   const qc = useQueryClient();
   return useMutation({

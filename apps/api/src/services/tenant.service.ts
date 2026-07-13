@@ -32,15 +32,19 @@ const RENEW_SOON_DAYS = 60;
 
 /**
  * Derivation rule (ARCHITECTURE §4, binding): late if any unpaid rent past
- * due; else renew_soon if lease.endDate ≤ today + 60d; else current.
+ * due (including partially paid — daysLate presence covers both); else
+ * renew_soon if lease.endDate ≤ today + 60d; else current.
  */
 function deriveTenantStatus(
-  leases: Array<{ endDate: Date; rentPayments: Array<{ status: string; dueDate: Date }> }>,
+  leases: Array<{
+    endDate: Date;
+    rentPayments: Array<{ status: string; dueDate: Date; amountCents: number; paidCents: number }>;
+  }>,
   graceDays: number,
   today: Date,
 ): TenantStatus {
   const anyLate = leases.some((l) =>
-    l.rentPayments.some((p) => deriveRentStatus(p, graceDays, today).status === 'late'),
+    l.rentPayments.some((p) => deriveRentStatus(p, graceDays, today).daysLate !== undefined),
   );
   if (anyLate) return 'late';
   const renewCutoff = addDays(today, RENEW_SOON_DAYS);
@@ -118,9 +122,10 @@ export async function getDetail(accountId: string, id: string): Promise<TenantDe
         period: p.period,
         dueDate: iso(p.dueDate),
         amountCents: p.amountCents,
+        paidCents: p.paidCents,
         status: derived.status,
         ...(derived.daysLate !== undefined ? { daysLate: derived.daysLate } : {}),
-        method: p.method as 'online' | 'manual' | null,
+        method: p.method as 'online' | 'manual' | 'bank' | null,
         paidAt: isoOrNull(p.paidAt),
       };
     });

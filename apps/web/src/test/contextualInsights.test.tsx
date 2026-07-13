@@ -94,6 +94,7 @@ const tracker: RentTrackerResponse = {
   collectedCents: 250000,
   outstandingCents: 115000,
   paidUnits: 2,
+  partialUnits: 0,
   totalUnits: 3,
   rows: [
     {
@@ -106,11 +107,13 @@ const tracker: RentTrackerResponse = {
       propertyId: 'p1',
       propertyLabel: '21 Cedar Ct',
       amountCents: 115000,
+      paidCents: 0,
       dueDate: '2026-07-01T00:00:00.000Z',
       status: 'late',
       daysLate: 6,
       method: null,
       paidAt: null,
+      deposits: [],
     },
   ],
 };

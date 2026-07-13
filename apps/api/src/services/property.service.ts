@@ -48,11 +48,19 @@ async function lateUnitIds(accountId: string, graceDays: number): Promise<Set<st
       status: { notIn: ['paid'] },
       lease: { unit: { archivedAt: null, property: { accountId, archivedAt: null } } },
     },
-    select: { status: true, dueDate: true, lease: { select: { unitId: true } } },
+    select: {
+      status: true,
+      dueDate: true,
+      amountCents: true,
+      paidCents: true,
+      lease: { select: { unitId: true } },
+    },
   });
   const late = new Set<string>();
   for (const p of payments) {
-    if (deriveRentStatus(p, graceDays).status === 'late') late.add(p.lease.unitId);
+    // daysLate presence covers both fully-unpaid `late` and partial-but-past-
+    // grace rows — a half-paid tenant past the grace window is still late.
+    if (deriveRentStatus(p, graceDays).daysLate !== undefined) late.add(p.lease.unitId);
   }
   return late;
 }

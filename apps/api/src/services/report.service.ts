@@ -311,7 +311,9 @@ async function buildTenantLedger(
     rows,
     totals: {
       chargedCents: rows.reduce((s, r) => s + r.amountCents, 0),
-      collectedCents: rows.filter((r) => r.status === 'paid').reduce((s, r) => s + r.amountCents, 0),
+      // Sum what was actually received (partials included), matching the
+      // tracker's collectedCents semantics.
+      collectedCents: payments.reduce((s, p) => s + Math.min(p.paidCents, p.amountCents), 0),
     },
     table: {
       columns: [

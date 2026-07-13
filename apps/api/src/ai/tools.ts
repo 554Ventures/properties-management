@@ -314,7 +314,7 @@ export const serviceTools: ServiceToolDef[] = [
   {
     name: 'record_rent_payment',
     description:
-      'WRITES: records a rent payment for a lease/period as paid and creates the matching income transaction in the ledger. Cannot be undone from chat. amountCents must equal the amount due for the period — partial payments are rejected (log those with create_transaction instead).',
+      'WRITES: records a rent payment for a lease/period as paid and creates the matching income transaction in the ledger. Cannot be undone from chat. amountCents may be at most the remaining balance for the period (charge minus what is already paid); a smaller amount records a partial payment and the charge shows "partial" until fully covered.',
     inputSchema: RecordRentPaymentInputSchema,
     write: true,
     execute: (accountId, input, actor) =>

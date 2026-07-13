@@ -173,6 +173,7 @@ model Tenant {
   account      Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
   leaseTenants LeaseTenant[]
   insights     Insight[]
+  rentDeposits RentPaymentDeposit[]
 
   @@index([accountId])
   @@index([accountId, archivedAt])
@@ -270,6 +271,7 @@ model Transaction {
   unit        Unit?        @relation(fields: [unitId], references: [id], onDelete: SetNull)
   category    Category?    @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   rentPayment RentPayment?
+  rentDeposit RentPaymentDeposit?
 
   @@index([accountId, date])
   @@index([accountId, status])
@@ -282,11 +284,15 @@ model RentPayment {
   period        String // "YYYY-MM"
   dueDate       DateTime // materialized with the month's expected rows; enables exact days-late
   amountCents   Int
-  method        String? // RentPaymentMethod (@hearth/shared): online | manual — null until paid
+  // Running total received (= sum of deposits; maintained inside the same
+  // $transaction as every deposit write). 0 < paidCents < amountCents derives
+  // the 'partial' display status; stored status stays 'due' until fully paid.
+  paidCents     Int       @default(0)
+  method        String? // RentPaymentMethod (@hearth/shared): online | manual | bank — null until paid
   status        String // RentPaymentStatus (@hearth/shared): due | processing | paid | failed
   paidAt        DateTime?
   externalRef   String? // mock Stripe id
-  transactionId String?   @unique // ledger Transaction created on payment
+  transactionId String?   @unique // legacy single-payment link; deposits are the source of truth
   remindedAt    DateTime?
 
   lease       Lease        @relation(fields: [leaseId], references: [id], onDelete: Cascade)
@@ -295,9 +301,32 @@ model RentPayment {
   // status 'paid' with no backing ledger entry. SetNull remains the DB-level
   // fallback for deletes that bypass the service.
   transaction Transaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+  deposits    RentPaymentDeposit[]
 
   @@unique([leaseId, period])
   @@index([period])
+}
+
+// One received payment toward a RentPayment charge (plan §B2): many deposits
+// sum toward one charge, so roommates/partial payers are representable. Every
+// deposit is backed 1:1 by a ledger Transaction; RentPayment.paidCents is the
+// maintained sum. Deleting a deposit-backed Transaction through the service is
+// blocked (transaction.service.remove); the DB-level Cascade covers writes
+// that bypass it, and unlinkDeposit is the sanctioned removal path.
+model RentPaymentDeposit {
+  id            String   @id @default(cuid())
+  rentPaymentId String
+  transactionId String   @unique
+  amountCents   Int
+  tenantId      String? // which co-tenant paid (share tracking, plan §C)
+  method        String? // RentPaymentMethod (@hearth/shared): online | manual | bank
+  paidAt        DateTime @default(now())
+
+  rentPayment RentPayment @relation(fields: [rentPaymentId], references: [id], onDelete: Cascade)
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  tenant      Tenant?     @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+
+  @@index([rentPaymentId])
 }
 
 // Contractor directory. Usage stats (jobsCount/avgCostCents/lastUsedAt) are

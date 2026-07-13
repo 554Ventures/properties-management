@@ -24,6 +24,11 @@ export const TransactionSchema = z.object({
   receiptUrl: z.string().nullable(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
+  // True when this row backs a rent deposit (or legacy RentPayment link) —
+  // the ledger shows an "applied to rent" marker and explains why amount/
+  // date/type edits and deletion are restricted. Populated by GET
+  // /transactions only; optional so other producers stay unchanged.
+  rentLinked: z.boolean().optional(),
 });
 
 // POST /transactions — if categoryId is omitted the response carries
@@ -85,7 +90,8 @@ export const TransactionListResponseSchema = z.object({
 
 // Heuristic rent match computed at review time (never stored, never
 // auto-applied): an income bank transaction that looks like a lease's open
-// expected rent — same amount, dated within a window of the due date.
+// expected rent — exactly the charge's *remaining* balance (full amount, or
+// the shortfall of a partial), dated within a window of the due date.
 export const RentMatchSuggestionSchema = z.object({
   rentPaymentId: z.string(),
   leaseId: z.string(),
@@ -96,7 +102,8 @@ export const RentMatchSuggestionSchema = z.object({
   unitLabel: z.string(),
   period: PeriodSchema,
   dueDate: z.string().datetime(),
-  amountCents: z.number().int().positive(),
+  amountCents: z.number().int().positive(), // the full charge
+  paidCents: z.number().int(), // already received; the match completes the difference
   confidence: z.number().min(0).max(1),
 });
 
