@@ -133,6 +133,33 @@ describe('OnboardingBanner visibility', () => {
   });
 });
 
+describe('deploy skew', () => {
+  it('ignores step ids this bundle does not know (prod regression: stale API mid-rollout)', async () => {
+    // 2026-07-12 prod incident: the Worker's web assets flip instantly on
+    // deploy but the API container rolls gradually, so the new bundle briefly
+    // received the retired 'log_transaction' step and crashed the dashboard
+    // on the missing STEP_META entry. Unknown ids must be dropped, not fatal.
+    const skewed: OnboardingState = {
+      status: 'in_progress',
+      steps: [
+        ...makeState('in_progress', ['completed', 'pending', 'pending', 'pending']).steps,
+        { id: 'log_transaction' as unknown as OnboardingStepId, state: 'pending' },
+      ],
+    };
+    stubOnboardingApi(skewed);
+    render(<Providers><OnboardingBanner /></Providers>);
+
+    // Progress counts only the known steps, and opening the wizard renders
+    // without throwing.
+    expect(await screen.findByText('1 of 4 steps')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Continue setup' }));
+    expect(
+      await screen.findByRole('dialog', { name: 'Set up your portfolio' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/log your first transaction/i)).not.toBeInTheDocument();
+  });
+});
+
 describe('starting and stopping the wizard', () => {
   it('the CTA marks onboarding in_progress and opens the wizard; closing keeps progress', async () => {
     const fetchMock = stubOnboardingApi(

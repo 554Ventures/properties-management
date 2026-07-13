@@ -89,6 +89,7 @@ import type {
   UpdateTransactionInput,
   UpdateUnitInput,
 } from '@hearth/shared';
+import { OnboardingStepIdSchema } from '@hearth/shared';
 import { api, toQuery } from './client';
 
 export type {
@@ -868,10 +869,23 @@ export function useRemoveMember() {
 
 // --------------------------------------------------------------- onboarding
 
+const KNOWN_ONBOARDING_STEPS = new Set<string>(OnboardingStepIdSchema.options);
+
+/**
+ * Deploy-skew guard: the web bundle and the API container never update
+ * atomically (Worker assets flip instantly, the container rolls; browsers
+ * also cache old bundles), so around a deploy the server can send onboarding
+ * step ids this bundle doesn't know. Drop them — rendering an unknown id has
+ * no STEP_META entry and would crash the whole dashboard.
+ */
+function sanitizeOnboarding(state: OnboardingState): OnboardingState {
+  return { ...state, steps: state.steps.filter((s) => KNOWN_ONBOARDING_STEPS.has(s.id)) };
+}
+
 export function useOnboarding() {
   return useQuery({
     queryKey: ['onboarding'],
-    queryFn: () => api.get<OnboardingState>('/onboarding'),
+    queryFn: async () => sanitizeOnboarding(await api.get<OnboardingState>('/onboarding')),
     staleTime: STALE_SHORT,
   });
 }
@@ -882,7 +896,7 @@ export function useUpdateOnboarding() {
     mutationFn: (input: UpdateOnboardingInput) =>
       api.patch<OnboardingState>('/onboarding', input),
     onSuccess: (state) => {
-      qc.setQueryData(['onboarding'], state);
+      qc.setQueryData(['onboarding'], sanitizeOnboarding(state));
     },
   });
 }
