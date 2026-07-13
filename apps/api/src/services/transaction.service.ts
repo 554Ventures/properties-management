@@ -51,6 +51,7 @@ import {
   materializeExpectedPayments,
   pickRentMatch,
 } from './rent.service';
+import { vendorMemoryKey } from './vendor';
 
 export function toApiTransaction(t: DbTransaction): Transaction {
   return {
@@ -147,7 +148,9 @@ export async function list(
   };
 }
 
-// ── AI category suggestion (mock keyword table — no AI call in this task) ────
+// ── AI category suggestion ───────────────────────────────────────────────────
+// Per-account vendor memory first (corrections stick — plan §A), then the
+// mock keyword table (no AI call in this path).
 
 const KEYWORD_RULES: Array<{ pattern: RegExp; categoryName: string; confidence: number }> = [
   { pattern: /plumb|roof|repair/i, categoryName: 'Repairs', confidence: 0.84 },
@@ -157,16 +160,33 @@ const KEYWORD_RULES: Array<{ pattern: RegExp; categoryName: string; confidence: 
 const FALLBACK = { categoryName: 'Supplies', confidence: 0.62 };
 const INCOME_FALLBACK = { categoryName: 'Rent', confidence: 0.8 };
 
+export type SuggestionSource = 'learned' | 'keyword' | 'fallback';
+
 export async function suggestCategory(
   accountId: string,
   partialTxn: { type: TransactionType; description?: string; vendor?: string | null },
-): Promise<{ categoryId: string; confidence: number } | null> {
+): Promise<{ categoryId: string; confidence: number; source: SuggestionSource } | null> {
+  const memoryKey = partialTxn.vendor ? vendorMemoryKey(partialTxn.vendor) : '';
+  if (memoryKey) {
+    const memory = await prisma.vendorCategoryMemory.findUnique({
+      where: {
+        accountId_vendorKey_type: { accountId, vendorKey: memoryKey, type: partialTxn.type },
+      },
+    });
+    if (memory) {
+      return { categoryId: memory.categoryId, confidence: memory.confidence, source: 'learned' };
+    }
+  }
   const text = `${partialTxn.description ?? ''} ${partialTxn.vendor ?? ''}`;
   let pick: { categoryName: string; confidence: number };
+  let source: SuggestionSource;
   if (partialTxn.type === 'income') {
     pick = INCOME_FALLBACK;
+    source = 'fallback';
   } else {
-    pick = KEYWORD_RULES.find((r) => r.pattern.test(text)) ?? FALLBACK;
+    const rule = KEYWORD_RULES.find((r) => r.pattern.test(text));
+    pick = rule ?? FALLBACK;
+    source = rule ? 'keyword' : 'fallback';
   }
   const category = await prisma.category.findFirst({
     where: {
@@ -176,7 +196,56 @@ export async function suggestCategory(
     },
   });
   if (!category) return null;
-  return { categoryId: category.id, confidence: pick.confidence };
+  return { categoryId: category.id, confidence: pick.confidence, source };
+}
+
+// Reinforcement ceiling/steps: a learned pick starts at 0.95 and creeps toward
+// (never reaches) certainty as the user keeps agreeing with it.
+const MEMORY_BASE_CONFIDENCE = 0.95;
+const MEMORY_MAX_CONFIDENCE = 0.99;
+const MEMORY_REINFORCE_STEP = 0.01;
+
+/**
+ * Best-effort vendor→category learning (plan §A5). `correct` upserts the
+ * mapping (a correction to a different category resets the row); `reinforce`
+ * only bumps an existing row that already backs `categoryId` — accepting a
+ * keyword-table suggestion must not mint a memory, or the 0.62 "Supplies"
+ * fallback would lock itself in.
+ */
+async function recordVendorCategoryChoice(
+  accountId: string,
+  vendor: string | null,
+  type: string,
+  categoryId: string | null,
+  mode: 'correct' | 'reinforce',
+): Promise<void> {
+  const key = vendor ? vendorMemoryKey(vendor) : '';
+  if (!key || !categoryId) return;
+  const where = { accountId_vendorKey_type: { accountId, vendorKey: key, type } };
+  const existing = await prisma.vendorCategoryMemory.findUnique({ where });
+  if (existing) {
+    const agrees = existing.categoryId === categoryId;
+    if (!agrees && mode === 'reinforce') return;
+    await prisma.vendorCategoryMemory.update({
+      where,
+      data: agrees
+        ? {
+            hitCount: { increment: 1 },
+            confidence: Math.min(MEMORY_MAX_CONFIDENCE, existing.confidence + MEMORY_REINFORCE_STEP),
+          }
+        : { categoryId, hitCount: 1, confidence: MEMORY_BASE_CONFIDENCE },
+    });
+    return;
+  }
+  if (mode === 'reinforce') return;
+  try {
+    await prisma.vendorCategoryMemory.create({
+      data: { accountId, vendorKey: key, type, categoryId },
+    });
+  } catch (err) {
+    // Lost the check-then-create race — the concurrent writer's row stands.
+    if (!isUniqueConstraintError(err)) throw err;
+  }
 }
 
 // ── create / update / remove ─────────────────────────────────────────────────
@@ -319,6 +388,12 @@ export async function update(
       ...(input.receiptUrl !== undefined ? { receiptUrl: input.receiptUrl } : {}),
     },
   });
+  // Second learning signal (plan §A5): recategorizing an already-saved row is
+  // a correction too. Uses the row's effective vendor (the patch may have
+  // changed it in the same call).
+  if (input.categoryId !== undefined && input.categoryId !== prior.categoryId) {
+    await recordVendorCategoryChoice(accountId, row.vendor, row.type, input.categoryId, 'correct');
+  }
   await writeAudit(accountId, {
     actor,
     action: 'transaction.updated',
@@ -403,6 +478,24 @@ export async function getReviewQueue(
   // Rent matches are computed for the returned page only — the bulk paths
   // recompute over their own row set.
   const rentMatches = await computeRentMatches(accountId, items);
+  // 'learned' is derived fresh at read time (not stored at import): a memory
+  // row written after the import still labels the suggestion, and a memory
+  // that has since moved to a different category stops claiming it.
+  const memoryKeys = [
+    ...new Set(
+      items.filter((r) => r.vendor && r.aiSuggestedCategoryId).map((r) => vendorMemoryKey(r.vendor as string)),
+    ),
+  ].filter(Boolean);
+  const memories = memoryKeys.length
+    ? await prisma.vendorCategoryMemory.findMany({
+        where: { accountId, vendorKey: { in: memoryKeys } },
+      })
+    : [];
+  const memoryCategory = new Map(memories.map((m) => [`${m.vendorKey}|${m.type}`, m.categoryId]));
+  const isLearned = (r: DbTransaction): boolean =>
+    !!r.vendor &&
+    !!r.aiSuggestedCategoryId &&
+    memoryCategory.get(`${vendorMemoryKey(r.vendor)}|${r.type}`) === r.aiSuggestedCategoryId;
   const last = items[items.length - 1];
   return {
     items: items.map((r) => ({
@@ -411,6 +504,7 @@ export async function getReviewQueue(
         ? (nameById.get(r.aiSuggestedCategoryId) ?? null)
         : null,
       rentMatch: rentMatches.get(r.id) ?? null,
+      ...(isLearned(r) ? { suggestionSource: 'learned' as const } : {}),
     })),
     nextCursor: hasMore && last ? last.id : null,
     total,
@@ -501,6 +595,26 @@ export async function confirm(
       ...(input.unitId !== undefined ? { unitId: input.unitId } : {}),
     },
   });
+  // Learning signal (plan §A5): an explicit category that disagrees with the
+  // suggestion is a correction; agreeing (explicitly or by accepting the
+  // suggestion) reinforces an existing memory only.
+  if (input.categoryId) {
+    await recordVendorCategoryChoice(
+      accountId,
+      existing.vendor,
+      existing.type,
+      input.categoryId,
+      input.categoryId === existing.aiSuggestedCategoryId ? 'reinforce' : 'correct',
+    );
+  } else if (usedSuggestion) {
+    await recordVendorCategoryChoice(
+      accountId,
+      existing.vendor,
+      existing.type,
+      existing.aiSuggestedCategoryId,
+      'reinforce',
+    );
+  }
   await writeAudit(accountId, {
     // A human confirm that accepts the AI suggestion is the one case that
     // upgrades to 'ai_suggested_user_confirmed'; non-user actors pass through.

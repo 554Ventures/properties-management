@@ -114,6 +114,10 @@ export const CreateTransactionResponseSchema = TransactionSchema.extend({
 export const ReviewQueueItemSchema = TransactionSchema.extend({
   aiSuggestedCategoryName: z.string().nullable(),
   rentMatch: RentMatchSuggestionSchema.nullable(),
+  // Where the AI category suggestion came from. 'learned' = the account's own
+  // vendor→category memory (a past correction) — the UI labels these so the
+  // learning is visible. Omitted when unknown; derived fresh at read time.
+  suggestionSource: z.enum(['learned', 'keyword', 'fallback']).optional(),
 });
 
 // Review-queue filters — also the body of the bulk confirm-all/dismiss-all

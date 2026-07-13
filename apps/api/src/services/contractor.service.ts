@@ -14,6 +14,7 @@ import { NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { writeAudit, type AuditActor } from './audit.service';
 import * as transactionService from './transaction.service';
+import { vendorKey } from './vendor';
 
 export function toApiContractor(c: DbContractor): Contractor {
   return {
@@ -29,11 +30,6 @@ export function toApiContractor(c: DbContractor): Contractor {
     createdAt: iso(c.createdAt),
     archivedAt: isoOrNull(c.archivedAt),
   };
-}
-
-/** Match key for contractor ↔ transaction-vendor joins (ARCHITECTURE §4). */
-function vendorKey(name: string): string {
-  return name.trim().toLowerCase();
 }
 
 /**

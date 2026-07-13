@@ -383,6 +383,7 @@ function ReviewItemCard({
                 confidence={item.aiConfidence ?? 0}
                 applied={categoryId === item.aiSuggestedCategoryId}
                 onApply={() => setCategoryId(item.aiSuggestedCategoryId as string)}
+                note={item.suggestionSource === 'learned' ? 'from your past choice' : undefined}
               />
             )}
             {item.aiConfidence != null && item.aiConfidence < 0.7 && (

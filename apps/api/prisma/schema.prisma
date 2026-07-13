@@ -57,6 +57,7 @@ model Account {
   contractors  Contractor[]
   pushDevices  PushDevice[]
   onboarding   OnboardingState?
+  vendorCategoryMemories VendorCategoryMemory[]
 }
 
 // Getting-started checklist state (one row per account, created lazily on the
@@ -218,6 +219,30 @@ model Category {
 
   account      Account?      @relation(fields: [accountId], references: [id], onDelete: Cascade)
   transactions Transaction[]
+  vendorCategoryMemories VendorCategoryMemory[]
+}
+
+// Per-account vendor → category memory (TRUSTWORTHY_TRANSACTIONS_PLAN.md §A).
+// Written when a user corrects (or repeatedly accepts) a category on a
+// transaction with a vendor; consulted by suggestCategory before the keyword
+// table so corrections stick. vendorKey is the normalized memory key
+// (services/vendor.ts vendorMemoryKey — bank-descriptor noise stripped), NOT
+// the raw vendor string.
+model VendorCategoryMemory {
+  id         String   @id @default(cuid())
+  accountId  String
+  vendorKey  String
+  type       String // TransactionType (@hearth/shared): income | expense
+  categoryId String
+  confidence Float    @default(0.95)
+  hitCount   Int      @default(1)
+  updatedAt  DateTime @updatedAt
+
+  account  Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, vendorKey, type])
+  @@index([accountId])
 }
 
 model Transaction {
