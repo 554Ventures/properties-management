@@ -70,19 +70,28 @@ async function makeRentLate(leaseId: string): Promise<void> {
 }
 
 describe('insight generation rules', () => {
-  it('seed produced exactly the 3 expected dedupeKeys, and re-running is a no-op', async () => {
+  it('seed produced exactly the 4 expected dedupeKeys, and re-running is a no-op', async () => {
     const accountId = await getDemoAccountId();
     const keys = expectedInsightDedupeKeys(currentPeriod());
 
     const active = await insightService.listActive(accountId);
     const activeKeys = active.map((i) => i.dedupeKey).sort();
-    expect(activeKeys).toEqual([keys.expenseSpike, keys.lateRent, keys.renewalWindow].sort());
+    // The review-queue key carries the newest pending transaction's generated
+    // id, so only its prefix is pinnable.
+    const reviewKey = activeKeys.find((k) => k.startsWith('transactions_pending_review:'));
+    expect(reviewKey).toBeDefined();
+    expect(activeKeys).toEqual(
+      [keys.expenseSpike, keys.lateRent, keys.renewalWindow, reviewKey!].sort(),
+    );
 
     const lateRent = active.find((i) => i.dedupeKey === keys.lateRent);
     expect(lateRent?.severity).toBe('warning');
     expect(lateRent?.type).toBe('late_rent');
     const renewal = active.find((i) => i.dedupeKey === keys.renewalWindow);
     expect(renewal?.title).toBe('2 leases up for renewal in the next 60 days');
+    const review = active.find((i) => i.dedupeKey === reviewKey);
+    expect(review?.severity).toBe('info');
+    expect(review?.title).toBe('3 imported transactions are waiting for review');
 
     // Dedupe: generating again creates nothing new.
     const created = await insightService.generateInsights(accountId);
@@ -118,6 +127,12 @@ describe('insight generation rules', () => {
     expect(renewal?.actionLabel).toBe('Review renewals');
     expect(renewal?.actionTarget).toBe('/tenants?status=renew_soon');
     expect(renewal?.action?.action).toEqual({ kind: 'navigate', to: '/tenants?status=renew_soon' });
+
+    // transactions_pending_review: deep link straight into the review queue.
+    const review = active.find((i) => i.type === 'transactions_pending_review');
+    expect(review?.actionLabel).toBe('Review transactions');
+    expect(review?.actionTarget).toBe('/money/review');
+    expect(review?.action?.action).toEqual({ kind: 'navigate', to: '/money/review' });
   });
 
   it('POST /insights/:id/dismiss flips status, and the key stays dismissed', async () => {
@@ -412,5 +427,108 @@ describe('expense_spike baseline guard', () => {
 
     await prisma.transaction.delete({ where: { id: txn.id } });
     await prisma.category.delete({ where: { id: category.id } });
+  });
+});
+
+describe('transactions_pending_review rule lifecycle', () => {
+  /** Pending bank row with a pinned createdAt so "newest" is deterministic. */
+  function createPendingTxn(accountId: string, description: string, createdAt: Date) {
+    return prisma.transaction.create({
+      data: {
+        accountId,
+        date: new Date(),
+        amountCents: 4200,
+        type: 'expense',
+        description,
+        source: 'bank',
+        status: 'pending_review',
+        createdAt,
+      },
+    });
+  }
+
+  it('keys the card to the newest pending row, refreshes the count in place, and auto-resolves when the queue clears', async () => {
+    const account = await prisma.account.create({
+      data: { name: 'Review Queue Rule', email: 'review-queue-rule@integrationtest.example' },
+    });
+    const older = await createPendingTxn(account.id, 'PENDING A', new Date(Date.now() - 60_000));
+    const newest = await createPendingTxn(account.id, 'PENDING B', new Date());
+
+    const created = await insightService.generateInsights(account.id);
+    expect(created.map((c) => c.dedupeKey)).toEqual([
+      `transactions_pending_review:${newest.id}`,
+    ]);
+    expect(created[0]?.title).toBe('2 imported transactions are waiting for review');
+    expect(created[0]?.severity).toBe('info');
+
+    // Confirming the older row keeps the key (newest is unchanged) but the
+    // live card's count must refresh in place — no new row.
+    await prisma.transaction.update({ where: { id: older.id }, data: { status: 'confirmed' } });
+    expect(await insightService.generateInsights(account.id)).toEqual([]);
+    const card = await prisma.insight.findFirst({
+      where: { accountId: account.id, type: 'transactions_pending_review', status: 'active' },
+    });
+    expect(card?.title).toBe('1 imported transaction is waiting for review');
+    expect(card?.dedupeKey).toBe(`transactions_pending_review:${newest.id}`);
+
+    // Clearing the queue resolves the card instead of leaving it stale.
+    await prisma.transaction.update({ where: { id: newest.id }, data: { status: 'confirmed' } });
+    expect(await insightService.generateInsights(account.id)).toEqual([]);
+    const resolved = await prisma.insight.findFirst({
+      where: { accountId: account.id, type: 'transactions_pending_review' },
+    });
+    expect(resolved?.status).toBe('actioned');
+  });
+
+  it('a dismissal sticks until the next import lands, which supersedes with a new key', async () => {
+    const account = await prisma.account.create({
+      data: { name: 'Review Queue Dismiss', email: 'review-queue-dismiss@integrationtest.example' },
+    });
+    const first = await createPendingTxn(account.id, 'PENDING C', new Date(Date.now() - 60_000));
+
+    const [created] = await insightService.generateInsights(account.id);
+    await insightService.dismiss(account.id, created!.id);
+
+    // Same queue, no new imports: the dismissed key is never recreated.
+    expect(await insightService.generateInsights(account.id)).toEqual([]);
+
+    // A new import (newer pending row) is materially new — a fresh card
+    // appears under the new key while the dismissed row stays dismissed.
+    const newer = await createPendingTxn(account.id, 'PENDING D', new Date());
+    const recreated = await insightService.generateInsights(account.id);
+    expect(recreated.map((c) => c.dedupeKey)).toEqual([
+      `transactions_pending_review:${newer.id}`,
+    ]);
+    expect(recreated[0]?.title).toBe('2 imported transactions are waiting for review');
+    const old = await prisma.insight.findFirst({
+      where: { accountId: account.id, dedupeKey: `transactions_pending_review:${first.id}` },
+    });
+    expect(old?.status).toBe('dismissed');
+  });
+
+  it('an active card superseded by a newer import resolves in favor of the new key', async () => {
+    const account = await prisma.account.create({
+      data: { name: 'Review Queue Supersede', email: 'review-queue-supersede@integrationtest.example' },
+    });
+    const first = await createPendingTxn(account.id, 'PENDING E', new Date(Date.now() - 60_000));
+    await insightService.generateInsights(account.id);
+
+    const newer = await createPendingTxn(account.id, 'PENDING F', new Date());
+    const recreated = await insightService.generateInsights(account.id);
+    expect(recreated.map((c) => c.dedupeKey)).toEqual([
+      `transactions_pending_review:${newer.id}`,
+    ]);
+
+    // Exactly one active card; the superseded one auto-resolved.
+    const rows = await prisma.insight.findMany({
+      where: { accountId: account.id, type: 'transactions_pending_review' },
+    });
+    const statusByKey = new Map(rows.map((r) => [r.dedupeKey, r.status]));
+    expect(statusByKey).toEqual(
+      new Map([
+        [`transactions_pending_review:${first.id}`, 'actioned'],
+        [`transactions_pending_review:${newer.id}`, 'active'],
+      ]),
+    );
   });
 });

@@ -10,6 +10,7 @@ import { IntegrationListResponseSchema } from '@hearth/shared';
 import { MOCK_FC_ACCOUNT_ID, MOCK_FC_SESSION_ID } from '../integrations/mock/mock-stripe-fc';
 import { prisma } from '../lib/prisma';
 import * as integrationService from '../services/integration.service';
+import { runDailyJobs } from '../services/jobs.service';
 import { importFromBank } from '../services/transaction.service';
 
 let accountId: string;
@@ -159,5 +160,56 @@ describe('mock-feed safety once a real provider is configured', () => {
       code: 'plaid_not_connected',
     });
     expect(await prisma.transaction.count({ where: { accountId: account.id } })).toBe(0);
+  });
+});
+
+describe('nightly bank sync (runDailyJobs)', () => {
+  let syncAccountId: string;
+
+  it('imports for accounts with a connected feed and surfaces the review-queue insight the same run', async () => {
+    const account = await prisma.account.create({
+      data: { name: 'Nightly Sync', email: 'stripe-fc-nightly@integrationtest.example' },
+    });
+    syncAccountId = account.id;
+    await integrationService.createStripeFcSession(syncAccountId);
+    await integrationService.completeStripeFcSession(syncAccountId, MOCK_FC_SESSION_ID);
+
+    const result = await runDailyJobs();
+
+    // First sync for this account: 3 mock FC + 4 stateless mock Plaid rows.
+    expect(result.bankTransactionsImported).toBe(7);
+    expect(result.errors).toEqual([]);
+    const pending = await prisma.transaction.count({
+      where: { accountId: syncAccountId, status: 'pending_review' },
+    });
+    expect(pending).toBe(7);
+    // The sync ran before the insight refresh, so tonight's rows already
+    // carry tonight's review-queue card.
+    const card = await prisma.insight.findFirst({
+      where: { accountId: syncAccountId, type: 'transactions_pending_review', status: 'active' },
+    });
+    expect(card?.title).toBe('7 imported transactions are waiting for review');
+  });
+
+  it('skips accounts without a connected feed — pure mock-mode accounts accrete nothing nightly', async () => {
+    const account = await prisma.account.create({
+      data: { name: 'Nightly No Feed', email: 'stripe-fc-nightly-nofeed@integrationtest.example' },
+    });
+
+    await runDailyJobs();
+
+    expect(await prisma.transaction.count({ where: { accountId: account.id } })).toBe(0);
+  });
+
+  it('a feed inside its import cooldown is skipped silently, not recorded as an error', async () => {
+    process.env.HEARTH_IMPORT_COOLDOWN_MINUTES = '60';
+    try {
+      // The connected account synced moments ago in the tests above.
+      const result = await runDailyJobs();
+      expect(result.bankTransactionsImported).toBe(0);
+      expect(result.errors).toEqual([]);
+    } finally {
+      delete process.env.HEARTH_IMPORT_COOLDOWN_MINUTES;
+    }
   });
 });

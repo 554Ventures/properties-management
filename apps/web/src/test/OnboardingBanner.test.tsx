@@ -56,6 +56,10 @@ function stubOnboardingApi(initial: OnboardingState) {
       state = { status: deriveStatus(steps), steps };
       return json({ id: 'int_fc', type: 'stripe_fc', status: 'connected' });
     }
+    // Chained automatically by useStripeFcConnect after a successful connect.
+    if (path === '/api/v1/transactions/import') {
+      return json({ imported: 0, skipped: 0, updated: 0, removed: 0 });
+    }
     if (path === '/api/v1/onboarding') {
       if (init?.method === 'PATCH') {
         const input = JSON.parse(String(init.body)) as {

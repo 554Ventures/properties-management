@@ -5,15 +5,18 @@
 // in-process scheduler (server.ts) and the cron-triggered internal endpoint
 // (routes/internal.ts). One account's failure never blocks the others.
 import { addMonthsToPeriod, currentPeriod, monthStart } from '../lib/dates';
+import { ImportRateLimitedError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { processScheduledDeletions } from './account.service';
 import * as insightService from './insight.service';
 import { notifyAccount } from './push.service';
+import { importFromBank } from './transaction.service';
 
 export interface DailyJobsResult {
   accountsProcessed: number;
   monthlyReviewsCreated: number;
   insightsCreated: number;
+  bankTransactionsImported: number;
   accountsDeleted: number;
   errors: Array<{ accountId: string; message: string }>;
 }
@@ -28,10 +31,34 @@ export async function runDailyJobs(): Promise<DailyJobsResult> {
     accountsProcessed: accounts.length,
     monthlyReviewsCreated: 0,
     insightsCreated: 0,
+    bankTransactionsImported: 0,
     accountsDeleted: deletions.deleted,
     errors: [...deletions.errors],
   };
   for (const { id: accountId } of accounts) {
+    // Nightly bank-feed sync, before the insight refresh below so rows that
+    // land tonight surface in tonight's review-queue insight. Gated on a
+    // connected Integration row: mock Plaid needs no row to import, and
+    // without the gate every pure-demo account would accrete mock rows
+    // nightly. A cooldown skip (manual import earlier today) is expected;
+    // any other sync failure is recorded but never blocks the account's
+    // monthly review or insights.
+    try {
+      const bankFeed = await prisma.integration.findFirst({
+        where: { accountId, type: { in: ['plaid', 'stripe_fc'] }, status: 'connected' },
+      });
+      if (bankFeed) {
+        const counts = await importFromBank(accountId);
+        result.bankTransactionsImported += counts.imported;
+      }
+    } catch (err) {
+      if (!(err instanceof ImportRateLimitedError)) {
+        result.errors.push({
+          accountId,
+          message: `bank sync: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
     try {
       const existing = await prisma.report.findFirst({
         where: { accountId, type: 'monthly_review', periodStart: monthStart(period) },

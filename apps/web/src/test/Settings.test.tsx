@@ -224,7 +224,7 @@ describe('Settings integrations', () => {
     });
   });
 
-  it('mock-mode Connect on Stripe FC completes immediately without loading Stripe.js', async () => {
+  it('mock-mode Connect on Stripe FC completes immediately, chains the first import, and offers the review-queue CTA', async () => {
     const fetchMock = makeFetch([
       { method: 'GET', path: '/api/v1/settings/account', body: account },
       { method: 'GET', path: '/api/v1/integrations', body: [] },
@@ -242,6 +242,11 @@ describe('Settings integrations', () => {
         method: 'POST',
         path: '/api/v1/integrations/stripe_fc/complete',
         body: connectedStripeFcIntegration,
+      },
+      {
+        method: 'POST',
+        path: '/api/v1/transactions/import',
+        body: { imported: 5, skipped: 0, updated: 0, removed: 0 },
       },
     ]);
     vi.stubGlobal('fetch', fetchMock);
@@ -261,6 +266,100 @@ describe('Settings integrations', () => {
       expect(call?.[1]?.body).toBe(JSON.stringify({ sessionId: 'mock_fc_session' }));
     });
     expect(loadStripeMock).not.toHaveBeenCalled();
+
+    // Connect no longer dead-ends: the first import fires on its own and the
+    // toast leads straight into the review queue.
+    expect(
+      await screen.findByText(
+        'Bank connected. Imported 5 new bank transactions into the review queue.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Review transactions' })).toBeInTheDocument();
+  });
+
+  it('mock-mode Connect with nothing to import explains the sync delay without a review CTA', async () => {
+    const fetchMock = makeFetch([
+      { method: 'GET', path: '/api/v1/settings/account', body: account },
+      { method: 'GET', path: '/api/v1/integrations', body: [] },
+      {
+        method: 'POST',
+        path: '/api/v1/integrations/stripe_fc/session',
+        body: {
+          clientSecret: 'mock_fc_client_secret',
+          sessionId: 'mock_fc_session',
+          publishableKey: 'pk_mock',
+          mock: true,
+        },
+      },
+      {
+        method: 'POST',
+        path: '/api/v1/integrations/stripe_fc/complete',
+        body: connectedStripeFcIntegration,
+      },
+      {
+        method: 'POST',
+        path: '/api/v1/transactions/import',
+        body: { imported: 0, skipped: 0, updated: 0, removed: 0 },
+      },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithProviders(<Settings />);
+
+    const fcRow = (
+      await screen.findByText('Stripe Financial Connections (bank import)')
+    ).closest('li') as HTMLElement;
+    fireEvent.click(within(fcRow).getByRole('button', { name: 'Connect' }));
+
+    expect(
+      await screen.findByText(
+        'Bank connected. No new transactions yet — bank sync can take a minute after connecting. Try again shortly.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Review transactions' })).not.toBeInTheDocument();
+  });
+
+  it('a failed first import still reports the connection and points at the Money page', async () => {
+    const fetchMock = makeFetch([
+      { method: 'GET', path: '/api/v1/settings/account', body: account },
+      { method: 'GET', path: '/api/v1/integrations', body: [] },
+      {
+        method: 'POST',
+        path: '/api/v1/integrations/stripe_fc/session',
+        body: {
+          clientSecret: 'mock_fc_client_secret',
+          sessionId: 'mock_fc_session',
+          publishableKey: 'pk_mock',
+          mock: true,
+        },
+      },
+      {
+        method: 'POST',
+        path: '/api/v1/integrations/stripe_fc/complete',
+        body: connectedStripeFcIntegration,
+      },
+      {
+        method: 'POST',
+        path: '/api/v1/transactions/import',
+        status: 500,
+        body: { error: { code: 'internal', message: 'boom' } },
+      },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithProviders(<Settings />);
+
+    const fcRow = (
+      await screen.findByText('Stripe Financial Connections (bank import)')
+    ).closest('li') as HTMLElement;
+    fireEvent.click(within(fcRow).getByRole('button', { name: 'Connect' }));
+
+    expect(
+      await screen.findByText(
+        'Bank connected, but the first import failed. Use "Import from bank" on the Money page.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Go to Money' })).toBeInTheDocument();
   });
 
   it('real-mode Connect on Stripe FC opens the Stripe.js modal, only completes after accounts are collected', async () => {
@@ -281,6 +380,11 @@ describe('Settings integrations', () => {
         method: 'POST',
         path: '/api/v1/integrations/stripe_fc/complete',
         body: connectedStripeFcIntegration,
+      },
+      {
+        method: 'POST',
+        path: '/api/v1/transactions/import',
+        body: { imported: 2, skipped: 0, updated: 0, removed: 0 },
       },
     ]);
     vi.stubGlobal('fetch', fetchMock);

@@ -1,6 +1,6 @@
 // Unit tests for the bank-import toast copy — pure function, no rendering.
 import { describe, expect, it } from 'vitest';
-import { importToastMessage } from '../pages/Money';
+import { importToastMessage } from '../lib/importToastMessage';
 
 const zero = { imported: 0, skipped: 0, updated: 0, removed: 0 };
 

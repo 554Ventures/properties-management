@@ -399,6 +399,58 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
     });
   }
 
+  // Rule 6 — transactions_pending_review: imported bank rows sitting in the
+  // review queue don't count toward dashboards/reports/taxes until confirmed.
+  // Unlike the monthly-keyed rules the queue is a living count, so this rule
+  // manages its lifecycle explicitly: the dedupeKey carries the newest pending
+  // row's id (a dismissal holds only until the next import lands — materially
+  // new queue, new key), a stale active card resolves itself once the queue is
+  // cleared or superseded, and an active card's count refreshes in place as
+  // the user works through the queue.
+  const newestPending = await prisma.transaction.findFirst({
+    where: { accountId, status: 'pending_review' },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+  });
+  const reviewKey = newestPending ? `transactions_pending_review:${newestPending.id}` : null;
+  await prisma.insight.updateMany({
+    where: {
+      accountId,
+      type: 'transactions_pending_review',
+      status: 'active',
+      ...(reviewKey ? { dedupeKey: { not: reviewKey } } : {}),
+    },
+    data: { status: 'actioned' },
+  });
+  if (reviewKey) {
+    const pendingCount = await prisma.transaction.count({
+      where: { accountId, status: 'pending_review' },
+    });
+    const title = `${pendingCount} imported transaction${pendingCount === 1 ? ' is' : 's are'} waiting for review`;
+    const body =
+      'Imported bank transactions are not counted in your dashboards, reports, or taxes until you confirm them in the review queue.';
+    await prisma.insight.updateMany({
+      where: { accountId, dedupeKey: reviewKey, status: 'active', NOT: { title } },
+      data: { title, body },
+    });
+    candidates.push({
+      scope: 'portfolio',
+      type: 'transactions_pending_review',
+      severity: 'info',
+      title,
+      body,
+      actionLabel: 'Review transactions',
+      actionTarget: '/money/review',
+      action: {
+        label: 'Review transactions',
+        action: { kind: 'navigate', to: '/money/review' },
+      },
+      propertyId: null,
+      tenantId: null,
+      leaseId: null,
+      dedupeKey: reviewKey,
+    });
+  }
+
   const created: Insight[] = [];
   for (const c of candidates) {
     const existing = await prisma.insight.findUnique({

@@ -418,15 +418,27 @@ async function main(): Promise<void> {
     const found = created.find((c) => c.dedupeKey === key);
     if (!found) throw new Error(`Seed self-check failed: expected insight ${key} was not generated`);
   }
-  if (created.length !== 3) {
+  // The 4th insight is the review-queue card for REVIEW_QUEUE_ITEMS; its
+  // dedupeKey carries the newest pending transaction's generated id, so only
+  // the prefix is assertable.
+  const reviewInsight = created.find((c) =>
+    c.dedupeKey.startsWith('transactions_pending_review:'),
+  );
+  const expectedReviewTitle = `${REVIEW_QUEUE_ITEMS.length} imported transactions are waiting for review`;
+  if (!reviewInsight || reviewInsight.title !== expectedReviewTitle) {
     throw new Error(
-      `Seed self-check failed: expected exactly 3 insights, got ${created.length}: ${created.map((c) => c.dedupeKey).join(', ')}`,
+      `Seed self-check failed: expected review-queue insight titled "${expectedReviewTitle}", got ${reviewInsight ? `"${reviewInsight.title}"` : 'none'}`,
+    );
+  }
+  if (created.length !== 4) {
+    throw new Error(
+      `Seed self-check failed: expected exactly 4 insights, got ${created.length}: ${created.map((c) => c.dedupeKey).join(', ')}`,
     );
   }
 
   console.log(
     `Seeded demo account ${DEMO_EMAIL}: ${SEED_PROPERTIES.length} properties, ${TOTAL_UNITS} units, ` +
-      `period ${period} (Okafor ${OKAFOR_DAYS_LATE}d late, Park ${PARK_DAYS_LATE}d late), 3 insights, 1 monthly review.`,
+      `period ${period} (Okafor ${OKAFOR_DAYS_LATE}d late, Park ${PARK_DAYS_LATE}d late), 4 insights, 1 monthly review.`,
   );
 }
 
