@@ -4,12 +4,14 @@ import {
   CreateLeaseInputSchema,
   LeaseStatusSchema,
   UpdateLeaseInputSchema,
+  UpdateLeaseTenantShareInputSchema,
 } from '@hearth/shared';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { requirePermission } from '../lib/authz';
 import { parseBody, parseQuery } from '../plugins/zod-validation';
 import * as leaseService from '../services/lease.service';
+import * as rentService from '../services/rent.service';
 
 const LeaseListQuerySchema = z.object({ status: LeaseStatusSchema.optional() });
 
@@ -45,6 +47,22 @@ export async function leasesRoutes(app: FastifyInstance): Promise<void> {
     const input = parseBody(AddLeaseTenantInputSchema, req.body);
     return leaseService.addTenant(req.accountId, req.params.id, input);
   });
+
+  // Set/clear a co-tenant's expected share of the rent (null = even split).
+  app.patch<{ Params: { id: string; tenantId: string } }>(
+    '/leases/:id/tenants/:tenantId',
+    needsTenants,
+    async (req, reply) => {
+      const input = parseBody(UpdateLeaseTenantShareInputSchema, req.body);
+      await rentService.setTenantShare(
+        req.accountId,
+        req.params.id,
+        req.params.tenantId,
+        input.shareCents,
+      );
+      return reply.code(204).send();
+    },
+  );
 
   app.delete<{ Params: { id: string; tenantId: string } }>(
     '/leases/:id/tenants/:tenantId',

@@ -16,6 +16,13 @@ export async function rentRoutes(app: FastifyInstance): Promise<void> {
     return rentService.getMonthStatus(req.accountId, q.period ?? currentPeriod());
   });
 
+  // Rent-categorized income that could apply to a still-open charge but isn't
+  // linked (plan §C5) — read-only; the Rent page renders these as nudges.
+  app.get('/rent/unlinked-deposits', async (req) => {
+    const q = parseQuery(TrackerQuerySchema, req.query);
+    return rentService.findUnlinkedRentDeposits(req.accountId, q.period ?? currentPeriod());
+  });
+
   app.post('/rent/payments', needsRent, async (req, reply) => {
     const input = parseBody(RecordRentPaymentInputSchema, req.body);
     const payment = await rentService.recordPayment(req.accountId, input);

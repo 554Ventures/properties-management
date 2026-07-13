@@ -203,6 +203,10 @@ model LeaseTenant {
   leaseId   String
   tenantId  String
   isPrimary Boolean @default(true)
+  // This co-tenant's expected portion of lease.rentCents (plan §C). Null =
+  // unspecified — display falls back to an even split. Shares that don't sum
+  // to the rent are a soft warning in the UI, never a hard block.
+  shareCents Int?
 
   lease  Lease  @relation(fields: [leaseId], references: [id], onDelete: Cascade)
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)

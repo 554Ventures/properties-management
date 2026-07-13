@@ -17,6 +17,14 @@ export const TenantSchema = z.object({
 // renew_soon if lease ends within 60 days; else current.
 export const TenantStatusSchema = z.enum(['current', 'renew_soon', 'late']);
 
+// A tenant as they appear on a lease roster (plan §C): the LeaseTenant link's
+// isPrimary + shareCents ride along. shareCents null = unspecified (display
+// falls back to an even split).
+export const TenantOnLeaseSchema = TenantSchema.extend({
+  isPrimary: z.boolean(),
+  shareCents: z.number().int().nonnegative().nullable(),
+});
+
 // POST /tenants
 export const CreateTenantInputSchema = z.object({
   fullName: z.string().min(1),

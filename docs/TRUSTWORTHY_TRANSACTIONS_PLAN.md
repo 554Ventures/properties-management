@@ -1,6 +1,6 @@
 # Plan: Make Transactions Trustworthy — Category Learning, Partial/Split Rent, Reliable Money↔Rent Linkage
 
-> Status: in progress (2026-07-12). Scope confirmed with the account owner. **Workstreams A and B shipped 2026-07-12** (see `WHATS_NEXT.md` §3 for the as-built summaries); C and D remain.
+> Status: in progress (2026-07-12). Scope confirmed with the account owner. **Workstreams A, B, and C shipped 2026-07-12** (see `WHATS_NEXT.md` §3 for the as-built summaries); D remains.
 > Reviewed against the code 2026-07-12; review addenda folded in: B gains a `paidCents` backfill, exact-remaining rent matching (moved up from C5), deposit-aware delete/update guards, and an unlink action; new Workstream D (ledger classification + duplicate defense) promoted from the gap review. The remaining review findings are logged as the "Transactions gap backlog" in `WHATS_NEXT.md` §3.
 
 ## Context

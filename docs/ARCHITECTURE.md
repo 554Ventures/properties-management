@@ -135,7 +135,7 @@ Models (field → type; `?` optional; relations noted):
 
 **Lease** — `id`, `unitId`, `rentCents Int`, `dueDay Int @default(1)`, `startDate DateTime`, `endDate DateTime`, `status String` (LeaseStatus), `esignEnvelopeId String?`, `esignStatus String?` (EsignStatus), `createdAt`. Relations: `unit`, `leaseTenants LeaseTenant[]`, `rentPayments RentPayment[]`. ("Renew soon" is derived: `endDate` within 60 days.)
 
-**LeaseTenant** (join) — `leaseId`, `tenantId`, `isPrimary Boolean @default(true)`, `@@id([leaseId, tenantId])`.
+**LeaseTenant** (join) — `leaseId`, `tenantId`, `isPrimary Boolean @default(true)`, `shareCents Int?` (this co-tenant's expected portion of the rent; null = even-split display fallback; mismatched sums are a soft warning), `@@id([leaseId, tenantId])`.
 
 **Category** — `id`, `accountId?` (null = system-seeded), `name String`, `type String` (TransactionType), `irsScheduleELine String?` (e.g. "Line 14 – Repairs"), `isSystem Boolean @default(false)`. Seeded IRS-aligned set; user-extensible.
 

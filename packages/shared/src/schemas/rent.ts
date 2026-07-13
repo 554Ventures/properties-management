@@ -52,6 +52,19 @@ export const RentPaymentRowSchema = z.object({
   paidAt: z.string().datetime().nullable(),
 });
 
+// Per-co-tenant slice of a tracker row (plan §C): expected share (stored, or
+// an even split when unspecified), what deposits attribute to this tenant,
+// and whether their share is settled. Single-tenant units get one entry.
+export const RentTenantShareSchema = z.object({
+  tenantId: z.string(),
+  tenantName: z.string(),
+  isPrimary: z.boolean(),
+  shareCents: z.number().int().nonnegative(), // effective share (stored or even split)
+  shareSpecified: z.boolean(), // false = even-split fallback
+  paidCents: z.number().int(), // sum of deposits attributed to this tenant
+  settled: z.boolean(), // paidCents ≥ shareCents
+});
+
 // GET /rent/tracker?period=YYYY-MM
 export const RentTrackerRowSchema = z.object({
   rentPaymentId: z.string(),
@@ -70,6 +83,9 @@ export const RentTrackerRowSchema = z.object({
   method: RentPaymentMethodSchema.nullable(),
   paidAt: z.string().datetime().nullable(),
   deposits: z.array(RentDepositSchema),
+  tenants: z.array(RentTenantShareSchema),
+  // Soft data-quality signal: specified shares don't sum to the charge.
+  sharesMismatch: z.boolean(),
 });
 
 export const RentTrackerResponseSchema = z.object({
@@ -86,9 +102,34 @@ export const RentTrackerResponseSchema = z.object({
 export const RecordRentPaymentInputSchema = z.object({
   leaseId: z.string(),
   period: PeriodSchema,
-  amountCents: z.number().int().positive(),
+  amountCents: z.number().int().positive(), // ≤ the charge's remaining balance
   method: RentPaymentMethodSchema,
   paidAt: z.string().datetime().optional(), // defaults to now
+  tenantId: z.string().optional(), // which co-tenant paid (must be on the lease)
+});
+
+// GET /rent/unlinked-deposits?period= — Rent-categorized income transactions
+// that could apply to a still-open charge but aren't linked as deposits (plan
+// §C5): the "silently still late" fix. Broader than the review-queue chip
+// (below-remaining partials included); surfaced as a question, never
+// auto-applied. Ambiguous candidates (one deposit fitting several charges)
+// are suppressed.
+export const UnlinkedRentDepositSchema = z.object({
+  transactionId: z.string(),
+  description: z.string(),
+  amountCents: z.number().int().positive(),
+  date: z.string().datetime(),
+  rentPaymentId: z.string(),
+  leaseId: z.string(),
+  tenantName: z.string(),
+  unitLabel: z.string(),
+  propertyLabel: z.string(),
+  period: PeriodSchema,
+  remainingCents: z.number().int().positive(), // still due on the charge before this deposit
+});
+
+export const UnlinkedRentDepositsResponseSchema = z.object({
+  items: z.array(UnlinkedRentDepositSchema),
 });
 
 // POST /rent/payments/:id/payment-link — mock Stripe link.

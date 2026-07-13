@@ -3,6 +3,7 @@ import type {
   Tenant,
   TenantDetailResponse,
   TenantListResponse,
+  TenantOnLease,
   TenantStatus,
   UpdateTenantInput,
 } from '@hearth/shared';
@@ -14,6 +15,15 @@ import { writeAudit, type AuditActor } from './audit.service';
 import * as documentService from './document.service';
 import { toApiLease } from './lease.service';
 import { deriveRentStatus } from './rent.service';
+
+/** A tenant as they appear on a lease roster: LeaseTenant link fields ride along. */
+export function toTenantOnLease(lt: {
+  isPrimary: boolean;
+  shareCents: number | null;
+  tenant: DbTenant;
+}): TenantOnLease {
+  return { ...toApiTenant(lt.tenant), isPrimary: lt.isPrimary, shareCents: lt.shareCents };
+}
 
 export function toApiTenant(t: DbTenant): Tenant {
   return {

@@ -48,6 +48,12 @@ export const OKAFOR_DAYS_LATE = 6;
 export const PARK_DAYS_LATE = 3;
 export const OKAFOR_RENT_CENTS = 115000;
 export const PARK_RENT_CENTS = 98500;
+// Co-tenant fixture (TRUSTWORTHY_TRANSACTIONS_PLAN §C4): D. Park's lease is
+// shared with a second tenant, $492.50 each of the $985 charge. Park stays
+// primary, so tenantName-keyed assertions are unaffected; adds one tenant row
+// and changes NO money KPI (shares don't alter charges or collections).
+export const PARK_COTENANT_NAME = 'R. Osei';
+export const PARK_SHARE_CENTS = PARK_RENT_CENTS / 2; // 49250
 export const CHEN_LEASE_END_DAYS = 45;
 export const NOVAK_LEASE_END_DAYS = 58;
 

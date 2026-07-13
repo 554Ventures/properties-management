@@ -7,11 +7,12 @@ import {
   useAddLeaseTenant,
   useLeaseDetail,
   useRemoveLeaseTenant,
+  useSetLeaseTenantShare,
   useTenants,
 } from '../../api/queries';
 import { Button } from '../ui/Button';
 import { ErrorNotice } from '../ui/ErrorNotice';
-import { FormField } from '../ui/FormField';
+import { FormField, Input } from '../ui/FormField';
 import { Modal } from '../ui/Modal';
 import { Select } from '../ui/Select';
 import { Skeleton } from '../ui/Skeleton';
@@ -29,9 +30,13 @@ export function LeaseTenantsModal({ open, onClose, leaseId }: LeaseTenantsModalP
   const tenants = useTenants();
   const addTenant = useAddLeaseTenant();
   const removeTenant = useRemoveLeaseTenant();
+  const setShare = useSetLeaseTenantShare();
   const { toast } = useToast();
   const [pick, setPick] = useState('');
   const [inlineError, setInlineError] = useState<string | undefined>();
+  // Draft share values (dollars, '' = unspecified/even split), keyed by tenant
+  // id; seeded from the lease detail whenever the modal opens or reloads.
+  const [shares, setShares] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (open) {
@@ -41,6 +46,41 @@ export function LeaseTenantsModal({ open, onClose, leaseId }: LeaseTenantsModalP
   }, [open]);
 
   const current = detail.data?.lease.tenants ?? [];
+
+  useEffect(() => {
+    if (!open || !detail.data) return;
+    setShares(
+      Object.fromEntries(
+        detail.data.lease.tenants.map((t) => [
+          t.id,
+          t.shareCents != null ? (t.shareCents / 100).toFixed(2) : '',
+        ]),
+      ),
+    );
+  }, [open, detail.data]);
+
+  const saveShare = (tenantId: string) => {
+    const raw = (shares[tenantId] ?? '').trim();
+    const prior = current.find((t) => t.id === tenantId)?.shareCents ?? null;
+    const next = raw === '' ? null : Math.round(Number(raw) * 100);
+    if (next !== null && (Number.isNaN(next) || next < 0)) return; // ignore junk input
+    if (next === prior) return;
+    setShare.mutate(
+      { leaseId, tenantId, shareCents: next },
+      {
+        onError: (err) =>
+          toast(err instanceof Error ? err.message : 'Could not save the share.', 'danger'),
+      },
+    );
+  };
+
+  // Soft warning only — mismatched shares are allowed by design.
+  const rentCents = detail.data?.lease.rentCents ?? 0;
+  const draftSum = current.reduce((s, t) => {
+    const raw = (shares[t.id] ?? '').trim();
+    return raw === '' ? NaN : s + Math.round(Number(raw) * 100);
+  }, 0);
+  const shareSumMismatch = !Number.isNaN(draftSum) && draftSum !== rentCents;
   const currentIds = new Set(current.map((t) => t.id));
   const available = (tenants.data ?? []).filter((t) => !currentIds.has(t.id));
 
@@ -90,24 +130,56 @@ export function LeaseTenantsModal({ open, onClose, leaseId }: LeaseTenantsModalP
         ) : detail.isError ? (
           <ErrorNotice error={detail.error} onRetry={() => void detail.refetch()} />
         ) : (
-          <ul className="flex flex-col divide-y divide-border rounded-md border border-border">
-            {current.map((t, i) => (
-              <li key={t.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
-                <span className="text-ink">
-                  {t.fullName}
-                  {i === 0 && <span className="ml-2 text-xs text-ink-muted">(primary)</span>}
-                </span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  busy={removeTenant.isPending}
-                  onClick={() => remove(t.id, t.fullName)}
+          <>
+            <ul className="flex flex-col divide-y divide-border rounded-md border border-border">
+              {current.map((t, i) => (
+                <li
+                  key={t.id}
+                  className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
                 >
-                  Remove
-                </Button>
-              </li>
-            ))}
-          </ul>
+                  <span className="min-w-0 flex-1 text-ink">
+                    {t.fullName}
+                    {i === 0 && <span className="ml-2 text-xs text-ink-muted">(primary)</span>}
+                  </span>
+                  {current.length > 1 && (
+                    <span className="flex items-center gap-1.5">
+                      <label htmlFor={`share-${t.id}`} className="text-xs text-ink-muted">
+                        Share (USD)
+                      </label>
+                      <Input
+                        id={`share-${t.id}`}
+                        type="number"
+                        inputMode="decimal"
+                        min="0"
+                        step="0.01"
+                        placeholder="even split"
+                        className="w-28 py-1"
+                        value={shares[t.id] ?? ''}
+                        onChange={(e) =>
+                          setShares((prev) => ({ ...prev, [t.id]: e.target.value }))
+                        }
+                        onBlur={() => saveShare(t.id)}
+                      />
+                    </span>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    busy={removeTenant.isPending}
+                    onClick={() => remove(t.id, t.fullName)}
+                  >
+                    Remove
+                  </Button>
+                </li>
+              ))}
+            </ul>
+            {current.length > 1 && shareSumMismatch && (
+              <p className="text-xs font-medium text-warning">
+                Shares don&rsquo;t add up to the monthly rent — that&rsquo;s allowed, but
+                per-tenant paid/due may look off.
+              </p>
+            )}
+          </>
         )}
 
         {inlineError && (

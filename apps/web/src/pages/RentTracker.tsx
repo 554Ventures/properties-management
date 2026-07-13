@@ -9,12 +9,15 @@ import { formatUsd } from '@hearth/shared';
 import type { RentPaymentMethod, RentTrackerRow, SendRemindersResponse } from '@hearth/shared';
 import { useSearchParams } from 'react-router-dom';
 import {
+  useConfirmTransaction,
   useInsights,
   useRecordPayment,
   useRentTracker,
   useSendReminders,
   useUnlinkDeposit,
+  useUnlinkedRentDeposits,
 } from '../api/queries';
+import { AiSurface } from '../components/ai/AiSurface';
 import { InsightCard } from '../components/ai/InsightCard';
 import {
   ComposedRemindersModal,
@@ -87,10 +90,13 @@ export function RentTracker() {
     if (requested && recentPeriods().includes(requested)) setPeriod(requested);
   }, [searchParams]);
   const tracker = useRentTracker(period);
+  const unlinkedDeposits = useUnlinkedRentDeposits(period);
+  const linkDeposit = useConfirmTransaction();
   const remind = useSendReminders();
   const record = useRecordPayment();
   const { can } = usePermissions();
   const canRent = can('rent');
+  const canMoney = can('money'); // linking a deposit confirms a transaction
   const { toast } = useToast();
 
   const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
@@ -100,6 +106,8 @@ export function RentTracker() {
   // payment stays one click while a partial is a simple edit.
   const [payAmount, setPayAmount] = useState('');
   const [payError, setPayError] = useState<string | null>(null);
+  // Which co-tenant paid ('' = unattributed) — only shown for shared leases.
+  const [payTenantId, setPayTenantId] = useState('');
   const [depositsRow, setDepositsRow] = useState<RentTrackerRow | null>(null);
   const [composedReminders, setComposedReminders] = useState<ComposedReminder[]>([]);
   const unlink = useUnlinkDeposit();
@@ -184,6 +192,7 @@ export function RentTracker() {
         period,
         amountCents,
         method: payMethod,
+        ...(payTenantId ? { tenantId: payTenantId } : {}),
       },
       {
         onSuccess: () => {
@@ -306,6 +315,46 @@ export function RentTracker() {
             </Card>
           </section>
 
+          {(unlinkedDeposits.data?.items.length ?? 0) > 0 && (
+            <section aria-label="Unlinked rent deposits" className="flex flex-col gap-2">
+              {unlinkedDeposits.data!.items.map((item) => (
+                <AiSurface key={item.transactionId}>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-sm text-ink">
+                      A {formatUsd(item.amountCents)} Rent-categorized deposit (&ldquo;
+                      {item.description}&rdquo;, {formatDate(item.date)}) isn&rsquo;t linked to
+                      rent. It could apply to {item.tenantName}&rsquo;s{' '}
+                      {formatMonthLong(item.period)} charge — {formatUsd(item.remainingCents)}{' '}
+                      still due for {item.unitLabel} at {item.propertyLabel}.
+                    </p>
+                    {canMoney && (
+                      <Button
+                        variant="secondary"
+                        busy={linkDeposit.isPending}
+                        onClick={() =>
+                          linkDeposit.mutate(
+                            { id: item.transactionId, rentPaymentId: item.rentPaymentId },
+                            {
+                              onSuccess: () =>
+                                toast(
+                                  `Deposit applied to ${item.tenantName}'s ${formatMonthLong(item.period)} rent.`,
+                                  'positive',
+                                ),
+                              onError: () =>
+                                toast('Could not link the deposit. Try again.', 'danger'),
+                            },
+                          )
+                        }
+                      >
+                        Link to rent
+                      </Button>
+                    )}
+                  </div>
+                </AiSurface>
+              ))}
+            </section>
+          )}
+
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-base font-semibold text-ink">
               {formatMonthLong(period)} — per tenant
@@ -356,7 +405,34 @@ export function RentTracker() {
                       row.status === 'partial';
                     return (
                       <Tr key={row.rentPaymentId}>
-                        <Td className="font-medium">{row.tenantName}</Td>
+                        <Td className="font-medium">
+                          {row.tenants.length > 1 ? (
+                            <ul className="flex flex-col gap-0.5">
+                              {row.tenants.map((t) => (
+                                <li key={t.tenantId} className="flex items-center gap-2">
+                                  <span>{t.tenantName}</span>
+                                  <span className="text-xs font-normal text-ink-muted">
+                                    {formatUsd(t.shareCents)}
+                                    {t.shareSpecified ? '' : ' (even split)'} ·{' '}
+                                    {t.settled
+                                      ? 'paid'
+                                      : t.paidCents > 0
+                                        ? `${formatUsd(t.paidCents)} of share`
+                                        : 'due'}
+                                  </span>
+                                </li>
+                              ))}
+                              {row.sharesMismatch && (
+                                <li className="text-xs font-normal text-warning">
+                                  Shares don&rsquo;t add up to the {formatUsd(row.amountCents)}{' '}
+                                  charge
+                                </li>
+                              )}
+                            </ul>
+                          ) : (
+                            row.tenantName
+                          )}
+                        </Td>
                         <Td>
                           {row.unitLabel}
                           <span className="text-ink-muted"> · {row.propertyLabel}</span>
@@ -408,6 +484,7 @@ export function RentTracker() {
                                           ((row.amountCents - row.paidCents) / 100).toFixed(2),
                                         );
                                         setPayError(null);
+                                        setPayTenantId('');
                                         setPayRow(row);
                                       },
                                     },
@@ -494,6 +571,25 @@ export function RentTracker() {
                 onChange={(e) => setPayAmount(e.target.value)}
               />
             </FormField>
+            {payRow.tenants.length > 1 && (
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="pay-tenant" className="text-sm font-medium text-ink">
+                  Paid by
+                </label>
+                <Select
+                  id="pay-tenant"
+                  value={payTenantId}
+                  onChange={(e) => setPayTenantId(e.target.value)}
+                >
+                  <option value="">Not specified</option>
+                  {payRow.tenants.map((t) => (
+                    <option key={t.tenantId} value={t.tenantId}>
+                      {t.tenantName} — {formatUsd(t.shareCents)} share
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            )}
             <div className="flex flex-col gap-1.5">
               <label htmlFor="pay-method" className="text-sm font-medium text-ink">
                 Payment method

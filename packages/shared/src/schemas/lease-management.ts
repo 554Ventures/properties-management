@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { LeaseSchema } from './lease';
 import { RentPaymentRowSchema } from './rent';
-import { TenantSchema } from './tenant';
+import { TenantOnLeaseSchema } from './tenant';
 
 // Lease with unit/property display context + embedded tenants. Lives here (not
 // in lease.ts) to avoid the tenant.ts → lease.ts circular import: lease.ts must
@@ -10,7 +10,7 @@ export const LeaseWithContextSchema = LeaseSchema.extend({
   unitLabel: z.string(),
   propertyId: z.string(),
   propertyLabel: z.string(),
-  tenants: z.array(TenantSchema),
+  tenants: z.array(TenantOnLeaseSchema),
 });
 
 // GET /leases/:id
@@ -23,6 +23,14 @@ export const LeaseDetailResponseSchema = z.object({
 export const AddLeaseTenantInputSchema = z.object({
   tenantId: z.string(),
   isPrimary: z.boolean().optional(),
+  shareCents: z.number().int().nonnegative().optional(), // expected portion of the rent
+});
+
+// PATCH /leases/:id/tenants/:tenantId — set/clear a co-tenant's expected
+// share (null clears back to the even-split display fallback). Shares that
+// don't sum to the rent are a soft warning in the UI, never a hard block.
+export const UpdateLeaseTenantShareInputSchema = z.object({
+  shareCents: z.number().int().nonnegative().nullable(),
 });
 
 // POST /leases/:id/renewal

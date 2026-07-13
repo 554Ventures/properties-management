@@ -39,6 +39,8 @@ export type UnitDetailResponse = z.infer<typeof s.UnitDetailResponseSchema>;
 
 // Tenants
 export type Tenant = z.infer<typeof s.TenantSchema>;
+export type TenantOnLease = z.infer<typeof s.TenantOnLeaseSchema>;
+export type UpdateLeaseTenantShareInput = z.infer<typeof s.UpdateLeaseTenantShareInputSchema>;
 export type TenantStatus = z.infer<typeof s.TenantStatusSchema>;
 export type CreateTenantInput = z.infer<typeof s.CreateTenantInputSchema>;
 export type UpdateTenantInput = z.infer<typeof s.UpdateTenantInputSchema>;
@@ -101,10 +103,14 @@ export type CreateCategoryInput = z.infer<typeof s.CreateCategoryInputSchema>;
 export type Period = z.infer<typeof s.PeriodSchema>;
 export type RentStatus = z.infer<typeof s.RentStatusSchema>;
 export type RentPayment = z.infer<typeof s.RentPaymentSchema>;
+export type RentDeposit = z.infer<typeof s.RentDepositSchema>;
 export type RentPaymentRow = z.infer<typeof s.RentPaymentRowSchema>;
+export type RentTenantShare = z.infer<typeof s.RentTenantShareSchema>;
 export type RentTrackerRow = z.infer<typeof s.RentTrackerRowSchema>;
 export type RentTrackerResponse = z.infer<typeof s.RentTrackerResponseSchema>;
 export type RecordRentPaymentInput = z.infer<typeof s.RecordRentPaymentInputSchema>;
+export type UnlinkedRentDeposit = z.infer<typeof s.UnlinkedRentDepositSchema>;
+export type UnlinkedRentDepositsResponse = z.infer<typeof s.UnlinkedRentDepositsResponseSchema>;
 export type PaymentLinkResponse = z.infer<typeof s.PaymentLinkResponseSchema>;
 export type SendRemindersInput = z.infer<typeof s.SendRemindersInputSchema>;
 export type SendReminderResult = z.infer<typeof s.SendReminderResultSchema>;

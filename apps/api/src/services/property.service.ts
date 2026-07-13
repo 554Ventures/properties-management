@@ -16,7 +16,7 @@ import { writeAudit, type AuditActor } from './audit.service';
 import { generateInsights, toApiInsight } from './insight.service';
 import { toApiLease } from './lease.service';
 import { deriveRentStatus } from './rent.service';
-import { toApiTenant } from './tenant.service';
+import { toTenantOnLease } from './tenant.service';
 
 export function toApiProperty(p: DbProperty): Property {
   return {
@@ -180,7 +180,7 @@ export async function getDetail(accountId: string, id: string): Promise<Property
         archivedAt: isoOrNull(u.archivedAt),
         status: lease ? ('occupied' as const) : ('vacant' as const),
         currentLease: lease
-          ? { ...toApiLease(lease), tenants: lease.leaseTenants.map((lt) => toApiTenant(lt.tenant)) }
+          ? { ...toApiLease(lease), tenants: lease.leaseTenants.map(toTenantOnLease) }
           : null,
       };
     }),

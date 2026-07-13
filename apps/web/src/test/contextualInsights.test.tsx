@@ -114,6 +114,18 @@ const tracker: RentTrackerResponse = {
       method: null,
       paidAt: null,
       deposits: [],
+      tenants: [
+        {
+          tenantId: 't1',
+          tenantName: 'T. Okafor',
+          isPrimary: true,
+          shareCents: 115000,
+          shareSpecified: false,
+          paidCents: 0,
+          settled: false,
+        },
+      ],
+      sharesMismatch: false,
     },
   ],
 };

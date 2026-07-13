@@ -7,7 +7,7 @@ import { writeAudit, type AuditActor } from './audit.service';
 import { toApiLease } from './lease.service';
 import { pnlTotals, propertyLabel } from './property.service';
 import { deriveRentStatus } from './rent.service';
-import { toApiTenant } from './tenant.service';
+import { toTenantOnLease } from './tenant.service';
 
 export function toApiUnit(u: DbUnit): Unit {
   return {
@@ -75,7 +75,7 @@ export async function getDetail(accountId: string, id: string): Promise<UnitDeta
 
   const toLeaseWithTenants = (l: (typeof unit.leases)[number]) => ({
     ...toApiLease(l),
-    tenants: l.leaseTenants.map((lt) => toApiTenant(lt.tenant)),
+    tenants: l.leaseTenants.map(toTenantOnLease),
   });
   const currentLeaseRow = unit.leases.find((l) => l.status === 'active');
 

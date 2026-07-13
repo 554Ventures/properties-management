@@ -9,6 +9,7 @@ import type {
   RentTrackerRow,
   SendRemindersInput,
   SendRemindersResponse,
+  UnlinkedRentDeposit,
 } from '@hearth/shared';
 import type { RentPayment as DbRentPayment } from '@prisma/client';
 import {
@@ -214,6 +215,34 @@ export async function getMonthStatus(
     const derived = deriveRentStatus(p, account.graceDays);
     const primaryTenant = p.lease.leaseTenants[0]?.tenant;
     const property = p.lease.unit.property;
+
+    // Per-co-tenant shares (plan §C): stored shareCents, or an even split of
+    // the charge when unspecified (first tenant absorbs the rounding
+    // remainder). Per-tenant paid derives from deposits attributed via
+    // deposit.tenantId; unattributed deposits count toward the unit total
+    // only. Shares compare against the *charge* (prorated months included)
+    // only when every share is stored; the even split always sums exactly.
+    const links = p.lease.leaseTenants;
+    const evenBase = links.length > 0 ? Math.floor(p.amountCents / links.length) : 0;
+    const allSpecified = links.length > 0 && links.every((lt) => lt.shareCents != null);
+    const specifiedSum = links.reduce((s, lt) => s + (lt.shareCents ?? 0), 0);
+    const tenants = links.map((lt, i) => {
+      const shareCents =
+        lt.shareCents ?? (i === 0 ? p.amountCents - evenBase * (links.length - 1) : evenBase);
+      const paidCents = p.deposits
+        .filter((d) => d.tenantId === lt.tenantId)
+        .reduce((s, d) => s + d.amountCents, 0);
+      return {
+        tenantId: lt.tenantId,
+        tenantName: lt.tenant.fullName,
+        isPrimary: lt.isPrimary,
+        shareCents,
+        shareSpecified: lt.shareCents != null,
+        paidCents,
+        settled: paidCents >= shareCents && shareCents > 0,
+      };
+    });
+
     return {
       rentPaymentId: p.id,
       leaseId: p.leaseId,
@@ -238,6 +267,8 @@ export async function getMonthStatus(
         method: d.method as RentPaymentMethod | null,
         paidAt: iso(d.paidAt),
       })),
+      tenants,
+      sharesMismatch: allSpecified && specifiedSum !== p.amountCents,
     };
   });
 
@@ -346,6 +377,11 @@ export async function recordPayment(
     },
   });
   if (!lease) throw new NotFoundError('lease', input.leaseId);
+  // Attribution integrity: a deposit can only credit a tenant who is actually
+  // on this lease — otherwise per-tenant share tracking would silently lie.
+  if (input.tenantId && !lease.leaseTenants.some((lt) => lt.tenantId === input.tenantId)) {
+    throw new BadRequestError('tenant is not on this lease');
+  }
 
   let payment = await prisma.rentPayment.findUnique({
     where: { leaseId_period: { leaseId: input.leaseId, period: input.period } },
@@ -394,7 +430,13 @@ export async function recordPayment(
     externalRef = settlement.externalRef;
   }
 
-  const tenantName = lease.leaseTenants[0]?.tenant.fullName ?? 'tenant';
+  // Attributed payer's name when given (ledger description + push), else primary.
+  const tenantName =
+    (input.tenantId
+      ? lease.leaseTenants.find((lt) => lt.tenantId === input.tenantId)?.tenant.fullName
+      : undefined) ??
+    lease.leaseTenants[0]?.tenant.fullName ??
+    'tenant';
   // Scoped like suggestCategory: never pick up another account's custom "Rent".
   const rentCategory = await prisma.category.findFirst({
     where: { name: 'Rent', type: 'income', OR: [{ isSystem: true }, { accountId }] },
@@ -435,6 +477,7 @@ export async function recordPayment(
         rentPaymentId: paymentId,
         transactionId: createdTxn.id,
         amountCents: input.amountCents,
+        tenantId: input.tenantId ?? null,
         method: input.method,
         paidAt,
       },
@@ -556,6 +599,117 @@ export async function unlinkDeposit(
     },
   });
   return toApiRentPayment(updated);
+}
+
+/**
+ * The "silently still late" fix (plan §C5): Rent-categorized, confirmed
+ * income transactions that aren't linked as deposits but could apply to a
+ * still-open charge of `period` — dated within the match window of the due
+ * date, no larger than the remaining balance, and attribution-compatible
+ * (same unit; same property with no unit; or unattributed). Broader than the
+ * review-queue chip: below-remaining partials surface here too, as a
+ * question. A transaction fitting more than one charge is suppressed rather
+ * than guessed at.
+ */
+export async function findUnlinkedRentDeposits(
+  accountId: string,
+  period: string,
+): Promise<{ items: UnlinkedRentDeposit[] }> {
+  await materializeExpectedPayments(accountId, period);
+  const charges = await prisma.rentPayment.findMany({
+    where: {
+      period,
+      status: { in: ['due', 'processing'] },
+      lease: { unit: { archivedAt: null, property: { accountId, archivedAt: null } } },
+    },
+    include: {
+      lease: {
+        include: {
+          unit: { include: { property: true } },
+          leaseTenants: { include: { tenant: true }, orderBy: { isPrimary: 'desc' } },
+        },
+      },
+    },
+  });
+  const open = charges.filter((c) => c.paidCents < c.amountCents);
+  if (open.length === 0) return { items: [] };
+
+  const rentCategories = await prisma.category.findMany({
+    where: { name: 'Rent', type: 'income', OR: [{ isSystem: true }, { accountId }] },
+    select: { id: true },
+  });
+  if (rentCategories.length === 0) return { items: [] };
+
+  const dueTimes = open.map((c) => c.dueDate.getTime());
+  const candidates = await prisma.transaction.findMany({
+    where: {
+      accountId,
+      type: 'income',
+      status: 'confirmed',
+      categoryId: { in: rentCategories.map((c) => c.id) },
+      rentDeposit: null, // not already applied as a deposit…
+      rentPayment: null, // …nor via the legacy single-payment link
+      date: {
+        gte: addDays(new Date(Math.min(...dueTimes)), -RENT_MATCH_WINDOW_DAYS),
+        lte: addDays(new Date(Math.max(...dueTimes)), RENT_MATCH_WINDOW_DAYS),
+      },
+    },
+    orderBy: { date: 'desc' },
+  });
+
+  const items: UnlinkedRentDeposit[] = [];
+  for (const txn of candidates) {
+    const fits = open.filter((c) => {
+      const remaining = c.amountCents - c.paidCents;
+      if (txn.amountCents > remaining) return false;
+      if (Math.abs(calendarDaysBetween(c.dueDate, txn.date)) > RENT_MATCH_WINDOW_DAYS) return false;
+      if (txn.unitId) return txn.unitId === c.lease.unitId;
+      if (txn.propertyId) return txn.propertyId === c.lease.unit.propertyId;
+      return true; // unattributed — allowed only if it fits exactly one charge
+    });
+    if (fits.length !== 1) continue;
+    const charge = fits[0] as (typeof open)[number];
+    const property = charge.lease.unit.property;
+    items.push({
+      transactionId: txn.id,
+      description: txn.description,
+      amountCents: txn.amountCents,
+      date: iso(txn.date),
+      rentPaymentId: charge.id,
+      leaseId: charge.leaseId,
+      tenantName: charge.lease.leaseTenants[0]?.tenant.fullName ?? 'Unknown tenant',
+      unitLabel: charge.lease.unit.label,
+      propertyLabel: property.nickname ?? property.addressLine1,
+      period: charge.period,
+      remainingCents: charge.amountCents - charge.paidCents,
+    });
+  }
+  return { items };
+}
+
+/** Set or clear (null) a co-tenant's expected share of the lease rent. */
+export async function setTenantShare(
+  accountId: string,
+  leaseId: string,
+  tenantId: string,
+  shareCents: number | null,
+  actor: AuditActor = 'user',
+): Promise<void> {
+  const link = await prisma.leaseTenant.findFirst({
+    where: { leaseId, tenantId, lease: { unit: { property: { accountId } } } },
+  });
+  if (!link) throw new NotFoundError('lease tenant', tenantId);
+  await prisma.leaseTenant.update({
+    where: { leaseId_tenantId: { leaseId, tenantId } },
+    data: { shareCents },
+  });
+  await writeAudit(accountId, {
+    actor,
+    action: 'lease.tenant_share_set',
+    entityType: 'lease',
+    entityId: leaseId,
+    detail: { tenantId, shareCents },
+  });
 }
 
 export async function createPaymentLink(

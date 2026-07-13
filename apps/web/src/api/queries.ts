@@ -59,6 +59,7 @@ import type {
   RecordRentPaymentInput,
   RentPayment,
   RentTrackerResponse,
+  UnlinkedRentDepositsResponse,
   RenewalDraftResponse,
   Report,
   ReportDetailResponse,
@@ -676,6 +677,32 @@ export function useRentTracker(period: string) {
     queryKey: ['rent', 'tracker', period],
     queryFn: () => api.get<RentTrackerResponse>(`/rent/tracker${toQuery({ period })}`),
     staleTime: STALE_SHORT,
+  });
+}
+
+// Rent-categorized income that could apply to a still-open charge but isn't
+// linked — the Rent page's "Link deposit to rent?" nudges.
+export function useUnlinkedRentDeposits(period: string) {
+  return useQuery({
+    queryKey: ['rent', 'unlinked-deposits', period],
+    queryFn: () =>
+      api.get<UnlinkedRentDepositsResponse>(`/rent/unlinked-deposits${toQuery({ period })}`),
+    staleTime: STALE_SHORT,
+  });
+}
+
+// Set/clear a co-tenant's expected share of the rent (null = even split).
+export function useSetLeaseTenantShare() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { leaseId: string; tenantId: string; shareCents: number | null }) =>
+      api.patch(`/leases/${input.leaseId}/tenants/${input.tenantId}`, {
+        shareCents: input.shareCents,
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['leases'] });
+      void qc.invalidateQueries({ queryKey: ['rent'] });
+    },
   });
 }
 

@@ -25,7 +25,7 @@ import { prisma } from '../lib/prisma';
 import { mockDocusign } from '../integrations/mock/mock-docusign';
 import { writeAudit, type AuditActor } from './audit.service';
 import { coveredDaysInPeriod, deriveRentStatus, proratedRentShare } from './rent.service';
-import { toApiTenant } from './tenant.service';
+import { toApiTenant, toTenantOnLease } from './tenant.service';
 
 export function toApiLease(l: DbLease): Lease {
   return {
@@ -44,7 +44,7 @@ export function toApiLease(l: DbLease): Lease {
 
 type LeaseWithJoins = DbLease & {
   unit: DbUnit & { property: DbProperty };
-  leaseTenants: Array<{ isPrimary: boolean; tenant: DbTenant }>;
+  leaseTenants: Array<{ isPrimary: boolean; shareCents: number | null; tenant: DbTenant }>;
 };
 
 function toLeaseWithContext(l: LeaseWithJoins): LeaseWithContext {
@@ -53,7 +53,7 @@ function toLeaseWithContext(l: LeaseWithJoins): LeaseWithContext {
     unitLabel: l.unit.label,
     propertyId: l.unit.propertyId,
     propertyLabel: l.unit.property.nickname ?? l.unit.property.addressLine1,
-    tenants: l.leaseTenants.map((lt) => toApiTenant(lt.tenant)),
+    tenants: l.leaseTenants.map(toTenantOnLease),
   };
 }
 
@@ -335,7 +335,12 @@ export async function addTenant(
       await tx.leaseTenant.updateMany({ where: { leaseId }, data: { isPrimary: false } });
     }
     await tx.leaseTenant.create({
-      data: { leaseId, tenantId: input.tenantId, isPrimary: makePrimary },
+      data: {
+        leaseId,
+        tenantId: input.tenantId,
+        isPrimary: makePrimary,
+        shareCents: input.shareCents ?? null,
+      },
     });
   });
   await writeAudit(accountId, {
@@ -343,7 +348,7 @@ export async function addTenant(
     action: 'add_tenant',
     entityType: 'lease',
     entityId: leaseId,
-    detail: { tenantId: input.tenantId, isPrimary: makePrimary },
+    detail: { tenantId: input.tenantId, isPrimary: makePrimary, shareCents: input.shareCents ?? null },
   });
   return toLeaseWithContext(await getContext(accountId, leaseId));
 }

@@ -95,8 +95,9 @@ describe('GET endpoints satisfy the shared response schemas', () => {
   });
 
   it('/tenants + /tenants/:id', async () => {
+    // 14 unit tenants + the seeded co-tenant on Park's lease (plan §C4 fixture).
     const tenants = TenantListResponseSchema.parse(await getJson('/api/v1/tenants'));
-    expect(tenants).toHaveLength(14);
+    expect(tenants).toHaveLength(15);
     const okafor = tenants.find((t) => t.fullName === OKAFOR_NAME)!;
     const detail = TenantDetailResponseSchema.parse(await getJson(`/api/v1/tenants/${okafor.id}`));
     expect(detail.paymentHistory.length).toBeGreaterThanOrEqual(7);
