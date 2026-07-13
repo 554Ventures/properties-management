@@ -62,10 +62,13 @@ export function useToast(): Pick<ToastContextValue, 'toast'> {
   return { toast: ctx.toast };
 }
 
-const toneStyles: Record<ToastTone, { icon: typeof IconCheck; accent: string }> = {
-  positive: { icon: IconCheck, accent: 'text-positive' },
-  danger: { icon: IconAlertCircle, accent: 'text-danger' },
-  neutral: { icon: IconDot, accent: 'text-neutral' },
+const toneStyles: Record<
+  ToastTone,
+  { icon: typeof IconCheck; accent: string; edge: string }
+> = {
+  positive: { icon: IconCheck, accent: 'text-positive', edge: 'border-l-positive' },
+  danger: { icon: IconAlertCircle, accent: 'text-danger', edge: 'border-l-danger' },
+  neutral: { icon: IconDot, accent: 'text-neutral', edge: 'border-l-neutral' },
 };
 
 /** Mounted once (AppShell). The region itself is always in the DOM. */
@@ -76,20 +79,23 @@ export function ToastViewport() {
     <div
       role="status"
       aria-live="polite"
-      className="fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-4 z-[60] flex w-full max-w-xs flex-col gap-2 md:bottom-4"
+      className="fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] left-4 z-[60] flex w-full max-w-sm flex-col gap-2 md:bottom-4"
     >
       {ctx.toasts.map((t) => {
-        const { icon: Icon, accent } = toneStyles[t.tone];
+        const { icon: Icon, accent, edge } = toneStyles[t.tone];
         return (
           <div
             key={t.id}
-            className="flex items-start gap-2 rounded-md border border-border bg-surface-raised px-3 py-2.5 text-sm text-ink shadow-overlay"
+            className={cx(
+              'flex items-start gap-2.5 rounded-md border border-border-strong border-l-4 bg-surface-raised px-3.5 py-3 text-sm text-ink shadow-overlay',
+              edge,
+            )}
           >
             <span className={cx('mt-0.5 shrink-0', accent)}>
-              <Icon size={14} />
+              <Icon size={16} />
             </span>
             <div className="flex-1">
-              <p>{t.message}</p>
+              <p className="font-medium">{t.message}</p>
               {t.action && (
                 <button
                   type="button"
