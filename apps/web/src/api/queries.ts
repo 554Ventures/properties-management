@@ -911,6 +911,8 @@ export function useConnectIntegration() {
     mutationFn: (type: IntegrationType) => api.post<Integration>(`/integrations/${type}/connect`),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['integrations'] });
+      // A bank feed completes the onboarding "connect your bank" step.
+      void qc.invalidateQueries({ queryKey: ['onboarding'] });
     },
   });
 }
@@ -921,6 +923,7 @@ export function useDisconnectIntegration() {
     mutationFn: (id: string) => api.delete(`/integrations/${id}`),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['integrations'] });
+      void qc.invalidateQueries({ queryKey: ['onboarding'] });
     },
   });
 }
@@ -938,6 +941,7 @@ export function useExchangePlaidPublicToken() {
       api.post<Integration>('/integrations/plaid/exchange', { publicToken }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['integrations'] });
+      void qc.invalidateQueries({ queryKey: ['onboarding'] });
     },
   });
 }
@@ -955,6 +959,7 @@ export function useCompleteStripeFcSession() {
       api.post<Integration>('/integrations/stripe_fc/complete', { sessionId }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['integrations'] });
+      void qc.invalidateQueries({ queryKey: ['onboarding'] });
     },
   });
 }

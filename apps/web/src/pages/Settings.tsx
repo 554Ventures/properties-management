@@ -3,7 +3,6 @@
 // payments/Docusign/Email stay mock — docs/WHATS_NEXT.md §3). MCP is
 // stdio/local-only (no remote transport exists yet —
 // property-app-deployment-plan.md §8), so it has no UI here.
-import { loadStripe } from '@stripe/stripe-js';
 import { useEffect, useState, type FormEvent } from 'react';
 import { usePlaidLink } from 'react-plaid-link';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
@@ -16,9 +15,7 @@ import type {
 } from '@hearth/shared';
 import { MemberPermissionSchema } from '@hearth/shared';
 import {
-  useCompleteStripeFcSession,
   useCreatePlaidLinkToken,
-  useCreateStripeFcSession,
   useCurrentUser,
   useDisconnectIntegration,
   useExchangePlaidPublicToken,
@@ -43,6 +40,7 @@ import { StatusBadge } from '../components/ui/StatusBadge';
 import { useToast } from '../components/ui/Toast';
 import { formatDateTime } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
+import { useStripeFcConnect } from '../lib/useStripeFcConnect';
 import {
   authenticateBiometric,
   isBiometricLockEnabled,
@@ -717,61 +715,14 @@ function PlaidIntegrationRow({ row }: { row: IntegrationRowInput }) {
   );
 }
 
-/** Stripe Financial Connections mirrors the Plaid row: in mock mode (no real
- * Stripe keys configured server-side) Connect completes immediately with no
- * modal; with real keys it launches Stripe.js's hosted bank-auth modal
- * (`collectFinancialConnectionsAccounts`). The publishable key arrives with
- * the session response, so the web bundle needs no Stripe build-time env. */
+/** Stripe Financial Connections mirrors the Plaid row. The connect flow
+ * (mock = immediate, real keys = Stripe.js hosted bank-auth modal) lives in
+ * the shared `useStripeFcConnect` hook, reused by the onboarding wizard. */
 function StripeFcIntegrationRow({ row }: { row: IntegrationRowInput }) {
   const { toast } = useToast();
-  const createSession = useCreateStripeFcSession();
-  const complete = useCompleteStripeFcSession();
+  const { connect, busy } = useStripeFcConnect();
   const disconnect = useDisconnectIntegration();
-  const [modalOpen, setModalOpen] = useState(false);
   const badge = integrationStatusBadge['id' in row ? row.status : 'disconnected'];
-
-  const finishConnecting = (sessionId: string) => {
-    complete.mutate(sessionId, {
-      onSuccess: () => toast('Stripe Financial Connections connected.', 'positive'),
-      onError: () => toast('Could not finish connecting the bank account. Try again.', 'danger'),
-    });
-  };
-
-  const launchModal = async (sessionId: string, clientSecret: string, publishableKey: string) => {
-    setModalOpen(true);
-    try {
-      const stripe = await loadStripe(publishableKey);
-      if (!stripe) throw new Error('Stripe.js failed to load');
-      const result = await stripe.collectFinancialConnectionsAccounts({ clientSecret });
-      if (result.error) {
-        toast(result.error.message ?? 'Could not connect the bank account.', 'danger');
-        return;
-      }
-      if (result.financialConnectionsSession.accounts.length === 0) {
-        // User closed the modal without linking anything — not an error.
-        toast('No bank account was linked.', 'neutral');
-        return;
-      }
-      finishConnecting(sessionId);
-    } catch {
-      toast('Could not open the bank connection window. Try again.', 'danger');
-    } finally {
-      setModalOpen(false);
-    }
-  };
-
-  const handleConnect = () => {
-    createSession.mutate(undefined, {
-      onSuccess: ({ sessionId, clientSecret, publishableKey, mock }) => {
-        if (mock) {
-          finishConnecting(sessionId);
-        } else {
-          void launchModal(sessionId, clientSecret, publishableKey);
-        }
-      },
-      onError: () => toast('Could not start the bank connection. Try again.', 'danger'),
-    });
-  };
 
   return (
     <li className="flex items-center justify-between gap-3 py-3 first:pt-0 last:pb-0">
@@ -801,12 +752,7 @@ function StripeFcIntegrationRow({ row }: { row: IntegrationRowInput }) {
           Disconnect
         </Button>
       ) : (
-        <Button
-          variant="secondary"
-          size="sm"
-          busy={createSession.isPending || complete.isPending || modalOpen}
-          onClick={handleConnect}
-        >
+        <Button variant="secondary" size="sm" busy={busy} onClick={connect}>
           Connect
         </Button>
       )}

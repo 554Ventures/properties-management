@@ -127,7 +127,6 @@ export const OnboardingStepIdSchema = z.enum([
   'add_property',
   'add_tenant',
   'create_lease',
-  'log_transaction',
   'connect_bank',
 ]);
 export type OnboardingStepId = z.infer<typeof OnboardingStepIdSchema>;

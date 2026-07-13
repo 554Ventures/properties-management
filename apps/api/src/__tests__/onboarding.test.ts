@@ -48,7 +48,6 @@ describe('onboarding derivation (fresh account, service level)', () => {
       'add_property',
       'add_tenant',
       'create_lease',
-      'log_transaction',
       'connect_bank',
     ]);
     expect(state.steps.every((s) => s.state === 'pending')).toBe(true);
@@ -61,14 +60,14 @@ describe('onboarding derivation (fresh account, service level)', () => {
     expect(started.status).toBe('in_progress');
 
     const skipped = await onboardingService.updateOnboarding(freshAccountId, {
-      skipStep: 'log_transaction',
+      skipStep: 'create_lease',
     });
     expect(skipped.status).toBe('in_progress'); // skip alone doesn't change status
-    expect(skipped.steps.find((s) => s.id === 'log_transaction')?.state).toBe('skipped');
+    expect(skipped.steps.find((s) => s.id === 'create_lease')?.state).toBe('skipped');
 
     // Persisted, not just in the response.
     const reread = await onboardingService.getOnboarding(freshAccountId);
-    expect(reread.steps.find((s) => s.id === 'log_transaction')?.state).toBe('skipped');
+    expect(reread.steps.find((s) => s.id === 'create_lease')?.state).toBe('skipped');
   });
 
   it('steps complete from real data, and all-done derives completed', async () => {
@@ -91,7 +90,8 @@ describe('onboarding derivation (fresh account, service level)', () => {
     expect(partial.status).toBe('in_progress');
     expect(partial.steps.find((s) => s.id === 'add_property')?.state).toBe('completed');
     expect(partial.steps.find((s) => s.id === 'add_tenant')?.state).toBe('completed');
-    expect(partial.steps.find((s) => s.id === 'create_lease')?.state).toBe('pending');
+    // Skipped earlier — stays skipped until real data exists.
+    expect(partial.steps.find((s) => s.id === 'create_lease')?.state).toBe('skipped');
 
     await prisma.lease.create({
       data: {
@@ -105,18 +105,19 @@ describe('onboarding derivation (fresh account, service level)', () => {
       },
     });
 
-    // Everything but connect_bank is now completed (data) or skipped.
+    // A real lease upgrades the skipped step to completed (data wins).
     const almost = await onboardingService.getOnboarding(freshAccountId);
     expect(almost.steps.find((s) => s.id === 'create_lease')?.state).toBe('completed');
     expect(almost.steps.find((s) => s.id === 'connect_bank')?.state).toBe('pending');
     expect(almost.status).toBe('in_progress');
 
-    // A connected Plaid integration completes the bank step → all done.
+    // A connected bank feed (Stripe Financial Connections) completes the
+    // bank step → all done.
     await prisma.integration.create({
       data: {
         accountId: freshAccountId,
-        type: 'plaid',
-        name: 'Plaid (bank import)',
+        type: 'stripe_fc',
+        name: 'Stripe Financial Connections (bank import)',
         status: 'connected',
       },
     });

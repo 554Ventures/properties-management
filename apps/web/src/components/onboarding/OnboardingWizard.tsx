@@ -6,12 +6,12 @@
 // fight over Tab/Escape).
 import { ASSISTANT_NAME, type OnboardingState, type OnboardingStepId } from '@hearth/shared';
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
 import { usePropertyDetail, useProperties, useUpdateOnboarding } from '../../api/queries';
+import { useStripeFcConnect } from '../../lib/useStripeFcConnect';
 import { LeaseFormModal } from '../forms/LeaseFormModal';
 import { PropertyFormModal } from '../forms/PropertyFormModal';
 import { TenantFormModal } from '../forms/TenantFormModal';
-import { Button, buttonClasses } from '../ui/Button';
+import { Button } from '../ui/Button';
 import { IconCheck } from '../ui/icons';
 import { Modal } from '../ui/Modal';
 import { ProgressBar } from '../ui/ProgressBar';
@@ -36,16 +36,11 @@ const STEP_META: Record<
       'Connect a tenant to a unit with rent and dates — this powers the rent tracker.',
     actionLabel: 'Add lease',
   },
-  log_transaction: {
-    title: 'Log your first transaction',
-    description: 'Record an income or expense so your cash flow starts from day one.',
-    actionLabel: 'Go to Add transaction',
-  },
   connect_bank: {
     title: 'Connect your bank',
     description:
       'Link your bank once and new transactions import for review automatically — no manual entry.',
-    actionLabel: 'Connect in Settings',
+    actionLabel: 'Connect bank',
   },
 };
 
@@ -60,6 +55,10 @@ export interface OnboardingWizardProps {
 export function OnboardingWizard({ open, onClose, state }: OnboardingWizardProps) {
   const update = useUpdateOnboarding();
   const [activeForm, setActiveForm] = useState<ActiveForm>(null);
+  // Stripe's hosted bank-auth window (real-keys mode only) is its own overlay;
+  // hide the wizard while it's up so two dialogs never stack.
+  const [stripeModalOpen, setStripeModalOpen] = useState(false);
+  const bank = useStripeFcConnect({ onModalOpenChange: setStripeModalOpen });
 
   const properties = useProperties();
   const firstPropertyId = properties.data?.[0]?.id;
@@ -108,19 +107,13 @@ export function OnboardingWizard({ open, onClose, state }: OnboardingWizardProps
             {STEP_META[id].actionLabel}
           </Button>
         );
-      // Real pages, not modals — leaving the wizard is fine because progress
-      // is saved server-side and the banner offers the way back.
-      case 'log_transaction':
-        return (
-          <Link to="/money/new" className={buttonClasses('primary', 'sm')} onClick={onClose}>
-            {STEP_META[id].actionLabel}
-          </Link>
-        );
       case 'connect_bank':
+        // Runs entirely in place: mock mode connects instantly; with real
+        // Stripe keys the hosted bank-auth window opens over the wizard.
         return (
-          <Link to="/settings" className={buttonClasses('primary', 'sm')} onClick={onClose}>
+          <Button size="sm" busy={bank.busy} onClick={bank.connect}>
             {STEP_META[id].actionLabel}
-          </Link>
+          </Button>
         );
     }
   };
@@ -128,7 +121,7 @@ export function OnboardingWizard({ open, onClose, state }: OnboardingWizardProps
   return (
     <>
       <Modal
-        open={open && activeForm === null}
+        open={open && activeForm === null && !stripeModalOpen}
         onClose={onClose}
         title="Set up your portfolio"
         size="lg"

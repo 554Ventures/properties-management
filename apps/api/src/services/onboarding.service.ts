@@ -1,5 +1,5 @@
 // Getting-started checklist for new accounts. Step completion is derived live
-// from portfolio data (does a property/tenant/lease/transaction exist?) so
+// from portfolio data (does a property/tenant/lease/bank feed exist?) so
 // progress stays honest no matter where the work happened — the row only
 // persists the user's explicit choices: started, skipped steps, dismissed.
 // No AuditLog here: onboarding state isn't money/tenant-touching (precedent:
@@ -12,11 +12,10 @@ import { prisma } from '../lib/prisma';
 const STEP_ORDER: OnboardingStepId[] = OnboardingStepIdSchema.options;
 
 async function completedSteps(accountId: string): Promise<Set<OnboardingStepId>> {
-  const [properties, tenants, leases, transactions, bankConnections] = await Promise.all([
+  const [properties, tenants, leases, bankConnections] = await Promise.all([
     prisma.property.count({ where: { accountId, archivedAt: null } }),
     prisma.tenant.count({ where: { accountId, archivedAt: null } }),
     prisma.lease.count({ where: { unit: { property: { accountId } } } }),
-    prisma.transaction.count({ where: { accountId } }),
     // Either bank feed (Plaid or Stripe Financial Connections) completes the
     // step. 'mock' is the demo seed's placeholder status (a fresh account has
     // no integration rows at all) — counting it keeps the fully-set-up demo
@@ -33,7 +32,6 @@ async function completedSteps(accountId: string): Promise<Set<OnboardingStepId>>
   if (properties > 0) done.add('add_property');
   if (tenants > 0) done.add('add_tenant');
   if (leases > 0) done.add('create_lease');
-  if (transactions > 0) done.add('log_transaction');
   if (bankConnections > 0) done.add('connect_bank');
   return done;
 }

@@ -16,7 +16,6 @@ const STEP_IDS: OnboardingStepId[] = [
   'add_property',
   'add_tenant',
   'create_lease',
-  'log_transaction',
   'connect_bank',
 ];
 
@@ -30,10 +29,14 @@ function makeState(
 /**
  * Stateful fetch stub that mimics onboarding.service: PATCHes mutate the held
  * state (skips flip a step to skipped; all-done derives completed) and GETs
- * return it. Other endpoints the wizard touches resolve to empty lists.
+ * return it. The mock Stripe Financial Connections endpoints flip the
+ * connect_bank step to completed, mirroring the real derivation. Other
+ * endpoints the wizard touches resolve to empty lists.
  */
 function stubOnboardingApi(initial: OnboardingState) {
   let state = initial;
+  const deriveStatus = (steps: OnboardingState['steps']): OnboardingState['status'] =>
+    steps.every((s) => s.state !== 'pending') ? 'completed' : state.status;
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const path = String(input).replace(/^https?:\/\/[^/]+/, '').split('?')[0] ?? '';
     const json = (body: unknown) =>
@@ -43,6 +46,16 @@ function stubOnboardingApi(initial: OnboardingState) {
           headers: { 'Content-Type': 'application/json' },
         }),
       );
+    if (path === '/api/v1/integrations/stripe_fc/session') {
+      return json({ sessionId: 'fcsess_test', clientSecret: 'cs_test', publishableKey: 'pk_test', mock: true });
+    }
+    if (path === '/api/v1/integrations/stripe_fc/complete') {
+      const steps = state.steps.map((s) =>
+        s.id === 'connect_bank' ? { ...s, state: 'completed' as const } : s,
+      );
+      state = { status: deriveStatus(steps), steps };
+      return json({ id: 'int_fc', type: 'stripe_fc', status: 'connected' });
+    }
     if (path === '/api/v1/onboarding') {
       if (init?.method === 'PATCH') {
         const input = JSON.parse(String(init.body)) as {
@@ -92,38 +105,38 @@ afterEach(() => {
 
 describe('OnboardingBanner visibility', () => {
   it('renders nothing when onboarding derived completed', async () => {
-    stubOnboardingApi(makeState('completed', ['completed', 'completed', 'completed', 'completed', 'completed']));
+    stubOnboardingApi(makeState('completed', ['completed', 'completed', 'completed', 'completed']));
     render(<Providers><OnboardingBanner /></Providers>);
     await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalled());
     expect(screen.queryByText(/set up your portfolio/i)).not.toBeInTheDocument();
   });
 
   it('renders nothing when dismissed', async () => {
-    stubOnboardingApi(makeState('dismissed', ['pending', 'pending', 'pending', 'pending', 'pending']));
+    stubOnboardingApi(makeState('dismissed', ['pending', 'pending', 'pending', 'pending']));
     render(<Providers><OnboardingBanner /></Providers>);
     await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalled());
     expect(screen.queryByRole('button', { name: /get started/i })).not.toBeInTheDocument();
   });
 
   it('shows the welcome CTA for a not-started account and never auto-opens the wizard', async () => {
-    stubOnboardingApi(makeState('not_started', ['pending', 'pending', 'pending', 'pending', 'pending']));
+    stubOnboardingApi(makeState('not_started', ['pending', 'pending', 'pending', 'pending']));
     render(<Providers><OnboardingBanner /></Providers>);
     expect(await screen.findByRole('button', { name: 'Get started' })).toBeInTheDocument();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('shows resume copy and progress once in progress', async () => {
-    stubOnboardingApi(makeState('in_progress', ['completed', 'skipped', 'pending', 'pending', 'pending']));
+    stubOnboardingApi(makeState('in_progress', ['completed', 'skipped', 'pending', 'pending']));
     render(<Providers><OnboardingBanner /></Providers>);
     expect(await screen.findByRole('button', { name: 'Continue setup' })).toBeInTheDocument();
-    expect(screen.getByText('2 of 5 steps')).toBeInTheDocument();
+    expect(screen.getByText('2 of 4 steps')).toBeInTheDocument();
   });
 });
 
 describe('starting and stopping the wizard', () => {
   it('the CTA marks onboarding in_progress and opens the wizard; closing keeps progress', async () => {
     const fetchMock = stubOnboardingApi(
-      makeState('not_started', ['pending', 'pending', 'pending', 'pending', 'pending']),
+      makeState('not_started', ['pending', 'pending', 'pending', 'pending']),
     );
     render(<Providers><OnboardingBanner /></Providers>);
 
@@ -139,7 +152,7 @@ describe('starting and stopping the wizard', () => {
   });
 
   it('the lease step is gated until a property exists', async () => {
-    stubOnboardingApi(makeState('in_progress', ['pending', 'pending', 'pending', 'pending', 'pending']));
+    stubOnboardingApi(makeState('in_progress', ['pending', 'pending', 'pending', 'pending']));
     render(<Providers><OnboardingBanner /></Providers>);
     fireEvent.click(await screen.findByRole('button', { name: 'Continue setup' }));
     await screen.findByRole('dialog', { name: 'Set up your portfolio' });
@@ -147,9 +160,29 @@ describe('starting and stopping the wizard', () => {
     expect(screen.getByText('Add a property first.')).toBeInTheDocument();
   });
 
+  it('the bank step connects in place (mock Stripe FC flow) and completes onboarding', async () => {
+    const fetchMock = stubOnboardingApi(
+      makeState('in_progress', ['completed', 'completed', 'completed', 'pending']),
+    );
+    render(<Providers><OnboardingBanner /></Providers>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue setup' }));
+    await screen.findByRole('dialog', { name: 'Set up your portfolio' });
+
+    // The whole flow happens without leaving the modal: session → complete →
+    // onboarding refetch flips the step, deriving completion.
+    fireEvent.click(screen.getByRole('button', { name: 'Connect bank' }));
+    expect(await screen.findByText(/you’re all set/i)).toBeInTheDocument();
+
+    const posts = fetchMock.mock.calls
+      .filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST')
+      .map(([input]) => String(input));
+    expect(posts.some((u) => u.includes('/integrations/stripe_fc/session'))).toBe(true);
+    expect(posts.some((u) => u.includes('/integrations/stripe_fc/complete'))).toBe(true);
+  });
+
   it('skipping the last pending step derives completion and the banner goes away', async () => {
     const fetchMock = stubOnboardingApi(
-      makeState('in_progress', ['completed', 'completed', 'completed', 'skipped', 'pending']),
+      makeState('in_progress', ['completed', 'completed', 'completed', 'pending']),
     );
     render(<Providers><OnboardingBanner /></Providers>);
     fireEvent.click(await screen.findByRole('button', { name: 'Continue setup' }));
@@ -171,7 +204,7 @@ describe('starting and stopping the wizard', () => {
 describe('dismissal', () => {
   it('dismissing asks for confirmation; cancel keeps the banner', async () => {
     const fetchMock = stubOnboardingApi(
-      makeState('not_started', ['pending', 'pending', 'pending', 'pending', 'pending']),
+      makeState('not_started', ['pending', 'pending', 'pending', 'pending']),
     );
     render(<Providers><OnboardingBanner /></Providers>);
 
@@ -185,7 +218,7 @@ describe('dismissal', () => {
 
   it('confirming dismissal persists it and hides the banner', async () => {
     const fetchMock = stubOnboardingApi(
-      makeState('not_started', ['pending', 'pending', 'pending', 'pending', 'pending']),
+      makeState('not_started', ['pending', 'pending', 'pending', 'pending']),
     );
     render(<Providers><OnboardingBanner /></Providers>);
 
