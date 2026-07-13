@@ -7,7 +7,12 @@
 // apply to the whole filtered set (rent matches stay per-item decisions).
 import { useEffect, useMemo, useState } from 'react';
 import { formatUsd } from '@hearth/shared';
-import type { Category, ReviewQueueFilter, ReviewQueueItem } from '@hearth/shared';
+import type {
+  Category,
+  ReviewQueueFilter,
+  ReviewQueueItem,
+  TransactionClassification,
+} from '@hearth/shared';
 import { ApiClientError } from '../api/client';
 import {
   useCategories,
@@ -311,6 +316,8 @@ function ReviewItemCard({
   const [categoryId, setCategoryId] = useState('');
   const [propertyId, setPropertyId] = useState('');
   const [unitId, setUnitId] = useState('');
+  // '' = ordinary income/expense; transfer/owner money leaves P&L, refunds net.
+  const [classification, setClassification] = useState<TransactionClassification | ''>('');
   // Rent-match acceptance is an explicit user action (never auto-applied).
   const [rentAccepted, setRentAccepted] = useState(false);
 
@@ -327,6 +334,7 @@ function ReviewItemCard({
             categoryId: categoryId || undefined,
             propertyId: propertyId || undefined,
             unitId: unitId || undefined,
+            classification: classification || undefined,
           };
     confirm.mutate(payload, {
       onSuccess: () =>
@@ -390,6 +398,27 @@ function ReviewItemCard({
               <StatusBadge tone="warning">Low confidence — check this one</StatusBadge>
             )}
           </div>
+          {item.possibleDuplicate && (
+            <p className="mt-2 text-sm text-warning">
+              <span className="font-medium">Possible duplicate:</span>{' '}
+              {item.possibleDuplicate.rentPeriod ? (
+                <>
+                  this looks like the deposit behind the rent you recorded manually for{' '}
+                  {formatMonth(item.possibleDuplicate.rentPeriod)} (&ldquo;
+                  {item.possibleDuplicate.description}&rdquo;, {formatDate(item.possibleDuplicate.date)}
+                  ). If it&rsquo;s the same money, Dismiss this one — or unlink the manual payment
+                  on the Rent page first.
+                </>
+              ) : (
+                <>
+                  a confirmed {item.possibleDuplicate.source} transaction matches this amount and
+                  date (&ldquo;{item.possibleDuplicate.description}&rdquo;,{' '}
+                  {formatDate(item.possibleDuplicate.date)}). If it&rsquo;s the same money, Dismiss
+                  this one.
+                </>
+              )}
+            </p>
+          )}
         </div>
         <div className="flex w-full flex-col gap-2 md:w-64">
           {rentAccepted && rentMatch ? (
@@ -471,6 +500,28 @@ function ReviewItemCard({
                     {u.label}
                   </option>
                 ))}
+              </Select>
+              <label
+                htmlFor={`review-classification-${item.id}`}
+                className="text-xs font-medium text-ink-muted"
+              >
+                Treatment
+              </label>
+              <Select
+                id={`review-classification-${item.id}`}
+                value={classification}
+                onChange={(e) =>
+                  setClassification(e.target.value as TransactionClassification | '')
+                }
+              >
+                <option value="">
+                  Ordinary {item.type === 'income' ? 'income' : 'expense'}
+                </option>
+                <option value="transfer">Transfer between my accounts (not counted)</option>
+                <option value="owner_contribution">Owner contribution (not counted)</option>
+                {item.type === 'income' && (
+                  <option value="refund">Refund — nets against its expense category</option>
+                )}
               </Select>
             </>
           )}

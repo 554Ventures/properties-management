@@ -25,6 +25,7 @@ import { prisma } from '../lib/prisma';
 import { renderReportPdf, type PdfBlock } from '../lib/pdf';
 import { mockEmail } from '../integrations/mock/mock-email';
 import { writeAudit, type AuditActor } from './audit.service';
+import { ordinaryExpense, pnlBucket } from '../lib/pnl';
 import { deriveRentStatus } from './rent.service';
 
 // ── library ──────────────────────────────────────────────────────────────────
@@ -132,15 +133,19 @@ async function buildPnl(accountId: string, range: { from: Date; to: Date }, prop
   let incomeCents = 0;
   let expenseCents = 0;
   for (const t of txns) {
-    if (t.type === 'income') incomeCents += t.amountCents;
-    else expenseCents += t.amountCents;
-    const key = `${t.type}:${t.category?.name ?? 'Uncategorized'}`;
+    // Transfers/owner contributions don't count; refunds net (negative) into
+    // the expense line of the category they refund (plan §D1).
+    const b = pnlBucket(t);
+    if (!b) continue;
+    if (b.bucket === 'income') incomeCents += b.amountCents;
+    else expenseCents += b.amountCents;
+    const key = `${b.bucket}:${t.category?.name ?? 'Uncategorized'}`;
     const line = lines.get(key) ?? {
       categoryName: t.category?.name ?? 'Uncategorized',
-      type: t.type,
+      type: b.bucket,
       totalCents: 0,
     };
-    line.totalCents += t.amountCents;
+    line.totalCents += b.amountCents;
     lines.set(key, line);
   }
   const rows = [...lines.values()].sort(
@@ -168,10 +173,12 @@ async function buildNetCashflow(
   const txns = await fetchLedger(accountId, range, propertyId);
   const months = new Map<string, { month: string; incomeCents: number; expenseCents: number; netCents: number }>();
   for (const t of txns) {
+    const b = pnlBucket(t);
+    if (!b) continue; // transfers/owner contributions aren't cashflow-from-operations
     const month = periodOf(t.date);
     const row = months.get(month) ?? { month, incomeCents: 0, expenseCents: 0, netCents: 0 };
-    if (t.type === 'income') row.incomeCents += t.amountCents;
-    else row.expenseCents += t.amountCents;
+    if (b.bucket === 'income') row.incomeCents += b.amountCents;
+    else row.expenseCents += b.amountCents;
     row.netCents = row.incomeCents - row.expenseCents;
     months.set(month, row);
   }
@@ -244,6 +251,9 @@ async function buildGeneralLedger(
   propertyId?: string,
 ) {
   const txns = await fetchLedger(accountId, range, propertyId);
+  // The ledger lists EVERY confirmed row (classification shown, nothing
+  // hidden); the totals use P&L semantics so they reconcile with the P&L
+  // report rather than double-counting transfers.
   const rows = txns.map((t) => ({
     date: iso(t.date),
     description: t.description,
@@ -251,10 +261,17 @@ async function buildGeneralLedger(
     propertyLabel: t.property ? (t.property.nickname ?? t.property.addressLine1) : null,
     categoryName: t.category?.name ?? null,
     type: t.type,
+    classification: t.classification,
     amountCents: t.amountCents,
   }));
-  const incomeCents = txns.filter((t) => t.type === 'income').reduce((s, t) => s + t.amountCents, 0);
-  const expenseCents = txns.filter((t) => t.type === 'expense').reduce((s, t) => s + t.amountCents, 0);
+  let incomeCents = 0;
+  let expenseCents = 0;
+  for (const t of txns) {
+    const b = pnlBucket(t);
+    if (!b) continue;
+    if (b.bucket === 'income') incomeCents += b.amountCents;
+    else expenseCents += b.amountCents;
+  }
   return {
     rows,
     totals: { incomeCents, expenseCents, netCents: incomeCents - expenseCents, count: rows.length },
@@ -266,6 +283,7 @@ async function buildGeneralLedger(
         { key: 'propertyLabel', label: 'Property' },
         { key: 'categoryName', label: 'Category' },
         { key: 'type', label: 'Type' },
+        { key: 'classification', label: 'Classification' },
         { key: 'amountCents', label: 'Amount (cents)' },
       ],
       rows,
@@ -360,17 +378,24 @@ async function buildScheduleE(
       totalExpensesCents: 0,
       netCents: 0,
     };
-    if (t.type === 'income') {
+    const b = pnlBucket(t);
+    if (!b) {
+      // Transfers/owner contributions are not Schedule E income or expense.
+      rowsByProperty.set(key, row);
+      continue;
+    }
+    if (b.bucket === 'income') {
       // Income maps through the category's IRS line like expenses do
       // (uncategorized defaults to rents); a category mapped off Line 3
       // stays out of "Rents received" instead of silently inflating it.
       const line = t.category?.irsScheduleELine ?? 'Line 3 – Rents received';
-      if (line === 'Line 3 – Rents received') row.rentsReceivedCents += t.amountCents;
-      else row.otherIncomeCents += t.amountCents;
+      if (line === 'Line 3 – Rents received') row.rentsReceivedCents += b.amountCents;
+      else row.otherIncomeCents += b.amountCents;
     } else {
+      // Refunds arrive here as negative expense against their category's line.
       const line = t.category?.irsScheduleELine ?? 'Line 19 – Other';
-      row.expenseLines[line] = (row.expenseLines[line] ?? 0) + t.amountCents;
-      row.totalExpensesCents += t.amountCents;
+      row.expenseLines[line] = (row.expenseLines[line] ?? 0) + b.amountCents;
+      row.totalExpensesCents += b.amountCents;
     }
     row.netCents = row.rentsReceivedCents + row.otherIncomeCents - row.totalExpensesCents;
     rowsByProperty.set(key, row);
@@ -484,6 +509,7 @@ async function buildCapitalExpenses(
   const txns = await prisma.transaction.findMany({
     where: {
       ...confirmedWhere(accountId, range, propertyId),
+      ...ordinaryExpense,
       categoryId: capCategory?.id ?? '__none__',
     },
     include: { property: true },
@@ -575,14 +601,16 @@ async function buildMonthlyReview(accountId: string, period: string) {
   const pnl = await buildPnl(accountId, range);
   const properties = await prisma.property.findMany({ where: { accountId }, include: { units: true } });
   const grouped = await prisma.transaction.groupBy({
-    by: ['propertyId', 'type'],
+    by: ['propertyId', 'type', 'classification'],
     where: confirmedWhere(accountId, range),
     _sum: { amountCents: true },
   });
   const netByProperty = new Map<string, number>();
   for (const g of grouped) {
     if (!g.propertyId) continue;
-    const signed = (g._sum.amountCents ?? 0) * (g.type === 'income' ? 1 : -1);
+    const b = pnlBucket({ ...g, amountCents: g._sum.amountCents ?? 0 });
+    if (!b) continue;
+    const signed = b.amountCents * (b.bucket === 'income' ? 1 : -1);
     netByProperty.set(g.propertyId, (netByProperty.get(g.propertyId) ?? 0) + signed);
   }
   const propertyNets = properties.map((p) => ({
@@ -597,14 +625,18 @@ async function buildMonthlyReview(accountId: string, period: string) {
   const priorStart = monthStart(addMonthsToPeriod(period, -3));
   const currentByCat = await prisma.transaction.groupBy({
     by: ['categoryId'],
-    where: { ...confirmedWhere(accountId, range), type: 'expense', categoryId: { not: null } },
+    where: {
+      ...confirmedWhere(accountId, range),
+      ...ordinaryExpense,
+      categoryId: { not: null },
+    },
     _sum: { amountCents: true },
   });
   const priorByCat = await prisma.transaction.groupBy({
     by: ['categoryId'],
     where: {
       ...confirmedWhere(accountId, { from: priorStart, to: range.from }),
-      type: 'expense',
+      ...ordinaryExpense,
     },
     _sum: { amountCents: true },
   });

@@ -646,6 +646,7 @@ export async function findUnlinkedRentDeposits(
       accountId,
       type: 'income',
       status: 'confirmed',
+      classification: null, // a transfer/refund is by definition not rent
       categoryId: { in: rentCategories.map((c) => c.id) },
       rentDeposit: null, // not already applied as a deposit…
       rentPayment: null, // …nor via the legacy single-payment link

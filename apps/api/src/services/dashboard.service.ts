@@ -16,6 +16,7 @@ import {
   startOfUtcDay,
   trailingPeriods,
 } from '../lib/dates';
+import { ordinaryExpense, pnlSums } from '../lib/pnl';
 import { prisma } from '../lib/prisma';
 import { generateInsights } from './insight.service';
 import * as rentService from './rent.service';
@@ -25,7 +26,7 @@ async function sumByType(
   range: { from: Date; to: Date },
 ): Promise<{ incomeCents: number; expenseCents: number; netCents: number }> {
   const grouped = await prisma.transaction.groupBy({
-    by: ['type'],
+    by: ['type', 'classification'],
     where: {
       accountId,
       status: 'confirmed',
@@ -37,9 +38,8 @@ async function sumByType(
     },
     _sum: { amountCents: true },
   });
-  const incomeCents = grouped.find((g) => g.type === 'income')?._sum.amountCents ?? 0;
-  const expenseCents = grouped.find((g) => g.type === 'expense')?._sum.amountCents ?? 0;
-  return { incomeCents, expenseCents, netCents: incomeCents - expenseCents };
+  // pnlSums drops transfers/owner contributions and nets refunds (plan §D1).
+  return pnlSums(grouped);
 }
 
 function trendPct(current: number, prior: number): number {
@@ -150,20 +150,34 @@ const EXPENSE_BREAKDOWN_TOP = 7;
 export async function getExpenseBreakdown(accountId: string): Promise<ExpenseBreakdownResponse> {
   const period = currentPeriod();
   const range = { from: monthStart(period), to: monthEndExclusive(period) };
+  const portfolioFilter = { OR: [{ propertyId: null }, { property: { archivedAt: null } }] };
   const grouped = await prisma.transaction.groupBy({
     by: ['categoryId'],
     where: {
       accountId,
       status: 'confirmed',
-      type: 'expense',
+      ...ordinaryExpense, // transfers classified out of the expense donut
       date: { gte: range.from, lt: range.to },
       // Match getKpis: active portfolio + account-level (unassigned) lines.
-      OR: [{ propertyId: null }, { property: { archivedAt: null } }],
+      ...portfolioFilter,
     },
     _sum: { amountCents: true },
   });
+  // Refunds net against the category they refund (plan §D1).
+  const refunds = await prisma.transaction.groupBy({
+    by: ['categoryId'],
+    where: {
+      accountId,
+      status: 'confirmed',
+      classification: 'refund',
+      date: { gte: range.from, lt: range.to },
+      ...portfolioFilter,
+    },
+    _sum: { amountCents: true },
+  });
+  const refundByCategory = new Map(refunds.map((r) => [r.categoryId, r._sum.amountCents ?? 0]));
 
-  const categoryIds = grouped
+  const categoryIds = [...grouped, ...refunds]
     .map((g) => g.categoryId)
     .filter((id): id is string => id !== null);
   const categories = await prisma.category.findMany({
@@ -176,7 +190,7 @@ export async function getExpenseBreakdown(accountId: string): Promise<ExpenseBre
     .map((g) => ({
       categoryId: g.categoryId,
       categoryName: g.categoryId ? (nameById.get(g.categoryId) ?? 'Uncategorized') : 'Uncategorized',
-      amountCents: g._sum.amountCents ?? 0,
+      amountCents: (g._sum.amountCents ?? 0) - (refundByCategory.get(g.categoryId) ?? 0),
     }))
     .filter((s) => s.amountCents > 0)
     .sort((a, b) => b.amountCents - a.amountCents);
@@ -210,7 +224,7 @@ export async function getNoiByProperty(accountId: string): Promise<PropertyNoiRe
   });
 
   const grouped = await prisma.transaction.groupBy({
-    by: ['propertyId', 'type'],
+    by: ['propertyId', 'type', 'classification'],
     where: {
       accountId,
       status: 'confirmed',
@@ -221,13 +235,11 @@ export async function getNoiByProperty(accountId: string): Promise<PropertyNoiRe
     _sum: { amountCents: true },
   });
 
-  const cents = (propertyId: string, type: 'income' | 'expense') =>
-    grouped.find((g) => g.propertyId === propertyId && g.type === type)?._sum.amountCents ?? 0;
-
   const rows = properties
     .map((p) => {
-      const incomeCents = cents(p.id, 'income');
-      const expenseCents = cents(p.id, 'expense');
+      const { incomeCents, expenseCents } = pnlSums(
+        grouped.filter((g) => g.propertyId === p.id),
+      );
       return {
         propertyId: p.id,
         label: p.nickname ?? p.addressLine1,

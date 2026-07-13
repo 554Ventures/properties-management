@@ -11,6 +11,7 @@ import type {
 import type { Property as DbProperty } from '@prisma/client';
 import { currentPeriod, iso, isoOrNull, monthEndExclusive, monthStart } from '../lib/dates';
 import { ConflictError, NotFoundError } from '../lib/errors';
+import { pnlBucket, pnlSums } from '../lib/pnl';
 import { prisma } from '../lib/prisma';
 import { writeAudit, type AuditActor } from './audit.service';
 import { generateInsights, toApiInsight } from './insight.service';
@@ -116,7 +117,7 @@ export async function pnlTotals(
   scope: { propertyId?: string; unitId?: string } = {},
 ): Promise<PnlTotals> {
   const grouped = await prisma.transaction.groupBy({
-    by: ['type'],
+    by: ['type', 'classification'],
     where: {
       accountId,
       status: 'confirmed',
@@ -126,9 +127,8 @@ export async function pnlTotals(
     },
     _sum: { amountCents: true },
   });
-  const incomeCents = grouped.find((g) => g.type === 'income')?._sum.amountCents ?? 0;
-  const expenseCents = grouped.find((g) => g.type === 'expense')?._sum.amountCents ?? 0;
-  return { incomeCents, expenseCents, netCents: incomeCents - expenseCents };
+  // Transfers/owner contributions never count; refunds net against expenses.
+  return pnlSums(grouped);
 }
 
 export async function getDetail(accountId: string, id: string): Promise<PropertyDetailResponse> {
@@ -312,16 +312,18 @@ export async function getPnl(
   let incomeCents = 0;
   let expenseCents = 0;
   for (const t of txns) {
-    if (t.type === 'income') incomeCents += t.amountCents;
-    else expenseCents += t.amountCents;
-    const key = `${t.categoryId ?? 'uncategorized'}:${t.type}`;
+    const b = pnlBucket(t);
+    if (!b) continue; // transfers/owner contributions don't count
+    if (b.bucket === 'income') incomeCents += b.amountCents;
+    else expenseCents += b.amountCents; // refunds arrive here negative
+    const key = `${t.categoryId ?? 'uncategorized'}:${b.bucket}`;
     const line = byCategory.get(key) ?? {
       categoryId: t.categoryId,
       categoryName: t.category?.name ?? 'Uncategorized',
-      type: t.type as TransactionType,
+      type: b.bucket as TransactionType,
       totalCents: 0,
     };
-    line.totalCents += t.amountCents;
+    line.totalCents += b.amountCents;
     byCategory.set(key, line);
   }
   return {

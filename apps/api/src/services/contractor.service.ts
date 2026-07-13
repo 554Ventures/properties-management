@@ -46,7 +46,7 @@ export async function list(accountId: string): Promise<ContractorListRow[]> {
 
   const groups = await prisma.transaction.groupBy({
     by: ['vendor'],
-    where: { accountId, type: 'expense', status: 'confirmed', vendor: { not: null } },
+    where: { accountId, type: 'expense', status: 'confirmed', classification: null, vendor: { not: null } },
     _count: true,
     _sum: { amountCents: true },
     _max: { date: true },
@@ -102,7 +102,7 @@ export async function activeContractorsWithJobs(
   });
   if (contractors.length === 0) return [];
   const candidates = await prisma.transaction.findMany({
-    where: { accountId, type: 'expense', status: 'confirmed', vendor: { not: null } },
+    where: { accountId, type: 'expense', status: 'confirmed', classification: null, vendor: { not: null } },
     select: { vendor: true, date: true, amountCents: true, description: true },
     orderBy: { date: 'desc' },
   });
@@ -145,7 +145,7 @@ export async function detail(accountId: string, id: string): Promise<ContractorD
   const key = vendorKey(contractor.name);
 
   const candidates = await prisma.transaction.findMany({
-    where: { accountId, type: 'expense', status: 'confirmed', vendor: { not: null } },
+    where: { accountId, type: 'expense', status: 'confirmed', classification: null, vendor: { not: null } },
     include: { property: { select: { nickname: true, addressLine1: true } } },
     orderBy: { date: 'desc' },
   });

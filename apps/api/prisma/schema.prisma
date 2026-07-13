@@ -262,7 +262,11 @@ model Transaction {
   description           String
   vendor                String?
   source                String // TransactionSource (@hearth/shared): manual | receipt | bank
-  status                String // TransactionStatus (@hearth/shared): pending_review | confirmed
+  status                String // TransactionStatus (@hearth/shared): pending_review | confirmed | dismissed
+  // TransactionClassification (@hearth/shared): transfer | owner_contribution | refund.
+  // Null = ordinary row. transfer/owner_contribution are excluded from every
+  // P&L/KPI aggregate; refund nets against its expense category (plan §D1).
+  classification        String?
   aiSuggestedCategoryId String?
   aiConfidence          Float?
   receiptUrl            String?

@@ -52,6 +52,7 @@ function savedTxn(match: RentMatchSuggestion | null): CreateTransactionResponse 
     vendor: null,
     source: 'manual',
     status: 'confirmed',
+    classification: null,
     aiSuggestedCategoryId: null,
     aiConfidence: null,
     receiptUrl: null,

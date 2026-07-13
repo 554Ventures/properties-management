@@ -2,7 +2,7 @@
 // lightweight path for bank imports that were confirmed without a property
 // and would otherwise be missing from property-scoped reports.
 import { useEffect, useState } from 'react';
-import type { Transaction } from '@hearth/shared';
+import type { Transaction, TransactionClassification } from '@hearth/shared';
 import {
   useCategories,
   useProperties,
@@ -29,18 +29,22 @@ export function TransactionEditModal({ open, onClose, transaction }: Transaction
   const [propertyId, setPropertyId] = useState('');
   const [unitId, setUnitId] = useState('');
   const [categoryId, setCategoryId] = useState('');
+  const [classification, setClassification] = useState<TransactionClassification | ''>('');
 
   useEffect(() => {
     if (open && transaction) {
       setPropertyId(transaction.propertyId ?? '');
       setUnitId(transaction.unitId ?? '');
       setCategoryId(transaction.categoryId ?? '');
+      setClassification(transaction.classification ?? '');
     }
   }, [open, transaction]);
 
   const propertyDetail = usePropertyDetail(propertyId || undefined);
   const units = propertyDetail.data?.units ?? [];
-  const categoryOptions = (categories.data ?? []).filter((c) => c.type === transaction?.type);
+  // A refund nets against an EXPENSE category, so the picker flips type.
+  const categoryType = classification === 'refund' ? 'expense' : transaction?.type;
+  const categoryOptions = (categories.data ?? []).filter((c) => c.type === categoryType);
 
   const save = () => {
     if (!transaction) return;
@@ -53,6 +57,11 @@ export function TransactionEditModal({ open, onClose, transaction }: Transaction
         propertyId: propertyId || undefined,
         unitId: unitId || undefined,
         categoryId: categoryId || undefined,
+        // Classification does support explicit clearing (null) — only send it
+        // when the user actually changed it.
+        ...(classification !== (transaction.classification ?? '')
+          ? { classification: classification || null }
+          : {}),
       },
       {
         onSuccess: () => {
@@ -118,6 +127,21 @@ export function TransactionEditModal({ open, onClose, transaction }: Transaction
                 {c.name}
               </option>
             ))}
+          </Select>
+        </FormField>
+        <FormField
+          label="Treatment"
+          htmlFor="edit-txn-classification"
+          hint="Transfers and owner contributions leave P&L entirely; a refund nets against its expense category."
+        >
+          <Select
+            value={classification}
+            onChange={(e) => setClassification(e.target.value as TransactionClassification | '')}
+          >
+            <option value="">Ordinary {transaction?.type === 'income' ? 'income' : 'expense'}</option>
+            <option value="transfer">Transfer between my accounts (not counted)</option>
+            <option value="owner_contribution">Owner contribution (not counted)</option>
+            {transaction?.type === 'income' && <option value="refund">Refund</option>}
           </Select>
         </FormField>
         <div className="flex justify-end gap-2">

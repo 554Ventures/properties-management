@@ -4,6 +4,7 @@ import type {
   CreateTransactionInput,
   CreateTransactionResponse,
   DismissAllReviewResponse,
+  DuplicateSuggestion,
   ImportTransactionsResponse,
   ReceiptScanResponse,
   RentMatchSuggestion,
@@ -27,7 +28,7 @@ import {
   isRealStripeFcConfigured,
 } from '../integrations/factory';
 import type { PlaidBankTransaction } from '../integrations/types';
-import { addDays, currentPeriod, iso, periodOf } from '../lib/dates';
+import { addDays, calendarDaysBetween, currentPeriod, iso, periodOf } from '../lib/dates';
 import {
   BadRequestError,
   ImportRateLimitedError,
@@ -67,6 +68,7 @@ export function toApiTransaction(t: DbTransaction): Transaction {
     vendor: t.vendor,
     source: t.source as TransactionSource,
     status: t.status as TransactionStatus,
+    classification: t.classification as Transaction['classification'],
     aiSuggestedCategoryId: t.aiSuggestedCategoryId,
     aiConfidence: t.aiConfidence,
     receiptUrl: t.receiptUrl,
@@ -183,7 +185,11 @@ const KEYWORD_RULES: Array<{ pattern: RegExp; categoryName: string; confidence: 
   { pattern: /insur/i, categoryName: 'Insurance', confidence: 0.84 },
 ];
 const FALLBACK = { categoryName: 'Supplies', confidence: 0.62 };
-const INCOME_FALLBACK = { categoryName: 'Rent', confidence: 0.8 };
+// Deliberately below BULK_CONFIRM_MIN_CONFIDENCE (plan §D1): "every income is
+// Rent" is a guess — refunds, transfers, security deposits, laundry income all
+// arrive as income. It must never ride a bulk confirm, and at 0.5 the review
+// card shows the low-confidence warning too.
+const INCOME_FALLBACK = { categoryName: 'Rent', confidence: 0.5 };
 
 export type SuggestionSource = 'learned' | 'keyword' | 'fallback';
 
@@ -306,12 +312,27 @@ async function assertAttributionOwned(
   }
 }
 
+/**
+ * A refund is money coming back — always an income-type row (the amount stays
+ * positive; aggregation nets it against expenses). Classifying an expense row
+ * as a refund would double-subtract, so reject the combination outright.
+ */
+function assertClassificationValid(
+  classification: string | null | undefined,
+  type: string,
+): void {
+  if (classification === 'refund' && type !== 'income') {
+    throw new BadRequestError('a refund is recorded as an income transaction (money coming back)');
+  }
+}
+
 export async function create(
   accountId: string,
   input: CreateTransactionInput,
   opts: { source?: TransactionSource; status?: TransactionStatus; actor?: AuditActor } = {},
 ): Promise<CreateTransactionResponse> {
   await assertAttributionOwned(accountId, input.propertyId, input.unitId);
+  assertClassificationValid(input.classification, input.type);
   let aiSuggestedCategoryId: string | null = null;
   let aiConfidence: number | null = null;
   if (!input.categoryId) {
@@ -338,6 +359,7 @@ export async function create(
       vendor: input.vendor ?? null,
       source: opts.source ?? 'manual',
       status: opts.status ?? 'confirmed',
+      classification: input.classification ?? null,
       aiSuggestedCategoryId,
       aiConfidence,
       receiptUrl: input.receiptUrl ?? null,
@@ -355,7 +377,7 @@ export async function create(
   // mark-paid would create a second, double-counted ledger row. Surface the
   // same heuristic match so the caller can offer an explicit link.
   const rentMatch =
-    row.type === 'income' && row.status === 'confirmed'
+    row.type === 'income' && row.status === 'confirmed' && !row.classification
       ? ((await computeRentMatches(accountId, [row])).get(row.id) ?? null)
       : null;
   return { ...toApiTransaction(row), rentMatch };
@@ -387,15 +409,23 @@ export async function update(
   // deposit whose amountCents contributes to a charge's paidCents (and a
   // type flip would erase the rent from reports while the tracker shows paid).
   // Category/property/unit edits don't touch the link and stay allowed.
+  assertClassificationValid(
+    input.classification !== undefined ? input.classification : prior.classification,
+    input.type !== undefined ? input.type : prior.type,
+  );
+  // Classifying a rent-backing deposit out of P&L would erase rent income
+  // from reports while the tracker shows the period paid — same divergence
+  // the amount/date/type guard prevents, so it rides the same check.
   const changesLinkedFields =
     (input.amountCents !== undefined && input.amountCents !== prior.amountCents) ||
     (input.date !== undefined && new Date(input.date).getTime() !== prior.date.getTime()) ||
-    (input.type !== undefined && input.type !== prior.type);
+    (input.type !== undefined && input.type !== prior.type) ||
+    (input.classification !== undefined && input.classification !== prior.classification);
   if (changesLinkedFields) {
     const period = await rentLinkPeriod(id);
     if (period) {
       throw new BadRequestError(
-        `this transaction backs a recorded rent payment for ${period} — its amount, date, and type can't be changed; unlink the deposit on the Rent page first`,
+        `this transaction backs a recorded rent payment for ${period} — its amount, date, type, and classification can't be changed; unlink the deposit on the Rent page first`,
       );
     }
   }
@@ -411,6 +441,7 @@ export async function update(
       ...(input.categoryId !== undefined ? { categoryId: input.categoryId } : {}),
       ...(input.vendor !== undefined ? { vendor: input.vendor } : {}),
       ...(input.receiptUrl !== undefined ? { receiptUrl: input.receiptUrl } : {}),
+      ...(input.classification !== undefined ? { classification: input.classification } : {}),
     },
   });
   // Second learning signal (plan §A5): recategorizing an already-saved row is
@@ -519,9 +550,10 @@ export async function getReviewQueue(
   const items = hasMore ? rows.slice(0, limit) : rows;
   const categories = await prisma.category.findMany();
   const nameById = new Map(categories.map((c) => [c.id, c.name]));
-  // Rent matches are computed for the returned page only — the bulk paths
-  // recompute over their own row set.
+  // Rent matches and duplicate flags are computed for the returned page only —
+  // the bulk paths recompute over their own row set.
   const rentMatches = await computeRentMatches(accountId, items);
+  const duplicates = await computeDuplicates(accountId, items);
   // 'learned' is derived fresh at read time (not stored at import): a memory
   // row written after the import still labels the suggestion, and a memory
   // that has since moved to a different category stops claiming it.
@@ -549,6 +581,7 @@ export async function getReviewQueue(
         : null,
       rentMatch: rentMatches.get(r.id) ?? null,
       ...(isLearned(r) ? { suggestionSource: 'learned' as const } : {}),
+      ...(duplicates.has(r.id) ? { possibleDuplicate: duplicates.get(r.id) } : {}),
     })),
     nextCursor: hasMore && last ? last.id : null,
     total,
@@ -611,6 +644,64 @@ async function computeRentMatches(
   return matches;
 }
 
+// How far apart two transactions can be dated and still look like the same
+// money (a hand-logged check vs. its later bank import; two feeds covering
+// the same account).
+const DUPLICATE_WINDOW_DAYS = 3;
+
+/**
+ * Content-fingerprint duplicate detection (plan §D2): a pending item is
+ * flagged when a CONFIRMED transaction of the same type and exact amount sits
+ * within ±3 days — with vendors either agreeing (memory-key match) or absent
+ * on one side (manual entries and Stripe FC rows carry no vendor, and those
+ * are precisely the cross-source cases). Never auto-merged: the flag renders
+ * as a warning with a dismiss-as-duplicate path, and bulk confirm skips it.
+ * Computed fresh per queue load, like rent matches.
+ */
+async function computeDuplicates(
+  accountId: string,
+  rows: DbTransaction[],
+): Promise<Map<string, DuplicateSuggestion>> {
+  const matches = new Map<string, DuplicateSuggestion>();
+  if (rows.length === 0) return matches;
+  const times = rows.map((r) => r.date.getTime());
+  const candidates = await prisma.transaction.findMany({
+    where: {
+      accountId,
+      status: 'confirmed',
+      amountCents: { in: [...new Set(rows.map((r) => r.amountCents))] },
+      date: {
+        gte: addDays(new Date(Math.min(...times)), -DUPLICATE_WINDOW_DAYS),
+        lte: addDays(new Date(Math.max(...times)), DUPLICATE_WINDOW_DAYS),
+      },
+    },
+    include: {
+      rentDeposit: { include: { rentPayment: { select: { period: true } } } },
+      rentPayment: { select: { period: true } },
+    },
+    orderBy: { date: 'desc' },
+  });
+  for (const r of rows) {
+    const rKey = r.vendor ? vendorMemoryKey(r.vendor) : null;
+    const hit = candidates.find((c) => {
+      if (c.id === r.id || c.type !== r.type || c.amountCents !== r.amountCents) return false;
+      if (Math.abs(calendarDaysBetween(c.date, r.date)) > DUPLICATE_WINDOW_DAYS) return false;
+      const cKey = c.vendor ? vendorMemoryKey(c.vendor) : null;
+      return !rKey || !cKey || rKey === cKey;
+    });
+    if (!hit) continue;
+    const rentPeriod = hit.rentDeposit?.rentPayment.period ?? hit.rentPayment?.period ?? undefined;
+    matches.set(r.id, {
+      transactionId: hit.id,
+      description: hit.description,
+      date: iso(hit.date),
+      source: hit.source as TransactionSource,
+      ...(rentPeriod ? { rentPeriod } : {}),
+    });
+  }
+  return matches;
+}
+
 export async function confirm(
   accountId: string,
   id: string,
@@ -619,9 +710,11 @@ export async function confirm(
 ): Promise<Transaction> {
   const existing = await getOwned(accountId, id);
   if (input.rentPaymentId) {
-    // Attribution comes from the lease itself on this path.
+    // Attribution comes from the lease itself on this path; a rent deposit is
+    // ordinary income by definition, so any classification input is ignored.
     return confirmWithRentLink(accountId, existing, input.rentPaymentId, input.categoryId, actor);
   }
+  assertClassificationValid(input.classification, existing.type);
   if (input.propertyId !== undefined || input.unitId !== undefined) {
     await assertAttributionOwned(
       accountId,
@@ -638,6 +731,7 @@ export async function confirm(
       categoryId,
       ...(input.propertyId !== undefined ? { propertyId: input.propertyId } : {}),
       ...(input.unitId !== undefined ? { unitId: input.unitId } : {}),
+      ...(input.classification !== undefined ? { classification: input.classification } : {}),
     },
   });
   // Learning signal (plan §A5): an explicit category that disagrees with the
@@ -818,10 +912,19 @@ export async function dismiss(
 }
 
 /**
- * Confirm every filtered pending item with its AI-suggested category. Items
- * with no suggestion are skipped (they'd land in reports uncategorized), and
- * items with a rent match are skipped too — linking a deposit to a rent
- * payment is an explicit per-item action, never applied in bulk.
+ * Minimum suggestion confidence a bulk confirm will act on (plan §D1 —
+ * resolves the WHATS_NEXT §6.2 threshold decision). Matches the review UI's
+ * low-confidence warning cue: anything the UI flags for a human eye is never
+ * mass-confirmed. Per-item confirm is unaffected — a human is looking.
+ */
+export const BULK_CONFIRM_MIN_CONFIDENCE = 0.7;
+
+/**
+ * Confirm every filtered pending item with its AI-suggested category. Skipped
+ * (left for per-item review): items with no suggestion (they'd land in
+ * reports uncategorized), items below BULK_CONFIRM_MIN_CONFIDENCE, items with
+ * a rent match (linking a deposit is an explicit per-item action), and items
+ * flagged as possible duplicates (never auto-merged or auto-counted).
  */
 export async function confirmAllInReview(
   accountId: string,
@@ -833,10 +936,16 @@ export async function confirmAllInReview(
     orderBy: [{ date: 'desc' }, { id: 'desc' }],
   });
   const rentMatches = await computeRentMatches(accountId, rows);
+  const duplicates = await computeDuplicates(accountId, rows);
   let confirmed = 0;
   let skipped = 0;
   for (const r of rows) {
-    if (!r.aiSuggestedCategoryId || rentMatches.has(r.id)) {
+    if (
+      !r.aiSuggestedCategoryId ||
+      (r.aiConfidence ?? 0) < BULK_CONFIRM_MIN_CONFIDENCE ||
+      rentMatches.has(r.id) ||
+      duplicates.has(r.id)
+    ) {
       skipped += 1;
       continue;
     }

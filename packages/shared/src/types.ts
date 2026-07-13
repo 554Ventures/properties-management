@@ -86,6 +86,7 @@ export type TransactionListResponse = z.infer<typeof s.TransactionListResponseSc
 export type RentMatchSuggestion = z.infer<typeof s.RentMatchSuggestionSchema>;
 export type CreateTransactionResponse = z.infer<typeof s.CreateTransactionResponseSchema>;
 export type ReviewQueueItem = z.infer<typeof s.ReviewQueueItemSchema>;
+export type DuplicateSuggestion = z.infer<typeof s.DuplicateSuggestionSchema>;
 export type ReviewQueueFilter = z.infer<typeof s.ReviewQueueFilterSchema>;
 export type ReviewQueueQuery = z.infer<typeof s.ReviewQueueQuerySchema>;
 export type ReviewQueueResponse = z.infer<typeof s.ReviewQueueResponseSchema>;

@@ -19,6 +19,7 @@ import {
   periodLabel,
 } from '../lib/dates';
 import { NotFoundError } from '../lib/errors';
+import { ordinaryExpense, pnlBucket } from '../lib/pnl';
 import { prisma } from '../lib/prisma';
 import { slugify } from '../lib/strings';
 import { writeAudit, type AuditActor } from './audit.service';
@@ -224,7 +225,7 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
     where: {
       accountId,
       status: 'confirmed',
-      type: 'expense',
+      ...ordinaryExpense, // transfers/refunds never look like a spend spike
       date: { gte: mStart, lt: mEnd },
       categoryId: { not: null },
     },
@@ -235,7 +236,7 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
     where: {
       accountId,
       status: 'confirmed',
-      type: 'expense',
+      ...ordinaryExpense,
       date: { gte: trailingStart, lt: mStart },
     },
     _sum: { amountCents: true },
@@ -325,7 +326,7 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
     include: { units: { where: { archivedAt: null } } },
   });
   const trailingTxns = await prisma.transaction.groupBy({
-    by: ['propertyId', 'type'],
+    by: ['propertyId', 'type', 'classification'],
     where: {
       accountId,
       status: 'confirmed',
@@ -338,7 +339,9 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
   const netByProperty = new Map<string, number>();
   for (const g of trailingTxns) {
     const pid = g.propertyId as string;
-    const signed = (g._sum.amountCents ?? 0) * (g.type === 'income' ? 1 : -1);
+    const b = pnlBucket({ ...g, amountCents: g._sum.amountCents ?? 0 });
+    if (!b) continue;
+    const signed = b.amountCents * (b.bucket === 'income' ? 1 : -1);
     netByProperty.set(pid, (netByProperty.get(pid) ?? 0) + signed);
   }
   const totalUnits = properties.reduce((sum, p) => sum + p.units.length, 0);

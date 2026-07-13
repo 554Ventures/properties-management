@@ -143,6 +143,7 @@ const transaction: Transaction = {
   vendor: 'City Power & Water',
   source: 'manual',
   status: 'confirmed',
+  classification: null,
   aiSuggestedCategoryId: null,
   aiConfidence: null,
   receiptUrl: null,

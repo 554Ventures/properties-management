@@ -14,6 +14,17 @@ export type TransactionSource = z.infer<typeof TransactionSourceSchema>;
 export const TransactionStatusSchema = z.enum(['pending_review', 'confirmed', 'dismissed']);
 export type TransactionStatus = z.infer<typeof TransactionStatusSchema>;
 
+// Money movement that isn't plain income/expense (plan §D1). `transfer` and
+// `owner_contribution` are excluded from P&L/KPIs entirely (moving your own
+// money isn't income); `refund` stays in reports but nets against its expense
+// category instead of counting as income. Null/absent = ordinary row.
+export const TransactionClassificationSchema = z.enum([
+  'transfer',
+  'owner_contribution',
+  'refund',
+]);
+export type TransactionClassification = z.infer<typeof TransactionClassificationSchema>;
+
 export const RentPaymentStatusSchema = z.enum(['due', 'processing', 'paid', 'failed']);
 export type RentPaymentStatus = z.infer<typeof RentPaymentStatusSchema>;
 

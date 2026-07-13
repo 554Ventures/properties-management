@@ -466,6 +466,7 @@ const importedTransaction: Transaction = {
   vendor: 'ACH transfer',
   source: 'bank',
   status: 'pending_review',
+  classification: null,
   aiSuggestedCategoryId: 'c-rent',
   aiConfidence: 0.8,
   receiptUrl: null,
