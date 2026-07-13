@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { TransactionTypeSchema } from '../enums';
 import { InsightSchema } from './insight';
 import { LeaseSchema } from './lease';
-import { TenantSchema } from './tenant';
+import { TenantOnLeaseSchema } from './tenant';
 import { CreateUnitInputSchema, UnitSchema } from './unit';
 
 export const PropertySchema = z.object({
@@ -76,7 +76,7 @@ export const PropertyPnlResponseSchema = z.object({
 });
 
 export const LeaseWithTenantsSchema = LeaseSchema.extend({
-  tenants: z.array(TenantSchema),
+  tenants: z.array(TenantOnLeaseSchema),
 });
 
 // Occupancy derived: occupied iff an active lease exists.

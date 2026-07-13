@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  TransactionClassificationSchema,
   TransactionSourceSchema,
   TransactionStatusSchema,
   TransactionTypeSchema,
@@ -19,11 +20,17 @@ export const TransactionSchema = z.object({
   vendor: z.string().nullable(),
   source: TransactionSourceSchema,
   status: TransactionStatusSchema,
+  classification: TransactionClassificationSchema.nullable(), // null = ordinary income/expense
   aiSuggestedCategoryId: z.string().nullable(),
   aiConfidence: z.number().min(0).max(1).nullable(),
   receiptUrl: z.string().nullable(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
+  // True when this row backs a rent deposit (or legacy RentPayment link) —
+  // the ledger shows an "applied to rent" marker and explains why amount/
+  // date/type edits and deletion are restricted. Populated by GET
+  // /transactions only; optional so other producers stay unchanged.
+  rentLinked: z.boolean().optional(),
 });
 
 // POST /transactions — if categoryId is omitted the response carries
@@ -39,10 +46,13 @@ export const CreateTransactionInputSchema = z.object({
   categoryId: z.string().optional(),
   vendor: z.string().optional(),
   receiptUrl: z.string().optional(),
+  classification: TransactionClassificationSchema.optional(),
 });
 
-// PATCH /transactions/:id
-export const UpdateTransactionInputSchema = CreateTransactionInputSchema.partial();
+// PATCH /transactions/:id — `classification: null` clears back to ordinary.
+export const UpdateTransactionInputSchema = CreateTransactionInputSchema.partial().extend({
+  classification: TransactionClassificationSchema.nullable().optional(),
+});
 
 // POST /transactions/:id/confirm — rentPaymentId links the (income) transaction
 // to that expected rent payment and marks it paid; property/unit then come from
@@ -52,6 +62,7 @@ export const ConfirmTransactionInputSchema = z.object({
   rentPaymentId: z.string().optional(),
   propertyId: z.string().optional(),
   unitId: z.string().optional(),
+  classification: TransactionClassificationSchema.optional(), // review time is the natural moment to say "this is a transfer"
 });
 
 // Ledger sort fields (whitelist — maps to DB columns server-side).
@@ -85,7 +96,8 @@ export const TransactionListResponseSchema = z.object({
 
 // Heuristic rent match computed at review time (never stored, never
 // auto-applied): an income bank transaction that looks like a lease's open
-// expected rent — same amount, dated within a window of the due date.
+// expected rent — exactly the charge's *remaining* balance (full amount, or
+// the shortfall of a partial), dated within a window of the due date.
 export const RentMatchSuggestionSchema = z.object({
   rentPaymentId: z.string(),
   leaseId: z.string(),
@@ -96,7 +108,8 @@ export const RentMatchSuggestionSchema = z.object({
   unitLabel: z.string(),
   period: PeriodSchema,
   dueDate: z.string().datetime(),
-  amountCents: z.number().int().positive(),
+  amountCents: z.number().int().positive(), // the full charge
+  paidCents: z.number().int(), // already received; the match completes the difference
   confidence: z.number().min(0).max(1),
 });
 
@@ -109,11 +122,30 @@ export const CreateTransactionResponseSchema = TransactionSchema.extend({
   rentMatch: RentMatchSuggestionSchema.nullable(),
 });
 
+// A confirmed transaction this pending item may duplicate (plan §D2): same
+// type, exact amount, dated within ±3 days, vendors agreeing or absent on one
+// side. Never auto-merged — rendered as a warning; the resolution is Dismiss
+// (keep the confirmed row) or confirm anyway. rentPeriod set when the match
+// backs a recorded rent payment ("the deposit behind rent you logged
+// manually").
+export const DuplicateSuggestionSchema = z.object({
+  transactionId: z.string(),
+  description: z.string(),
+  date: z.string().datetime(),
+  source: TransactionSourceSchema,
+  rentPeriod: PeriodSchema.optional(),
+});
+
 // GET /transactions/review — pending_review items with their suggestion
 // resolved to a display name.
 export const ReviewQueueItemSchema = TransactionSchema.extend({
   aiSuggestedCategoryName: z.string().nullable(),
   rentMatch: RentMatchSuggestionSchema.nullable(),
+  // Where the AI category suggestion came from. 'learned' = the account's own
+  // vendor→category memory (a past correction) — the UI labels these so the
+  // learning is visible. Omitted when unknown; derived fresh at read time.
+  suggestionSource: z.enum(['learned', 'keyword', 'fallback']).optional(),
+  possibleDuplicate: DuplicateSuggestionSchema.optional(),
 });
 
 // Review-queue filters — also the body of the bulk confirm-all/dismiss-all
@@ -138,8 +170,9 @@ export const ReviewQueueResponseSchema = z.object({
 });
 
 // POST /transactions/review/confirm-all — confirms every filtered item with
-// its AI-suggested category; items with no suggestion or with a rent match
-// are skipped (rent linking stays an explicit per-item action).
+// its AI-suggested category; items with no suggestion, below the bulk
+// confidence threshold, with a rent match, or flagged as possible duplicates
+// are skipped (those stay explicit per-item decisions).
 export const ConfirmAllReviewResponseSchema = z.object({
   confirmed: z.number().int(),
   skipped: z.number().int(),

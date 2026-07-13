@@ -107,16 +107,27 @@ export function Settings() {
                   onRetry={() => void integrations.refetch()}
                 />
               ) : (
-                <ul className="divide-y divide-border">
-                  {visibleIntegrations(integrations.data).map((known) => {
-                    const row = integrations.data.find((i) => i.type === known.type) ?? known;
-                    return known.type === 'stripe_fc' ? (
-                      <StripeFcIntegrationRow key={known.type} row={row} />
-                    ) : (
-                      <PlaidIntegrationRow key={known.type} row={row} />
-                    );
-                  })}
-                </ul>
+                <>
+                  <ul className="divide-y divide-border">
+                    {visibleIntegrations(integrations.data).map((known) => {
+                      const row = integrations.data.find((i) => i.type === known.type) ?? known;
+                      return known.type === 'stripe_fc' ? (
+                        <StripeFcIntegrationRow key={known.type} row={row} />
+                      ) : (
+                        <PlaidIntegrationRow key={known.type} row={row} />
+                      );
+                    })}
+                  </ul>
+                  {integrations.data.filter(
+                    (i) => (i.type === 'plaid' || i.type === 'stripe_fc') && i.status === 'connected',
+                  ).length > 1 && (
+                    <p className="mt-3 text-xs text-warning">
+                      Both bank feeds are connected. If they cover the same bank account, the same
+                      transaction can import twice (each feed uses its own ids) — the review queue
+                      flags likely duplicates, but connecting one feed per account is safer.
+                    </p>
+                  )}
+                </>
               )}
             </Card>
           </section>

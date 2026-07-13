@@ -194,6 +194,15 @@ export function Money() {
       cell: (txn) => (
         <>
           <span className="font-medium text-ink">{txn.description}</span>
+          {txn.rentLinked && (
+            <span className="ml-2 text-xs text-ink-muted">· applied to rent</span>
+          )}
+          {txn.classification && (
+            <span className="ml-2 text-xs text-ink-muted">
+              · {txn.classification === 'owner_contribution' ? 'owner contribution' : txn.classification}
+              {txn.classification === 'refund' ? '' : ' — not in P&L'}
+            </span>
+          )}
           {txn.vendor && <p className="mt-0.5 text-xs text-ink-muted">{txn.vendor}</p>}
         </>
       ),

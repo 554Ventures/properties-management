@@ -21,7 +21,8 @@ import { addDays, currentPeriod, iso } from '../lib/dates';
 import { prisma } from '../lib/prisma';
 import { getDemoAccountId } from '../plugins/auth';
 import { exchangePublicToken } from '../services/integration.service';
-import { pickRentMatch, type RentMatchCandidate } from '../services/rent.service';
+import * as rentService from '../services/rent.service';
+import { deriveRentStatus, pickRentMatch, type RentMatchCandidate } from '../services/rent.service';
 
 let app: FastifyInstance;
 const createdIds: string[] = [];
@@ -222,6 +223,7 @@ describe('pickRentMatch (pure matcher)', () => {
     period: '2026-07',
     dueDate: new Date('2026-07-01T00:00:00.000Z'),
     amountCents: 115000,
+    paidCents: 0,
     ...over,
   });
   const txnOn = (date: string, amountCents = 115000) => ({
@@ -246,6 +248,21 @@ describe('pickRentMatch (pure matcher)', () => {
   it('suppresses the suggestion when two same-rent candidates are both in window', () => {
     const twins = [candidate(), candidate({ rentPaymentId: 'rp2', leaseId: 'l2' })];
     expect(pickRentMatch(txnOn('2026-07-02T00:00:00.000Z'), twins)).toBeNull();
+  });
+
+  it('matches the remaining balance of a partially paid charge (not the full amount)', () => {
+    const partial = candidate({ paidCents: 40000 }); // 75000 remaining
+    expect(pickRentMatch(txnOn('2026-07-02T00:00:00.000Z', 75000), [partial])?.rentPaymentId).toBe(
+      'rp1',
+    );
+    // The full charge amount no longer matches once part of it is paid.
+    expect(pickRentMatch(txnOn('2026-07-02T00:00:00.000Z', 115000), [partial])).toBeNull();
+  });
+
+  it('never matches a fully covered charge', () => {
+    const covered = candidate({ paidCents: 115000 });
+    expect(pickRentMatch(txnOn('2026-07-02T00:00:00.000Z', 115000), [covered])).toBeNull();
+    expect(pickRentMatch(txnOn('2026-07-02T00:00:00.000Z', 0), [covered])).toBeNull();
   });
 });
 
@@ -309,6 +326,7 @@ describe('POST /transactions/:id/confirm with rentPaymentId', () => {
     // Restore the seeded state: Okafor stays late for other test files, and the
     // audit rows this flow wrote don't leak into activity-feed assertions.
     const payment = await okaforPayment();
+    await prisma.rentPaymentDeposit.deleteMany({ where: { rentPaymentId: payment.id } });
     await prisma.rentPayment.update({
       where: { id: payment.id },
       data: {
@@ -317,6 +335,7 @@ describe('POST /transactions/:id/confirm with rentPaymentId', () => {
         paidAt: null,
         transactionId: null,
         amountCents: OKAFOR_RENT_CENTS,
+        paidCents: 0,
       },
     });
     await prisma.auditLog.deleteMany({
@@ -496,6 +515,7 @@ describe('POST /transactions — manual income rent match and linked-row guard',
   afterAll(async () => {
     // Restore the seeded state: Okafor stays late for other test files.
     const payment = await okaforPayment();
+    await prisma.rentPaymentDeposit.deleteMany({ where: { rentPaymentId: payment.id } });
     await prisma.rentPayment.update({
       where: { id: payment.id },
       data: {
@@ -504,6 +524,7 @@ describe('POST /transactions — manual income rent match and linked-row guard',
         paidAt: null,
         transactionId: null,
         amountCents: OKAFOR_RENT_CENTS,
+        paidCents: 0,
       },
     });
     await prisma.auditLog.deleteMany({
@@ -511,14 +532,43 @@ describe('POST /transactions — manual income rent match and linked-row guard',
     });
   });
 
-  it('rejects linking a transaction whose amount differs from the rent due', async () => {
+  it('rejects linking a transaction that exceeds the remaining balance', async () => {
     const payment = await okaforPayment();
     const res = await app.inject({
       method: 'POST',
       url: '/api/v1/transactions',
       payload: {
         date: iso(new Date()),
-        amountCents: OKAFOR_RENT_CENTS - 100,
+        amountCents: OKAFOR_RENT_CENTS + 100,
+        type: 'income',
+        description: 'TEST oversized check from Okafor',
+      },
+    });
+    const over = CreateTransactionResponseSchema.parse(res.json());
+    createdIds.push(over.id);
+
+    const confirmRes = await app.inject({
+      method: 'POST',
+      url: `/api/v1/transactions/${over.id}/confirm`,
+      payload: { rentPaymentId: payment.id },
+    });
+    expect(confirmRes.statusCode).toBe(400);
+    expect(confirmRes.json().error.message).toMatch(/exceeds the .* remaining/);
+
+    const untouched = await prisma.rentPayment.findUniqueOrThrow({ where: { id: payment.id } });
+    expect(untouched.status).toBe('due');
+    expect(untouched.paidCents).toBe(0);
+    expect(untouched.amountCents).toBe(OKAFOR_RENT_CENTS);
+  });
+
+  it('links a short check as a partial deposit; unlinking restores the charge', async () => {
+    const payment = await okaforPayment();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/transactions',
+      payload: {
+        date: iso(new Date()),
+        amountCents: OKAFOR_RENT_CENTS - 50000,
         type: 'income',
         description: 'TEST short check from Okafor',
       },
@@ -531,12 +581,42 @@ describe('POST /transactions — manual income rent match and linked-row guard',
       url: `/api/v1/transactions/${short.id}/confirm`,
       payload: { rentPaymentId: payment.id },
     });
-    expect(confirmRes.statusCode).toBe(400);
-    expect(confirmRes.json().error.message).toMatch(/doesn't match/);
+    expect(confirmRes.statusCode).toBe(200);
 
-    const untouched = await prisma.rentPayment.findUniqueOrThrow({ where: { id: payment.id } });
-    expect(untouched.status).toBe('due');
-    expect(untouched.amountCents).toBe(OKAFOR_RENT_CENTS);
+    const partial = await prisma.rentPayment.findUniqueOrThrow({
+      where: { id: payment.id },
+      include: { deposits: true },
+    });
+    expect(partial.status).toBe('due'); // stored status flips only when covered
+    expect(partial.paidCents).toBe(OKAFOR_RENT_CENTS - 50000);
+    expect(partial.amountCents).toBe(OKAFOR_RENT_CENTS); // charge never overwritten
+    expect(partial.transactionId).toBeNull(); // legacy link is single-full-payment only
+    expect(partial.deposits).toHaveLength(1);
+    expect(partial.deposits[0]!.transactionId).toBe(short.id);
+    expect(deriveRentStatus(partial, 0).status).toBe('partial');
+
+    // The deposit-backed row is guarded like a legacy-linked one.
+    const patchRes = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/transactions/${short.id}`,
+      payload: { amountCents: 100 },
+    });
+    expect(patchRes.statusCode).toBe(400);
+
+    // Unlink restores the charge to fully unpaid; the ledger row survives.
+    const unlinked = await rentService.unlinkDeposit(
+      accountId,
+      payment.id,
+      partial.deposits[0]!.id,
+    );
+    expect(unlinked.paidCents).toBe(0);
+    expect(unlinked.status).toBe('due');
+    const survivingTxn = await prisma.transaction.findUnique({ where: { id: short.id } });
+    expect(survivingTxn?.status).toBe('confirmed');
+    const unlinkAudit = await prisma.auditLog.findFirst({
+      where: { accountId, action: 'rent_payment.deposit_unlinked', entityId: payment.id },
+    });
+    expect(unlinkAudit).not.toBeNull();
   });
 
   it('surfaces the rent match on a manual income entry and links it as method=manual', async () => {
@@ -626,7 +706,7 @@ describe('POST /transactions — manual income rent match and linked-row guard',
         payload,
       });
       expect(res.statusCode).toBe(400);
-      expect(res.json().error.message).toMatch(/backs the recorded rent payment/);
+      expect(res.json().error.message).toMatch(/backs a recorded rent payment/);
     }
 
     // Unchanged values and unlinked fields still go through.

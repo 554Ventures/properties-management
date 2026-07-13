@@ -59,6 +59,7 @@ import type {
   RecordRentPaymentInput,
   RentPayment,
   RentTrackerResponse,
+  UnlinkedRentDepositsResponse,
   RenewalDraftResponse,
   Report,
   ReportDetailResponse,
@@ -679,10 +680,51 @@ export function useRentTracker(period: string) {
   });
 }
 
+// Rent-categorized income that could apply to a still-open charge but isn't
+// linked — the Rent page's "Link deposit to rent?" nudges.
+export function useUnlinkedRentDeposits(period: string) {
+  return useQuery({
+    queryKey: ['rent', 'unlinked-deposits', period],
+    queryFn: () =>
+      api.get<UnlinkedRentDepositsResponse>(`/rent/unlinked-deposits${toQuery({ period })}`),
+    staleTime: STALE_SHORT,
+  });
+}
+
+// Set/clear a co-tenant's expected share of the rent (null = even split).
+export function useSetLeaseTenantShare() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { leaseId: string; tenantId: string; shareCents: number | null }) =>
+      api.patch(`/leases/${input.leaseId}/tenants/${input.tenantId}`, {
+        shareCents: input.shareCents,
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['leases'] });
+      void qc.invalidateQueries({ queryKey: ['rent'] });
+    },
+  });
+}
+
 export function useRecordPayment() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: RecordRentPaymentInput) => api.post<RentPayment>('/rent/payments', input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['rent'] });
+      void qc.invalidateQueries({ queryKey: ['tenants'] });
+      invalidateLedger(qc);
+    },
+  });
+}
+
+// Undo one deposit link — recomputes the charge's paidCents/status; the
+// ledger transaction survives as an ordinary confirmed row.
+export function useUnlinkDeposit() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { rentPaymentId: string; depositId: string }) =>
+      api.delete(`/rent/payments/${input.rentPaymentId}/deposits/${input.depositId}`),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['rent'] });
       void qc.invalidateQueries({ queryKey: ['tenants'] });

@@ -4,6 +4,7 @@ import type {
   CreateTransactionInput,
   CreateTransactionResponse,
   DismissAllReviewResponse,
+  DuplicateSuggestion,
   ImportTransactionsResponse,
   ReceiptScanResponse,
   RentMatchSuggestion,
@@ -27,7 +28,7 @@ import {
   isRealStripeFcConfigured,
 } from '../integrations/factory';
 import type { PlaidBankTransaction } from '../integrations/types';
-import { addDays, currentPeriod, iso, periodOf } from '../lib/dates';
+import { addDays, calendarDaysBetween, currentPeriod, iso, periodOf } from '../lib/dates';
 import {
   BadRequestError,
   ImportRateLimitedError,
@@ -51,6 +52,7 @@ import {
   materializeExpectedPayments,
   pickRentMatch,
 } from './rent.service';
+import { vendorMemoryKey } from './vendor';
 
 export function toApiTransaction(t: DbTransaction): Transaction {
   return {
@@ -66,6 +68,7 @@ export function toApiTransaction(t: DbTransaction): Transaction {
     vendor: t.vendor,
     source: t.source as TransactionSource,
     status: t.status as TransactionStatus,
+    classification: t.classification as Transaction['classification'],
     aiSuggestedCategoryId: t.aiSuggestedCategoryId,
     aiConfidence: t.aiConfidence,
     receiptUrl: t.receiptUrl,
@@ -134,20 +137,47 @@ export async function list(
       });
   const [rows, total] = await Promise.all([rowsPromise, prisma.transaction.count({ where })]);
 
-  if (useOffset) {
-    return { items: rows.map(toApiTransaction), nextCursor: null, total };
-  }
-  const hasMore = rows.length > limit;
+  const hasMore = !useOffset && rows.length > limit;
   const items = hasMore ? rows.slice(0, limit) : rows;
+  const rentLinkedIds = await rentLinkedTransactionIds(items.map((r) => r.id));
+  const toItem = (r: DbTransaction): Transaction => ({
+    ...toApiTransaction(r),
+    ...(rentLinkedIds.has(r.id) ? { rentLinked: true } : {}),
+  });
+
+  if (useOffset) {
+    return { items: items.map(toItem), nextCursor: null, total };
+  }
   const last = items[items.length - 1];
   return {
-    items: items.map(toApiTransaction),
+    items: items.map(toItem),
     nextCursor: hasMore && last ? last.id : null,
     total,
   };
 }
 
-// ── AI category suggestion (mock keyword table — no AI call in this task) ────
+/** Which of these transactions back a rent deposit (or legacy paid link). */
+async function rentLinkedTransactionIds(ids: string[]): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+  const [deposits, legacy] = await Promise.all([
+    prisma.rentPaymentDeposit.findMany({
+      where: { transactionId: { in: ids } },
+      select: { transactionId: true },
+    }),
+    prisma.rentPayment.findMany({
+      where: { transactionId: { in: ids } },
+      select: { transactionId: true },
+    }),
+  ]);
+  return new Set([
+    ...deposits.map((d) => d.transactionId),
+    ...legacy.map((p) => p.transactionId as string),
+  ]);
+}
+
+// ── AI category suggestion ───────────────────────────────────────────────────
+// Per-account vendor memory first (corrections stick — plan §A), then the
+// mock keyword table (no AI call in this path).
 
 const KEYWORD_RULES: Array<{ pattern: RegExp; categoryName: string; confidence: number }> = [
   { pattern: /plumb|roof|repair/i, categoryName: 'Repairs', confidence: 0.84 },
@@ -155,18 +185,39 @@ const KEYWORD_RULES: Array<{ pattern: RegExp; categoryName: string; confidence: 
   { pattern: /insur/i, categoryName: 'Insurance', confidence: 0.84 },
 ];
 const FALLBACK = { categoryName: 'Supplies', confidence: 0.62 };
-const INCOME_FALLBACK = { categoryName: 'Rent', confidence: 0.8 };
+// Deliberately below BULK_CONFIRM_MIN_CONFIDENCE (plan §D1): "every income is
+// Rent" is a guess — refunds, transfers, security deposits, laundry income all
+// arrive as income. It must never ride a bulk confirm, and at 0.5 the review
+// card shows the low-confidence warning too.
+const INCOME_FALLBACK = { categoryName: 'Rent', confidence: 0.5 };
+
+export type SuggestionSource = 'learned' | 'keyword' | 'fallback';
 
 export async function suggestCategory(
   accountId: string,
   partialTxn: { type: TransactionType; description?: string; vendor?: string | null },
-): Promise<{ categoryId: string; confidence: number } | null> {
+): Promise<{ categoryId: string; confidence: number; source: SuggestionSource } | null> {
+  const memoryKey = partialTxn.vendor ? vendorMemoryKey(partialTxn.vendor) : '';
+  if (memoryKey) {
+    const memory = await prisma.vendorCategoryMemory.findUnique({
+      where: {
+        accountId_vendorKey_type: { accountId, vendorKey: memoryKey, type: partialTxn.type },
+      },
+    });
+    if (memory) {
+      return { categoryId: memory.categoryId, confidence: memory.confidence, source: 'learned' };
+    }
+  }
   const text = `${partialTxn.description ?? ''} ${partialTxn.vendor ?? ''}`;
   let pick: { categoryName: string; confidence: number };
+  let source: SuggestionSource;
   if (partialTxn.type === 'income') {
     pick = INCOME_FALLBACK;
+    source = 'fallback';
   } else {
-    pick = KEYWORD_RULES.find((r) => r.pattern.test(text)) ?? FALLBACK;
+    const rule = KEYWORD_RULES.find((r) => r.pattern.test(text));
+    pick = rule ?? FALLBACK;
+    source = rule ? 'keyword' : 'fallback';
   }
   const category = await prisma.category.findFirst({
     where: {
@@ -176,7 +227,56 @@ export async function suggestCategory(
     },
   });
   if (!category) return null;
-  return { categoryId: category.id, confidence: pick.confidence };
+  return { categoryId: category.id, confidence: pick.confidence, source };
+}
+
+// Reinforcement ceiling/steps: a learned pick starts at 0.95 and creeps toward
+// (never reaches) certainty as the user keeps agreeing with it.
+const MEMORY_BASE_CONFIDENCE = 0.95;
+const MEMORY_MAX_CONFIDENCE = 0.99;
+const MEMORY_REINFORCE_STEP = 0.01;
+
+/**
+ * Best-effort vendor→category learning (plan §A5). `correct` upserts the
+ * mapping (a correction to a different category resets the row); `reinforce`
+ * only bumps an existing row that already backs `categoryId` — accepting a
+ * keyword-table suggestion must not mint a memory, or the 0.62 "Supplies"
+ * fallback would lock itself in.
+ */
+async function recordVendorCategoryChoice(
+  accountId: string,
+  vendor: string | null,
+  type: string,
+  categoryId: string | null,
+  mode: 'correct' | 'reinforce',
+): Promise<void> {
+  const key = vendor ? vendorMemoryKey(vendor) : '';
+  if (!key || !categoryId) return;
+  const where = { accountId_vendorKey_type: { accountId, vendorKey: key, type } };
+  const existing = await prisma.vendorCategoryMemory.findUnique({ where });
+  if (existing) {
+    const agrees = existing.categoryId === categoryId;
+    if (!agrees && mode === 'reinforce') return;
+    await prisma.vendorCategoryMemory.update({
+      where,
+      data: agrees
+        ? {
+            hitCount: { increment: 1 },
+            confidence: Math.min(MEMORY_MAX_CONFIDENCE, existing.confidence + MEMORY_REINFORCE_STEP),
+          }
+        : { categoryId, hitCount: 1, confidence: MEMORY_BASE_CONFIDENCE },
+    });
+    return;
+  }
+  if (mode === 'reinforce') return;
+  try {
+    await prisma.vendorCategoryMemory.create({
+      data: { accountId, vendorKey: key, type, categoryId },
+    });
+  } catch (err) {
+    // Lost the check-then-create race — the concurrent writer's row stands.
+    if (!isUniqueConstraintError(err)) throw err;
+  }
 }
 
 // ── create / update / remove ─────────────────────────────────────────────────
@@ -212,12 +312,27 @@ async function assertAttributionOwned(
   }
 }
 
+/**
+ * A refund is money coming back — always an income-type row (the amount stays
+ * positive; aggregation nets it against expenses). Classifying an expense row
+ * as a refund would double-subtract, so reject the combination outright.
+ */
+function assertClassificationValid(
+  classification: string | null | undefined,
+  type: string,
+): void {
+  if (classification === 'refund' && type !== 'income') {
+    throw new BadRequestError('a refund is recorded as an income transaction (money coming back)');
+  }
+}
+
 export async function create(
   accountId: string,
   input: CreateTransactionInput,
   opts: { source?: TransactionSource; status?: TransactionStatus; actor?: AuditActor } = {},
 ): Promise<CreateTransactionResponse> {
   await assertAttributionOwned(accountId, input.propertyId, input.unitId);
+  assertClassificationValid(input.classification, input.type);
   let aiSuggestedCategoryId: string | null = null;
   let aiConfidence: number | null = null;
   if (!input.categoryId) {
@@ -244,6 +359,7 @@ export async function create(
       vendor: input.vendor ?? null,
       source: opts.source ?? 'manual',
       status: opts.status ?? 'confirmed',
+      classification: input.classification ?? null,
       aiSuggestedCategoryId,
       aiConfidence,
       receiptUrl: input.receiptUrl ?? null,
@@ -261,7 +377,7 @@ export async function create(
   // mark-paid would create a second, double-counted ledger row. Surface the
   // same heuristic match so the caller can offer an explicit link.
   const rentMatch =
-    row.type === 'income' && row.status === 'confirmed'
+    row.type === 'income' && row.status === 'confirmed' && !row.classification
       ? ((await computeRentMatches(accountId, [row])).get(row.id) ?? null)
       : null;
   return { ...toApiTransaction(row), rentMatch };
@@ -289,19 +405,27 @@ export async function update(
       input.unitId !== undefined ? input.unitId : prior.unitId,
     );
   }
-  // Same desync remove() blocks below: this ledger row may back a `paid`
-  // RentPayment, whose amountCents/paidAt would silently stop matching (and a
+  // Same desync remove() blocks below: this ledger row may back a rent
+  // deposit whose amountCents contributes to a charge's paidCents (and a
   // type flip would erase the rent from reports while the tracker shows paid).
   // Category/property/unit edits don't touch the link and stay allowed.
+  assertClassificationValid(
+    input.classification !== undefined ? input.classification : prior.classification,
+    input.type !== undefined ? input.type : prior.type,
+  );
+  // Classifying a rent-backing deposit out of P&L would erase rent income
+  // from reports while the tracker shows the period paid — same divergence
+  // the amount/date/type guard prevents, so it rides the same check.
   const changesLinkedFields =
     (input.amountCents !== undefined && input.amountCents !== prior.amountCents) ||
     (input.date !== undefined && new Date(input.date).getTime() !== prior.date.getTime()) ||
-    (input.type !== undefined && input.type !== prior.type);
+    (input.type !== undefined && input.type !== prior.type) ||
+    (input.classification !== undefined && input.classification !== prior.classification);
   if (changesLinkedFields) {
-    const linkedPayment = await prisma.rentPayment.findUnique({ where: { transactionId: id } });
-    if (linkedPayment) {
+    const period = await rentLinkPeriod(id);
+    if (period) {
       throw new BadRequestError(
-        `this transaction backs the recorded rent payment for ${linkedPayment.period} — its amount, date, and type can't be changed`,
+        `this transaction backs a recorded rent payment for ${period} — its amount, date, type, and classification can't be changed; unlink the deposit on the Rent page first`,
       );
     }
   }
@@ -317,8 +441,15 @@ export async function update(
       ...(input.categoryId !== undefined ? { categoryId: input.categoryId } : {}),
       ...(input.vendor !== undefined ? { vendor: input.vendor } : {}),
       ...(input.receiptUrl !== undefined ? { receiptUrl: input.receiptUrl } : {}),
+      ...(input.classification !== undefined ? { classification: input.classification } : {}),
     },
   });
+  // Second learning signal (plan §A5): recategorizing an already-saved row is
+  // a correction too. Uses the row's effective vendor (the patch may have
+  // changed it in the same call).
+  if (input.categoryId !== undefined && input.categoryId !== prior.categoryId) {
+    await recordVendorCategoryChoice(accountId, row.vendor, row.type, input.categoryId, 'correct');
+  }
   await writeAudit(accountId, {
     actor,
     action: 'transaction.updated',
@@ -334,19 +465,38 @@ export async function update(
   return toApiTransaction(row);
 }
 
+/**
+ * Period of the rent charge this transaction backs, or null. Checks both link
+ * shapes: the deposit ledger (source of truth) and the legacy single-payment
+ * RentPayment.transactionId — deleting either through the DB cascade/SetNull
+ * would silently corrupt paidCents or leave paid rent with no ledger entry.
+ */
+async function rentLinkPeriod(transactionId: string): Promise<string | null> {
+  const deposit = await prisma.rentPaymentDeposit.findUnique({
+    where: { transactionId },
+    include: { rentPayment: { select: { period: true } } },
+  });
+  if (deposit) return deposit.rentPayment.period;
+  const linkedPayment = await prisma.rentPayment.findUnique({
+    where: { transactionId },
+    select: { period: true },
+  });
+  return linkedPayment?.period ?? null;
+}
+
 export async function remove(
   accountId: string,
   id: string,
   actor: AuditActor = 'user',
 ): Promise<void> {
   const prior = await getOwned(accountId, id);
-  // A rent-linked ledger row backs a `paid` RentPayment; deleting it would
-  // SetNull the link and leave the tracker showing paid rent with no ledger
-  // entry (the desync noted in schema.prisma) — block instead.
-  const linkedPayment = await prisma.rentPayment.findUnique({ where: { transactionId: id } });
-  if (linkedPayment) {
+  // A rent-linked ledger row backs a deposit (or legacy paid link); deleting
+  // it would cascade the deposit away leaving paidCents stale — block and
+  // point at the sanctioned path (unlink first).
+  const period = await rentLinkPeriod(id);
+  if (period) {
     throw new BadRequestError(
-      `this transaction backs the recorded rent payment for ${linkedPayment.period} and cannot be deleted`,
+      `this transaction backs a recorded rent payment for ${period} and cannot be deleted — unlink the deposit on the Rent page first`,
     );
   }
   await prisma.transaction.delete({ where: { id } });
@@ -400,9 +550,28 @@ export async function getReviewQueue(
   const items = hasMore ? rows.slice(0, limit) : rows;
   const categories = await prisma.category.findMany();
   const nameById = new Map(categories.map((c) => [c.id, c.name]));
-  // Rent matches are computed for the returned page only — the bulk paths
-  // recompute over their own row set.
+  // Rent matches and duplicate flags are computed for the returned page only —
+  // the bulk paths recompute over their own row set.
   const rentMatches = await computeRentMatches(accountId, items);
+  const duplicates = await computeDuplicates(accountId, items);
+  // 'learned' is derived fresh at read time (not stored at import): a memory
+  // row written after the import still labels the suggestion, and a memory
+  // that has since moved to a different category stops claiming it.
+  const memoryKeys = [
+    ...new Set(
+      items.filter((r) => r.vendor && r.aiSuggestedCategoryId).map((r) => vendorMemoryKey(r.vendor as string)),
+    ),
+  ].filter(Boolean);
+  const memories = memoryKeys.length
+    ? await prisma.vendorCategoryMemory.findMany({
+        where: { accountId, vendorKey: { in: memoryKeys } },
+      })
+    : [];
+  const memoryCategory = new Map(memories.map((m) => [`${m.vendorKey}|${m.type}`, m.categoryId]));
+  const isLearned = (r: DbTransaction): boolean =>
+    !!r.vendor &&
+    !!r.aiSuggestedCategoryId &&
+    memoryCategory.get(`${vendorMemoryKey(r.vendor)}|${r.type}`) === r.aiSuggestedCategoryId;
   const last = items[items.length - 1];
   return {
     items: items.map((r) => ({
@@ -411,6 +580,8 @@ export async function getReviewQueue(
         ? (nameById.get(r.aiSuggestedCategoryId) ?? null)
         : null,
       rentMatch: rentMatches.get(r.id) ?? null,
+      ...(isLearned(r) ? { suggestionSource: 'learned' as const } : {}),
+      ...(duplicates.has(r.id) ? { possibleDuplicate: duplicates.get(r.id) } : {}),
     })),
     nextCursor: hasMore && last ? last.id : null,
     total,
@@ -466,7 +637,66 @@ async function computeRentMatches(
       period: match.period,
       dueDate: iso(match.dueDate),
       amountCents: match.amountCents,
+      paidCents: match.paidCents,
       confidence: RENT_MATCH_CONFIDENCE,
+    });
+  }
+  return matches;
+}
+
+// How far apart two transactions can be dated and still look like the same
+// money (a hand-logged check vs. its later bank import; two feeds covering
+// the same account).
+const DUPLICATE_WINDOW_DAYS = 3;
+
+/**
+ * Content-fingerprint duplicate detection (plan §D2): a pending item is
+ * flagged when a CONFIRMED transaction of the same type and exact amount sits
+ * within ±3 days — with vendors either agreeing (memory-key match) or absent
+ * on one side (manual entries and Stripe FC rows carry no vendor, and those
+ * are precisely the cross-source cases). Never auto-merged: the flag renders
+ * as a warning with a dismiss-as-duplicate path, and bulk confirm skips it.
+ * Computed fresh per queue load, like rent matches.
+ */
+async function computeDuplicates(
+  accountId: string,
+  rows: DbTransaction[],
+): Promise<Map<string, DuplicateSuggestion>> {
+  const matches = new Map<string, DuplicateSuggestion>();
+  if (rows.length === 0) return matches;
+  const times = rows.map((r) => r.date.getTime());
+  const candidates = await prisma.transaction.findMany({
+    where: {
+      accountId,
+      status: 'confirmed',
+      amountCents: { in: [...new Set(rows.map((r) => r.amountCents))] },
+      date: {
+        gte: addDays(new Date(Math.min(...times)), -DUPLICATE_WINDOW_DAYS),
+        lte: addDays(new Date(Math.max(...times)), DUPLICATE_WINDOW_DAYS),
+      },
+    },
+    include: {
+      rentDeposit: { include: { rentPayment: { select: { period: true } } } },
+      rentPayment: { select: { period: true } },
+    },
+    orderBy: { date: 'desc' },
+  });
+  for (const r of rows) {
+    const rKey = r.vendor ? vendorMemoryKey(r.vendor) : null;
+    const hit = candidates.find((c) => {
+      if (c.id === r.id || c.type !== r.type || c.amountCents !== r.amountCents) return false;
+      if (Math.abs(calendarDaysBetween(c.date, r.date)) > DUPLICATE_WINDOW_DAYS) return false;
+      const cKey = c.vendor ? vendorMemoryKey(c.vendor) : null;
+      return !rKey || !cKey || rKey === cKey;
+    });
+    if (!hit) continue;
+    const rentPeriod = hit.rentDeposit?.rentPayment.period ?? hit.rentPayment?.period ?? undefined;
+    matches.set(r.id, {
+      transactionId: hit.id,
+      description: hit.description,
+      date: iso(hit.date),
+      source: hit.source as TransactionSource,
+      ...(rentPeriod ? { rentPeriod } : {}),
     });
   }
   return matches;
@@ -480,9 +710,11 @@ export async function confirm(
 ): Promise<Transaction> {
   const existing = await getOwned(accountId, id);
   if (input.rentPaymentId) {
-    // Attribution comes from the lease itself on this path.
+    // Attribution comes from the lease itself on this path; a rent deposit is
+    // ordinary income by definition, so any classification input is ignored.
     return confirmWithRentLink(accountId, existing, input.rentPaymentId, input.categoryId, actor);
   }
+  assertClassificationValid(input.classification, existing.type);
   if (input.propertyId !== undefined || input.unitId !== undefined) {
     await assertAttributionOwned(
       accountId,
@@ -499,8 +731,29 @@ export async function confirm(
       categoryId,
       ...(input.propertyId !== undefined ? { propertyId: input.propertyId } : {}),
       ...(input.unitId !== undefined ? { unitId: input.unitId } : {}),
+      ...(input.classification !== undefined ? { classification: input.classification } : {}),
     },
   });
+  // Learning signal (plan §A5): an explicit category that disagrees with the
+  // suggestion is a correction; agreeing (explicitly or by accepting the
+  // suggestion) reinforces an existing memory only.
+  if (input.categoryId) {
+    await recordVendorCategoryChoice(
+      accountId,
+      existing.vendor,
+      existing.type,
+      input.categoryId,
+      input.categoryId === existing.aiSuggestedCategoryId ? 'reinforce' : 'correct',
+    );
+  } else if (usedSuggestion) {
+    await recordVendorCategoryChoice(
+      accountId,
+      existing.vendor,
+      existing.type,
+      existing.aiSuggestedCategoryId,
+      'reinforce',
+    );
+  }
   await writeAudit(accountId, {
     // A human confirm that accepts the AI suggestion is the one case that
     // upgrades to 'ai_suggested_user_confirmed'; non-user actors pass through.
@@ -535,12 +788,16 @@ async function confirmWithRentLink(
     include: { lease: { include: { unit: true } } },
   });
   if (!payment) throw new NotFoundError('rent payment', rentPaymentId);
-  // The heuristic only ever suggests exact-amount matches, but the endpoint
-  // accepts any rentPaymentId — a mismatched link would mark a partial (or
-  // unrelated) deposit as rent paid in full. Mirrors recordPayment's guard.
-  if (existing.amountCents !== payment.amountCents) {
+  // The heuristic only ever suggests exact-remaining matches, but the endpoint
+  // accepts any rentPaymentId — a deposit may undershoot the remaining balance
+  // (partial payment) but never overshoot it. Mirrors recordPayment's guard.
+  if (payment.paidCents >= payment.amountCents) {
+    throw new BadRequestError(`rent for ${payment.period} is already recorded as paid`);
+  }
+  if (existing.amountCents > payment.amountCents - payment.paidCents) {
     throw new BadRequestError(
-      `transaction of ${formatUsd(existing.amountCents)} doesn't match the ${formatUsd(payment.amountCents)} due for ${payment.period} — only an exact-amount transaction can be linked to a rent payment`,
+      `transaction of ${formatUsd(existing.amountCents)} exceeds the ${formatUsd(payment.amountCents - payment.paidCents)} remaining for ${payment.period} — ` +
+        `it can't be linked to this rent payment`,
     );
   }
   // Scoped like suggestCategory: never pick up another account's custom "Rent".
@@ -552,13 +809,18 @@ async function confirmWithRentLink(
   // matched an expected rent links as 'manual'.
   const method = existing.source === 'bank' ? 'bank' : 'manual';
 
-  // Confirm + link commit or roll back together; the status re-check inside
-  // the transaction makes the double-pay guard hold under concurrent requests
-  // (mirrors recordPayment).
+  // Confirm + deposit + charge update commit or roll back together; the
+  // re-read inside the transaction makes the double-pay/over-remaining guards
+  // hold under concurrent requests (mirrors recordPayment).
   const { row, updatedPayment } = await prisma.$transaction(async (tx) => {
     const fresh = await tx.rentPayment.findUniqueOrThrow({ where: { id: payment.id } });
-    if (fresh.status === 'paid') {
+    if (fresh.status === 'paid' || fresh.paidCents >= fresh.amountCents) {
       throw new BadRequestError(`rent for ${payment.period} is already recorded as paid`);
+    }
+    if (existing.amountCents > fresh.amountCents - fresh.paidCents) {
+      throw new BadRequestError(
+        `transaction of ${formatUsd(existing.amountCents)} exceeds the ${formatUsd(fresh.amountCents - fresh.paidCents)} remaining for ${payment.period}`,
+      );
     }
     const confirmedRow = await tx.transaction.update({
       where: { id: existing.id },
@@ -569,13 +831,29 @@ async function confirmWithRentLink(
         unitId: payment.lease.unitId,
       },
     });
+    await tx.rentPaymentDeposit.create({
+      data: {
+        rentPaymentId: payment.id,
+        transactionId: existing.id,
+        amountCents: existing.amountCents,
+        method,
+        paidAt: existing.date,
+      },
+    });
+    const newPaidCents = fresh.paidCents + existing.amountCents;
+    const covered = newPaidCents >= fresh.amountCents;
     const linkedPayment = await tx.rentPayment.update({
       where: { id: payment.id },
       data: {
-        status: 'paid',
-        method,
-        paidAt: existing.date,
-        transactionId: existing.id,
+        paidCents: newPaidCents,
+        ...(covered
+          ? {
+              status: 'paid',
+              method,
+              paidAt: existing.date,
+              ...(fresh.paidCents === 0 ? { transactionId: existing.id } : {}),
+            }
+          : {}),
       },
     });
     return { row: confirmedRow, updatedPayment: linkedPayment };
@@ -597,7 +875,8 @@ async function confirmWithRentLink(
     entityId: updatedPayment.id,
     detail: {
       period: updatedPayment.period,
-      amountCents: updatedPayment.amountCents,
+      amountCents: existing.amountCents,
+      paidCents: updatedPayment.paidCents,
       method,
       via: existing.source === 'bank' ? 'bank_import' : 'transaction_link',
     },
@@ -633,10 +912,19 @@ export async function dismiss(
 }
 
 /**
- * Confirm every filtered pending item with its AI-suggested category. Items
- * with no suggestion are skipped (they'd land in reports uncategorized), and
- * items with a rent match are skipped too — linking a deposit to a rent
- * payment is an explicit per-item action, never applied in bulk.
+ * Minimum suggestion confidence a bulk confirm will act on (plan §D1 —
+ * resolves the WHATS_NEXT §6.2 threshold decision). Matches the review UI's
+ * low-confidence warning cue: anything the UI flags for a human eye is never
+ * mass-confirmed. Per-item confirm is unaffected — a human is looking.
+ */
+export const BULK_CONFIRM_MIN_CONFIDENCE = 0.7;
+
+/**
+ * Confirm every filtered pending item with its AI-suggested category. Skipped
+ * (left for per-item review): items with no suggestion (they'd land in
+ * reports uncategorized), items below BULK_CONFIRM_MIN_CONFIDENCE, items with
+ * a rent match (linking a deposit is an explicit per-item action), and items
+ * flagged as possible duplicates (never auto-merged or auto-counted).
  */
 export async function confirmAllInReview(
   accountId: string,
@@ -648,10 +936,16 @@ export async function confirmAllInReview(
     orderBy: [{ date: 'desc' }, { id: 'desc' }],
   });
   const rentMatches = await computeRentMatches(accountId, rows);
+  const duplicates = await computeDuplicates(accountId, rows);
   let confirmed = 0;
   let skipped = 0;
   for (const r of rows) {
-    if (!r.aiSuggestedCategoryId || rentMatches.has(r.id)) {
+    if (
+      !r.aiSuggestedCategoryId ||
+      (r.aiConfidence ?? 0) < BULK_CONFIRM_MIN_CONFIDENCE ||
+      rentMatches.has(r.id) ||
+      duplicates.has(r.id)
+    ) {
       skipped += 1;
       continue;
     }

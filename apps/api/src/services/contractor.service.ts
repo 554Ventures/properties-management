@@ -14,6 +14,7 @@ import { NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { writeAudit, type AuditActor } from './audit.service';
 import * as transactionService from './transaction.service';
+import { vendorKey } from './vendor';
 
 export function toApiContractor(c: DbContractor): Contractor {
   return {
@@ -31,11 +32,6 @@ export function toApiContractor(c: DbContractor): Contractor {
   };
 }
 
-/** Match key for contractor ↔ transaction-vendor joins (ARCHITECTURE §4). */
-function vendorKey(name: string): string {
-  return name.trim().toLowerCase();
-}
-
 /**
  * Derivation rule (ARCHITECTURE §4, binding): jobsCount/avgCostCents/lastUsedAt
  * derive from confirmed expense transactions whose vendor matches the
@@ -50,7 +46,7 @@ export async function list(accountId: string): Promise<ContractorListRow[]> {
 
   const groups = await prisma.transaction.groupBy({
     by: ['vendor'],
-    where: { accountId, type: 'expense', status: 'confirmed', vendor: { not: null } },
+    where: { accountId, type: 'expense', status: 'confirmed', classification: null, vendor: { not: null } },
     _count: true,
     _sum: { amountCents: true },
     _max: { date: true },
@@ -106,7 +102,7 @@ export async function activeContractorsWithJobs(
   });
   if (contractors.length === 0) return [];
   const candidates = await prisma.transaction.findMany({
-    where: { accountId, type: 'expense', status: 'confirmed', vendor: { not: null } },
+    where: { accountId, type: 'expense', status: 'confirmed', classification: null, vendor: { not: null } },
     select: { vendor: true, date: true, amountCents: true, description: true },
     orderBy: { date: 'desc' },
   });
@@ -149,7 +145,7 @@ export async function detail(accountId: string, id: string): Promise<ContractorD
   const key = vendorKey(contractor.name);
 
   const candidates = await prisma.transaction.findMany({
-    where: { accountId, type: 'expense', status: 'confirmed', vendor: { not: null } },
+    where: { accountId, type: 'expense', status: 'confirmed', classification: null, vendor: { not: null } },
     include: { property: { select: { nickname: true, addressLine1: true } } },
     orderBy: { date: 'desc' },
   });

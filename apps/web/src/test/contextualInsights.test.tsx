@@ -94,6 +94,7 @@ const tracker: RentTrackerResponse = {
   collectedCents: 250000,
   outstandingCents: 115000,
   paidUnits: 2,
+  partialUnits: 0,
   totalUnits: 3,
   rows: [
     {
@@ -106,11 +107,25 @@ const tracker: RentTrackerResponse = {
       propertyId: 'p1',
       propertyLabel: '21 Cedar Ct',
       amountCents: 115000,
+      paidCents: 0,
       dueDate: '2026-07-01T00:00:00.000Z',
       status: 'late',
       daysLate: 6,
       method: null,
       paidAt: null,
+      deposits: [],
+      tenants: [
+        {
+          tenantId: 't1',
+          tenantName: 'T. Okafor',
+          isPrimary: true,
+          shareCents: 115000,
+          shareSpecified: false,
+          paidCents: 0,
+          settled: false,
+        },
+      ],
+      sharesMismatch: false,
     },
   ],
 };
@@ -128,6 +143,7 @@ const transaction: Transaction = {
   vendor: 'City Power & Water',
   source: 'manual',
   status: 'confirmed',
+  classification: null,
   aiSuggestedCategoryId: null,
   aiConfidence: null,
   receiptUrl: null,

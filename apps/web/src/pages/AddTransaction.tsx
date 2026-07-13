@@ -374,10 +374,23 @@ export function AddTransaction() {
         {rentMatchPrompt && (
           <AiSurface>
             <p className="text-sm text-ink">
-              This income matches {rentMatchPrompt.match.tenantName}&rsquo;s expected{' '}
-              {formatMonthLong(rentMatchPrompt.match.period)} rent —{' '}
-              {formatUsd(rentMatchPrompt.match.amountCents)} for {rentMatchPrompt.match.unitLabel} at{' '}
-              {rentMatchPrompt.match.propertyLabel}.
+              {rentMatchPrompt.match.paidCents > 0 ? (
+                <>
+                  This income matches the{' '}
+                  {formatUsd(rentMatchPrompt.match.amountCents - rentMatchPrompt.match.paidCents)}{' '}
+                  still due on {rentMatchPrompt.match.tenantName}&rsquo;s partially paid{' '}
+                  {formatMonthLong(rentMatchPrompt.match.period)} rent —{' '}
+                  {formatUsd(rentMatchPrompt.match.amountCents)} total for{' '}
+                  {rentMatchPrompt.match.unitLabel} at {rentMatchPrompt.match.propertyLabel}.
+                </>
+              ) : (
+                <>
+                  This income matches {rentMatchPrompt.match.tenantName}&rsquo;s expected{' '}
+                  {formatMonthLong(rentMatchPrompt.match.period)} rent —{' '}
+                  {formatUsd(rentMatchPrompt.match.amountCents)} for{' '}
+                  {rentMatchPrompt.match.unitLabel} at {rentMatchPrompt.match.propertyLabel}.
+                </>
+              )}
             </p>
             <p className="mt-2 text-sm text-ink-muted">
               Marking it paid updates Rent Collection and links it to this transaction, so the rent

@@ -57,6 +57,7 @@ model Account {
   contractors  Contractor[]
   pushDevices  PushDevice[]
   onboarding   OnboardingState?
+  vendorCategoryMemories VendorCategoryMemory[]
 }
 
 // Getting-started checklist state (one row per account, created lazily on the
@@ -172,6 +173,7 @@ model Tenant {
   account      Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
   leaseTenants LeaseTenant[]
   insights     Insight[]
+  rentDeposits RentPaymentDeposit[]
 
   @@index([accountId])
   @@index([accountId, archivedAt])
@@ -201,6 +203,10 @@ model LeaseTenant {
   leaseId   String
   tenantId  String
   isPrimary Boolean @default(true)
+  // This co-tenant's expected portion of lease.rentCents (plan §C). Null =
+  // unspecified — display falls back to an even split. Shares that don't sum
+  // to the rent are a soft warning in the UI, never a hard block.
+  shareCents Int?
 
   lease  Lease  @relation(fields: [leaseId], references: [id], onDelete: Cascade)
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -218,6 +224,30 @@ model Category {
 
   account      Account?      @relation(fields: [accountId], references: [id], onDelete: Cascade)
   transactions Transaction[]
+  vendorCategoryMemories VendorCategoryMemory[]
+}
+
+// Per-account vendor → category memory (TRUSTWORTHY_TRANSACTIONS_PLAN.md §A).
+// Written when a user corrects (or repeatedly accepts) a category on a
+// transaction with a vendor; consulted by suggestCategory before the keyword
+// table so corrections stick. vendorKey is the normalized memory key
+// (services/vendor.ts vendorMemoryKey — bank-descriptor noise stripped), NOT
+// the raw vendor string.
+model VendorCategoryMemory {
+  id         String   @id @default(cuid())
+  accountId  String
+  vendorKey  String
+  type       String // TransactionType (@hearth/shared): income | expense
+  categoryId String
+  confidence Float    @default(0.95)
+  hitCount   Int      @default(1)
+  updatedAt  DateTime @updatedAt
+
+  account  Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, vendorKey, type])
+  @@index([accountId])
 }
 
 model Transaction {
@@ -232,7 +262,11 @@ model Transaction {
   description           String
   vendor                String?
   source                String // TransactionSource (@hearth/shared): manual | receipt | bank
-  status                String // TransactionStatus (@hearth/shared): pending_review | confirmed
+  status                String // TransactionStatus (@hearth/shared): pending_review | confirmed | dismissed
+  // TransactionClassification (@hearth/shared): transfer | owner_contribution | refund.
+  // Null = ordinary row. transfer/owner_contribution are excluded from every
+  // P&L/KPI aggregate; refund nets against its expense category (plan §D1).
+  classification        String?
   aiSuggestedCategoryId String?
   aiConfidence          Float?
   receiptUrl            String?
@@ -245,6 +279,7 @@ model Transaction {
   unit        Unit?        @relation(fields: [unitId], references: [id], onDelete: SetNull)
   category    Category?    @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   rentPayment RentPayment?
+  rentDeposit RentPaymentDeposit?
 
   @@index([accountId, date])
   @@index([accountId, status])
@@ -257,11 +292,15 @@ model RentPayment {
   period        String // "YYYY-MM"
   dueDate       DateTime // materialized with the month's expected rows; enables exact days-late
   amountCents   Int
-  method        String? // RentPaymentMethod (@hearth/shared): online | manual — null until paid
+  // Running total received (= sum of deposits; maintained inside the same
+  // $transaction as every deposit write). 0 < paidCents < amountCents derives
+  // the 'partial' display status; stored status stays 'due' until fully paid.
+  paidCents     Int       @default(0)
+  method        String? // RentPaymentMethod (@hearth/shared): online | manual | bank — null until paid
   status        String // RentPaymentStatus (@hearth/shared): due | processing | paid | failed
   paidAt        DateTime?
   externalRef   String? // mock Stripe id
-  transactionId String?   @unique // ledger Transaction created on payment
+  transactionId String?   @unique // legacy single-payment link; deposits are the source of truth
   remindedAt    DateTime?
 
   lease       Lease        @relation(fields: [leaseId], references: [id], onDelete: Cascade)
@@ -270,9 +309,32 @@ model RentPayment {
   // status 'paid' with no backing ledger entry. SetNull remains the DB-level
   // fallback for deletes that bypass the service.
   transaction Transaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+  deposits    RentPaymentDeposit[]
 
   @@unique([leaseId, period])
   @@index([period])
+}
+
+// One received payment toward a RentPayment charge (plan §B2): many deposits
+// sum toward one charge, so roommates/partial payers are representable. Every
+// deposit is backed 1:1 by a ledger Transaction; RentPayment.paidCents is the
+// maintained sum. Deleting a deposit-backed Transaction through the service is
+// blocked (transaction.service.remove); the DB-level Cascade covers writes
+// that bypass it, and unlinkDeposit is the sanctioned removal path.
+model RentPaymentDeposit {
+  id            String   @id @default(cuid())
+  rentPaymentId String
+  transactionId String   @unique
+  amountCents   Int
+  tenantId      String? // which co-tenant paid (share tracking, plan §C)
+  method        String? // RentPaymentMethod (@hearth/shared): online | manual | bank
+  paidAt        DateTime @default(now())
+
+  rentPayment RentPayment @relation(fields: [rentPaymentId], references: [id], onDelete: Cascade)
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  tenant      Tenant?     @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+
+  @@index([rentPaymentId])
 }
 
 // Contractor directory. Usage stats (jobsCount/avgCostCents/lastUsedAt) are

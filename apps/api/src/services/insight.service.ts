@@ -19,6 +19,7 @@ import {
   periodLabel,
 } from '../lib/dates';
 import { NotFoundError } from '../lib/errors';
+import { ordinaryExpense, pnlBucket } from '../lib/pnl';
 import { prisma } from '../lib/prisma';
 import { slugify } from '../lib/strings';
 import { writeAudit, type AuditActor } from './audit.service';
@@ -181,16 +182,18 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
   const period = currentPeriod();
   const candidates: InsightCandidate[] = [];
 
-  // Rule 1 — late_rent: any payment more than 5 days late.
+  // Rule 1 — late_rent: any payment more than 5 days late. 'partial' past
+  // grace carries daysLate too — a half-paid tenant 6+ days past due still
+  // warrants the nudge, with the shortfall (not the full charge) in the body.
   const tracker = await rentService.getMonthStatus(accountId, period);
   for (const row of tracker.rows) {
-    if (row.status === 'late' && (row.daysLate ?? 0) > LATE_RENT_MIN_DAYS) {
+    if ((row.status === 'late' || row.status === 'partial') && (row.daysLate ?? 0) > LATE_RENT_MIN_DAYS) {
       candidates.push({
         scope: 'tenant',
         type: 'late_rent',
         severity: 'warning',
         title: `${row.tenantName} is ${row.daysLate} days late on rent`,
-        body: `${formatUsdWhole(row.amountCents)} for ${row.propertyLabel} ${row.unitLabel} was due on the ${new Date(row.dueDate).getUTCDate()}. Consider sending a reminder.`,
+        body: `${formatUsdWhole(row.amountCents - row.paidCents)} for ${row.propertyLabel} ${row.unitLabel} was due on the ${new Date(row.dueDate).getUTCDate()}. Consider sending a reminder.`,
         actionLabel: 'Review',
         actionTarget: `/rent?period=${period}`,
         // One-click reminder for exactly this payment; sendReminders skips
@@ -222,7 +225,7 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
     where: {
       accountId,
       status: 'confirmed',
-      type: 'expense',
+      ...ordinaryExpense, // transfers/refunds never look like a spend spike
       date: { gte: mStart, lt: mEnd },
       categoryId: { not: null },
     },
@@ -233,7 +236,7 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
     where: {
       accountId,
       status: 'confirmed',
-      type: 'expense',
+      ...ordinaryExpense,
       date: { gte: trailingStart, lt: mStart },
     },
     _sum: { amountCents: true },
@@ -323,7 +326,7 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
     include: { units: { where: { archivedAt: null } } },
   });
   const trailingTxns = await prisma.transaction.groupBy({
-    by: ['propertyId', 'type'],
+    by: ['propertyId', 'type', 'classification'],
     where: {
       accountId,
       status: 'confirmed',
@@ -336,7 +339,9 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
   const netByProperty = new Map<string, number>();
   for (const g of trailingTxns) {
     const pid = g.propertyId as string;
-    const signed = (g._sum.amountCents ?? 0) * (g.type === 'income' ? 1 : -1);
+    const b = pnlBucket({ ...g, amountCents: g._sum.amountCents ?? 0 });
+    if (!b) continue;
+    const signed = b.amountCents * (b.bucket === 'income' ? 1 : -1);
     netByProperty.set(pid, (netByProperty.get(pid) ?? 0) + signed);
   }
   const totalUnits = properties.reduce((sum, p) => sum + p.units.length, 0);

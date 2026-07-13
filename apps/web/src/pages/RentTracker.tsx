@@ -8,7 +8,16 @@ import { useEffect, useState } from 'react';
 import { formatUsd } from '@hearth/shared';
 import type { RentPaymentMethod, RentTrackerRow, SendRemindersResponse } from '@hearth/shared';
 import { useSearchParams } from 'react-router-dom';
-import { useInsights, useRecordPayment, useRentTracker, useSendReminders } from '../api/queries';
+import {
+  useConfirmTransaction,
+  useInsights,
+  useRecordPayment,
+  useRentTracker,
+  useSendReminders,
+  useUnlinkDeposit,
+  useUnlinkedRentDeposits,
+} from '../api/queries';
+import { AiSurface } from '../components/ai/AiSurface';
 import { InsightCard } from '../components/ai/InsightCard';
 import {
   ComposedRemindersModal,
@@ -24,6 +33,7 @@ import { Modal } from '../components/ui/Modal';
 import { ProgressBar } from '../components/ui/ProgressBar';
 import { Select } from '../components/ui/Select';
 import { Skeleton } from '../components/ui/Skeleton';
+import { FormField, Input } from '../components/ui/FormField';
 import { StatusBadge, type BadgeTone } from '../components/ui/StatusBadge';
 import { RowActions } from '../components/ui/RowActions';
 import { Table, Td, Th, Tr } from '../components/ui/Table';
@@ -37,6 +47,16 @@ function statusInfo(row: RentTrackerRow): { tone: BadgeTone; label: string; cloc
   switch (row.status) {
     case 'paid':
       return { tone: 'positive', label: 'Paid' };
+    case 'partial':
+      // A partial past the grace window is still late — say both.
+      return {
+        tone: 'warning',
+        label:
+          `Partial — ${formatUsd(row.paidCents)} of ${formatUsd(row.amountCents)}` +
+          (row.daysLate != null
+            ? ` · ${row.daysLate} ${row.daysLate === 1 ? 'day' : 'days'} late`
+            : ''),
+      };
     case 'late':
       return {
         tone: 'danger',
@@ -70,16 +90,27 @@ export function RentTracker() {
     if (requested && recentPeriods().includes(requested)) setPeriod(requested);
   }, [searchParams]);
   const tracker = useRentTracker(period);
+  const unlinkedDeposits = useUnlinkedRentDeposits(period);
+  const linkDeposit = useConfirmTransaction();
   const remind = useSendReminders();
   const record = useRecordPayment();
   const { can } = usePermissions();
   const canRent = can('rent');
+  const canMoney = can('money'); // linking a deposit confirms a transaction
   const { toast } = useToast();
 
   const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
   const [payRow, setPayRow] = useState<RentTrackerRow | null>(null);
   const [payMethod, setPayMethod] = useState<RentPaymentMethod>('manual');
+  // Editable amount (dollars) — defaults to the remaining balance so a full
+  // payment stays one click while a partial is a simple edit.
+  const [payAmount, setPayAmount] = useState('');
+  const [payError, setPayError] = useState<string | null>(null);
+  // Which co-tenant paid ('' = unattributed) — only shown for shared leases.
+  const [payTenantId, setPayTenantId] = useState('');
+  const [depositsRow, setDepositsRow] = useState<RentTrackerRow | null>(null);
   const [composedReminders, setComposedReminders] = useState<ComposedReminder[]>([]);
+  const unlink = useUnlinkDeposit();
 
   // Exactly one contextual AI card (newest late_rent) — this page is where
   // that insight points, so it surfaces here instead of a separate AI page.
@@ -87,7 +118,10 @@ export function RentTracker() {
   const lateRentInsight = insights.data?.find((i) => i.type === 'late_rent');
 
   const rows = tracker.data?.rows ?? [];
-  const lateRows = rows.filter((row) => row.status === 'late');
+  // Partial-but-past-grace rows are still owed and remindable.
+  const lateRows = rows.filter(
+    (row) => row.status === 'late' || (row.status === 'partial' && row.daysLate != null),
+  );
 
   const summarizeReminders = (results: SendRemindersResponse['results']) => {
     const sent = results.filter((r) => r.status === 'sent').length;
@@ -140,19 +174,50 @@ export function RentTracker() {
 
   const recordPayment = () => {
     if (!payRow) return;
+    const remainingCents = payRow.amountCents - payRow.paidCents;
+    const amountNumber = Number(payAmount);
+    const amountCents = Math.round(amountNumber * 100);
+    if (!payAmount || Number.isNaN(amountNumber) || amountCents <= 0) {
+      setPayError('Enter an amount greater than zero.');
+      return;
+    }
+    if (amountCents > remainingCents) {
+      setPayError(`No more than the ${formatUsd(remainingCents)} remaining can be recorded.`);
+      return;
+    }
+    setPayError(null);
     record.mutate(
       {
         leaseId: payRow.leaseId,
         period,
-        amountCents: payRow.amountCents,
+        amountCents,
         method: payMethod,
+        ...(payTenantId ? { tenantId: payTenantId } : {}),
       },
       {
         onSuccess: () => {
-          toast(`Payment recorded for ${payRow.tenantName}.`, 'positive');
+          toast(
+            amountCents < remainingCents
+              ? `Partial payment recorded for ${payRow.tenantName} — ${formatUsd(remainingCents - amountCents)} still due.`
+              : `Payment recorded for ${payRow.tenantName}.`,
+            'positive',
+          );
           setPayRow(null);
         },
         onError: () => toast('Could not record the payment. Try again.', 'danger'),
+      },
+    );
+  };
+
+  const unlinkDeposit = (row: RentTrackerRow, depositId: string) => {
+    unlink.mutate(
+      { rentPaymentId: row.rentPaymentId, depositId },
+      {
+        onSuccess: () => {
+          toast(`Deposit unlinked — ${row.tenantName}'s charge recomputed.`, 'positive');
+          setDepositsRow(null);
+        },
+        onError: () => toast('Could not unlink the deposit. Try again.', 'danger'),
       },
     );
   };
@@ -215,6 +280,12 @@ export function RentTracker() {
               <p className="mt-1 text-2xl font-semibold tabular-nums text-ink">
                 {formatUsd(tracker.data.collectedCents)}
               </p>
+              {tracker.data.partialUnits > 0 && (
+                <p className="mt-1 text-xs text-ink-muted">
+                  includes {tracker.data.partialUnits} partial payment
+                  {tracker.data.partialUnits === 1 ? '' : 's'}
+                </p>
+              )}
             </Card>
             <Card>
               <p className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
@@ -243,6 +314,46 @@ export function RentTracker() {
               />
             </Card>
           </section>
+
+          {(unlinkedDeposits.data?.items.length ?? 0) > 0 && (
+            <section aria-label="Unlinked rent deposits" className="flex flex-col gap-2">
+              {unlinkedDeposits.data!.items.map((item) => (
+                <AiSurface key={item.transactionId}>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-sm text-ink">
+                      A {formatUsd(item.amountCents)} Rent-categorized deposit (&ldquo;
+                      {item.description}&rdquo;, {formatDate(item.date)}) isn&rsquo;t linked to
+                      rent. It could apply to {item.tenantName}&rsquo;s{' '}
+                      {formatMonthLong(item.period)} charge — {formatUsd(item.remainingCents)}{' '}
+                      still due for {item.unitLabel} at {item.propertyLabel}.
+                    </p>
+                    {canMoney && (
+                      <Button
+                        variant="secondary"
+                        busy={linkDeposit.isPending}
+                        onClick={() =>
+                          linkDeposit.mutate(
+                            { id: item.transactionId, rentPaymentId: item.rentPaymentId },
+                            {
+                              onSuccess: () =>
+                                toast(
+                                  `Deposit applied to ${item.tenantName}'s ${formatMonthLong(item.period)} rent.`,
+                                  'positive',
+                                ),
+                              onError: () =>
+                                toast('Could not link the deposit. Try again.', 'danger'),
+                            },
+                          )
+                        }
+                      >
+                        Link to rent
+                      </Button>
+                    )}
+                  </div>
+                </AiSurface>
+              ))}
+            </section>
+          )}
 
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-base font-semibold text-ink">
@@ -288,10 +399,40 @@ export function RentTracker() {
                   {rows.map((row) => {
                     const info = statusInfo(row);
                     const unpaid =
-                      row.status === 'due' || row.status === 'late' || row.status === 'failed';
+                      row.status === 'due' ||
+                      row.status === 'late' ||
+                      row.status === 'failed' ||
+                      row.status === 'partial';
                     return (
                       <Tr key={row.rentPaymentId}>
-                        <Td className="font-medium">{row.tenantName}</Td>
+                        <Td className="font-medium">
+                          {row.tenants.length > 1 ? (
+                            <ul className="flex flex-col gap-0.5">
+                              {row.tenants.map((t) => (
+                                <li key={t.tenantId} className="flex items-center gap-2">
+                                  <span>{t.tenantName}</span>
+                                  <span className="text-xs font-normal text-ink-muted">
+                                    {formatUsd(t.shareCents)}
+                                    {t.shareSpecified ? '' : ' (even split)'} ·{' '}
+                                    {t.settled
+                                      ? 'paid'
+                                      : t.paidCents > 0
+                                        ? `${formatUsd(t.paidCents)} of share`
+                                        : 'due'}
+                                  </span>
+                                </li>
+                              ))}
+                              {row.sharesMismatch && (
+                                <li className="text-xs font-normal text-warning">
+                                  Shares don&rsquo;t add up to the {formatUsd(row.amountCents)}{' '}
+                                  charge
+                                </li>
+                              )}
+                            </ul>
+                          ) : (
+                            row.tenantName
+                          )}
+                        </Td>
                         <Td>
                           {row.unitLabel}
                           <span className="text-ink-muted"> · {row.propertyLabel}</span>
@@ -320,7 +461,8 @@ export function RentTracker() {
                           <RowActions
                             context={row.tenantName}
                             actions={[
-                              ...(row.status === 'late'
+                              ...(row.status === 'late' ||
+                              (row.status === 'partial' && row.daysLate != null)
                                 ? [
                                     {
                                       label: 'Remind',
@@ -334,12 +476,26 @@ export function RentTracker() {
                               ...(unpaid
                                 ? [
                                     {
-                                      label: 'Mark paid',
+                                      label: row.status === 'partial' ? 'Record payment' : 'Mark paid',
                                       icon: <IconCheck size={14} />,
                                       onClick: () => {
                                         setPayMethod('manual');
+                                        setPayAmount(
+                                          ((row.amountCents - row.paidCents) / 100).toFixed(2),
+                                        );
+                                        setPayError(null);
+                                        setPayTenantId('');
                                         setPayRow(row);
                                       },
+                                    },
+                                  ]
+                                : []),
+                              ...(row.deposits.length > 0
+                                ? [
+                                    {
+                                      label: 'Deposits',
+                                      variant: 'secondary' as const,
+                                      onClick: () => setDepositsRow(row),
                                     },
                                   ]
                                 : []),
@@ -394,9 +550,46 @@ export function RentTracker() {
         {payRow && (
           <div className="flex flex-col gap-4">
             <p className="text-sm text-ink-muted">
-              {formatUsd(payRow.amountCents)} for {formatMonthLong(period)} · {payRow.unitLabel} ·{' '}
-              {payRow.propertyLabel}
+              {payRow.paidCents > 0
+                ? `${formatUsd(payRow.amountCents - payRow.paidCents)} remaining of ${formatUsd(payRow.amountCents)}`
+                : formatUsd(payRow.amountCents)}{' '}
+              for {formatMonthLong(period)} · {payRow.unitLabel} · {payRow.propertyLabel}
             </p>
+            <FormField
+              label="Amount received (USD)"
+              htmlFor="pay-amount"
+              error={payError ?? undefined}
+              hint="Less than the remaining balance records a partial payment."
+              required
+            >
+              <Input
+                type="number"
+                inputMode="decimal"
+                min="0.01"
+                step="0.01"
+                value={payAmount}
+                onChange={(e) => setPayAmount(e.target.value)}
+              />
+            </FormField>
+            {payRow.tenants.length > 1 && (
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="pay-tenant" className="text-sm font-medium text-ink">
+                  Paid by
+                </label>
+                <Select
+                  id="pay-tenant"
+                  value={payTenantId}
+                  onChange={(e) => setPayTenantId(e.target.value)}
+                >
+                  <option value="">Not specified</option>
+                  {payRow.tenants.map((t) => (
+                    <option key={t.tenantId} value={t.tenantId}>
+                      {t.tenantName} — {formatUsd(t.shareCents)} share
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            )}
             <div className="flex flex-col gap-1.5">
               <label htmlFor="pay-method" className="text-sm font-medium text-ink">
                 Payment method
@@ -416,6 +609,53 @@ export function RentTracker() {
               </Button>
               <Button busy={record.isPending} onClick={recordPayment}>
                 Record payment
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={depositsRow !== null}
+        onClose={() => setDepositsRow(null)}
+        title={depositsRow ? `Deposits — ${depositsRow.tenantName}` : 'Deposits'}
+        size="sm"
+      >
+        {depositsRow && (
+          <div className="flex flex-col gap-4">
+            <p className="text-sm text-ink-muted">
+              {formatUsd(depositsRow.paidCents)} of {formatUsd(depositsRow.amountCents)} received for{' '}
+              {formatMonthLong(period)}. Unlinking a deposit recomputes the charge; the ledger
+              transaction itself is kept.
+            </p>
+            <ul className="flex flex-col gap-2">
+              {depositsRow.deposits.map((d) => (
+                <li
+                  key={d.id}
+                  className="flex items-center justify-between gap-3 rounded-md border border-border-strong px-3 py-2 text-sm"
+                >
+                  <span className="tabular-nums font-medium text-ink">
+                    {formatUsd(d.amountCents)}
+                  </span>
+                  <span className="text-ink-muted">
+                    {formatDate(d.paidAt)}
+                    {d.method ? ` · ${d.method}` : ''}
+                  </span>
+                  {canRent && (
+                    <Button
+                      variant="ghost"
+                      busy={unlink.isPending}
+                      onClick={() => unlinkDeposit(depositsRow, d.id)}
+                    >
+                      Unlink
+                    </Button>
+                  )}
+                </li>
+              ))}
+            </ul>
+            <div className="flex justify-end">
+              <Button variant="ghost" onClick={() => setDepositsRow(null)}>
+                Close
               </Button>
             </div>
           </div>

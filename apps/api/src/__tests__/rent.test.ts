@@ -128,6 +128,7 @@ describe('rentService.recordPayment double-pay guard', () => {
     expect(ledger[0]!.id).toBe(paid.transactionId);
 
     // Restore the seeded state (Park stays late for other test files).
+    // Deleting the ledger row below cascades its deposit.
     await prisma.rentPayment.update({
       where: { id: paid.id },
       data: {
@@ -137,6 +138,7 @@ describe('rentService.recordPayment double-pay guard', () => {
         externalRef: null,
         transactionId: null,
         amountCents: park.amountCents,
+        paidCents: 0,
       },
     });
     await prisma.transaction.delete({ where: { id: paid.transactionId! } });
@@ -150,32 +152,115 @@ describe('rentService.recordPayment double-pay guard', () => {
   });
 });
 
-describe('rentService.recordPayment amount guard', () => {
-  it('rejects a partial payment and leaves the charge and ledger untouched', async () => {
+describe('rentService.recordPayment partial payments (deposit ledger)', () => {
+  afterAll(async () => {
+    // Restore the seeded state (Park stays late for other test files).
     const accountId = await getDemoAccountId();
     const period = currentPeriod();
     const tracker = await rentService.getMonthStatus(accountId, period);
     const park = tracker.rows.find((r) => r.tenantName === PARK_NAME)!;
+    const ledger = await prisma.transaction.findMany({
+      where: { accountId, description: `Rent payment — ${PARK_NAME} — ${period}` },
+      select: { id: true },
+    });
+    // Deleting the ledger rows cascades their deposits.
+    await prisma.transaction.deleteMany({ where: { id: { in: ledger.map((t) => t.id) } } });
+    await prisma.rentPayment.update({
+      where: { id: park.rentPaymentId },
+      data: {
+        status: 'due',
+        method: null,
+        paidAt: null,
+        externalRef: null,
+        transactionId: null,
+        amountCents: park.amountCents,
+        paidCents: 0,
+      },
+    });
+    await prisma.auditLog.deleteMany({
+      where: {
+        accountId,
+        entityId: { in: [park.rentPaymentId, ...ledger.map((t) => t.id)] },
+      },
+    });
+  });
 
+  it('accumulates partial deposits into paid-in-full and rejects overpayment', async () => {
+    const accountId = await getDemoAccountId();
+    const period = currentPeriod();
+    const tracker = await rentService.getMonthStatus(accountId, period);
+    const park = tracker.rows.find((r) => r.tenantName === PARK_NAME)!;
+    const firstCents = 50000;
+
+    // First partial: stored 'due', derived 'partial', charge untouched.
+    const afterFirst = await rentService.recordPayment(accountId, {
+      leaseId: park.leaseId,
+      period,
+      amountCents: firstCents,
+      method: 'manual',
+    });
+    expect(afterFirst.status).toBe('due');
+    expect(afterFirst.paidCents).toBe(firstCents);
+    expect(afterFirst.amountCents).toBe(park.amountCents);
+    expect(afterFirst.transactionId).toBeNull(); // legacy link is single-full-payment only
+
+    const trackerAfterFirst = await rentService.getMonthStatus(accountId, period);
+    const partialRow = trackerAfterFirst.rows.find((r) => r.rentPaymentId === park.rentPaymentId)!;
+    expect(partialRow.status).toBe('partial');
+    expect(partialRow.daysLate).toBeGreaterThan(0); // Park was late — a partial doesn't erase that
+    expect(partialRow.deposits).toHaveLength(1);
+    expect(trackerAfterFirst.partialUnits).toBe(1);
+    expect(trackerAfterFirst.collectedCents).toBe(COLLECTED_MTD_CENTS + firstCents);
+    expect(trackerAfterFirst.outstandingCents).toBe(OUTSTANDING_MTD_CENTS - firstCents);
+    expect(trackerAfterFirst.paidUnits).toBe(PAID_UNITS); // not fully paid yet
+
+    // Overpaying the remainder is rejected.
     await expect(
       rentService.recordPayment(accountId, {
         leaseId: park.leaseId,
         period,
-        amountCents: park.amountCents - 5000,
+        amountCents: park.amountCents - firstCents + 1,
         method: 'manual',
       }),
-    ).rejects.toThrow(/doesn't match/);
+    ).rejects.toThrow(/exceeds the .* remaining/);
 
-    // The row still carries the full expected charge, unpaid, with no ledger row.
-    const fresh = await prisma.rentPayment.findUniqueOrThrow({
-      where: { id: park.rentPaymentId },
+    // Second deposit completing the total flips the stored status to paid.
+    const afterSecond = await rentService.recordPayment(accountId, {
+      leaseId: park.leaseId,
+      period,
+      amountCents: park.amountCents - firstCents,
+      method: 'manual',
     });
-    expect(fresh.status).toBe('due');
-    expect(fresh.amountCents).toBe(park.amountCents);
-    expect(fresh.transactionId).toBeNull();
-    const ledgerCount = await prisma.transaction.count({
-      where: { accountId, description: `Rent payment — ${PARK_NAME} — ${period}` },
+    expect(afterSecond.status).toBe('paid');
+    expect(afterSecond.paidCents).toBe(park.amountCents);
+
+    const trackerAfterSecond = await rentService.getMonthStatus(accountId, period);
+    expect(trackerAfterSecond.paidUnits).toBe(PAID_UNITS + 1);
+    expect(trackerAfterSecond.partialUnits).toBe(0);
+    expect(trackerAfterSecond.collectedCents).toBe(COLLECTED_MTD_CENTS + park.amountCents);
+    expect(trackerAfterSecond.outstandingCents).toBe(OUTSTANDING_MTD_CENTS - park.amountCents);
+
+    // Two deposits back the charge; a third payment is rejected as already paid.
+    const deposits = await prisma.rentPaymentDeposit.findMany({
+      where: { rentPaymentId: park.rentPaymentId },
     });
-    expect(ledgerCount).toBe(0);
+    expect(deposits).toHaveLength(2);
+    await expect(
+      rentService.recordPayment(accountId, {
+        leaseId: park.leaseId,
+        period,
+        amountCents: 1,
+        method: 'manual',
+      }),
+    ).rejects.toThrow(/already recorded as paid/);
+
+    // Unlinking one deposit reverts to partial and reopens the difference.
+    const unlinked = await rentService.unlinkDeposit(
+      accountId,
+      park.rentPaymentId,
+      deposits[0]!.id,
+    );
+    expect(unlinked.status).toBe('due');
+    expect(unlinked.paidCents).toBe(park.amountCents - deposits[0]!.amountCents);
   });
 });

@@ -16,6 +16,7 @@ import {
 } from '../src/lib/dates';
 import { renderTextPdf } from '../src/lib/pdf';
 import { prisma } from '../src/lib/prisma';
+import { slugify } from '../src/lib/strings';
 import * as contractorService from '../src/services/contractor.service';
 import { sanitizeFilename } from '../src/services/document.service';
 import * as insightService from '../src/services/insight.service';
@@ -35,6 +36,9 @@ import {
   EXPENSES_MTD_CENTS,
   OKAFOR_DAYS_LATE,
   PARK_DAYS_LATE,
+  PARK_NAME,
+  PARK_COTENANT_NAME,
+  PARK_SHARE_CENTS,
   OKAFOR_NAME,
   RENT_ROLL_CENTS,
   REVIEW_QUEUE_ITEMS,
@@ -164,6 +168,30 @@ async function main(): Promise<void> {
     'rent roll',
   );
 
+  // Co-tenant fixture (plan §C4): Park's lease is shared, half the rent each.
+  // Park stays primary (tenantName-keyed derivations unchanged); no KPI moves.
+  const parkLease = leases.find((l) => l.tenantName === PARK_NAME);
+  if (!parkLease) throw new Error('seed: Park lease missing for co-tenant fixture');
+  const cotenant = await prisma.tenant.create({
+    data: {
+      accountId: account.id,
+      fullName: PARK_COTENANT_NAME,
+      email: `${slugify(PARK_COTENANT_NAME)}@example.com`,
+    },
+  });
+  await prisma.leaseTenant.create({
+    data: {
+      leaseId: parkLease.leaseId,
+      tenantId: cotenant.id,
+      isPrimary: false,
+      shareCents: PARK_SHARE_CENTS,
+    },
+  });
+  await prisma.leaseTenant.updateMany({
+    where: { leaseId: parkLease.leaseId, isPrimary: true },
+    data: { shareCents: PARK_SHARE_CENTS },
+  });
+
   const createExpense = async (spec: SeedExpenseSpec, base: Date, amountOverride?: number) => {
     const date = minDate(addDays(base, spec.day - 1), now);
     await prisma.transaction.create({
@@ -209,11 +237,15 @@ async function main(): Promise<void> {
         period: p,
         dueDate,
         amountCents: lease.rentCents,
+        paidCents: lease.rentCents, // paid in full — deposits sum to the charge
         method,
         status: 'paid',
         paidAt,
         externalRef: method === 'online' ? `pi_mock_seed_${lease.leaseId.slice(-6)}_${p}` : null,
         transactionId: txn.id,
+        deposits: {
+          create: { transactionId: txn.id, amountCents: lease.rentCents, method, paidAt },
+        },
       },
     });
   };

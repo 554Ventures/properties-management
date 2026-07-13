@@ -11,12 +11,13 @@ import type {
 import type { Property as DbProperty } from '@prisma/client';
 import { currentPeriod, iso, isoOrNull, monthEndExclusive, monthStart } from '../lib/dates';
 import { ConflictError, NotFoundError } from '../lib/errors';
+import { pnlBucket, pnlSums } from '../lib/pnl';
 import { prisma } from '../lib/prisma';
 import { writeAudit, type AuditActor } from './audit.service';
 import { generateInsights, toApiInsight } from './insight.service';
 import { toApiLease } from './lease.service';
 import { deriveRentStatus } from './rent.service';
-import { toApiTenant } from './tenant.service';
+import { toTenantOnLease } from './tenant.service';
 
 export function toApiProperty(p: DbProperty): Property {
   return {
@@ -48,11 +49,19 @@ async function lateUnitIds(accountId: string, graceDays: number): Promise<Set<st
       status: { notIn: ['paid'] },
       lease: { unit: { archivedAt: null, property: { accountId, archivedAt: null } } },
     },
-    select: { status: true, dueDate: true, lease: { select: { unitId: true } } },
+    select: {
+      status: true,
+      dueDate: true,
+      amountCents: true,
+      paidCents: true,
+      lease: { select: { unitId: true } },
+    },
   });
   const late = new Set<string>();
   for (const p of payments) {
-    if (deriveRentStatus(p, graceDays).status === 'late') late.add(p.lease.unitId);
+    // daysLate presence covers both fully-unpaid `late` and partial-but-past-
+    // grace rows — a half-paid tenant past the grace window is still late.
+    if (deriveRentStatus(p, graceDays).daysLate !== undefined) late.add(p.lease.unitId);
   }
   return late;
 }
@@ -108,7 +117,7 @@ export async function pnlTotals(
   scope: { propertyId?: string; unitId?: string } = {},
 ): Promise<PnlTotals> {
   const grouped = await prisma.transaction.groupBy({
-    by: ['type'],
+    by: ['type', 'classification'],
     where: {
       accountId,
       status: 'confirmed',
@@ -118,9 +127,8 @@ export async function pnlTotals(
     },
     _sum: { amountCents: true },
   });
-  const incomeCents = grouped.find((g) => g.type === 'income')?._sum.amountCents ?? 0;
-  const expenseCents = grouped.find((g) => g.type === 'expense')?._sum.amountCents ?? 0;
-  return { incomeCents, expenseCents, netCents: incomeCents - expenseCents };
+  // Transfers/owner contributions never count; refunds net against expenses.
+  return pnlSums(grouped);
 }
 
 export async function getDetail(accountId: string, id: string): Promise<PropertyDetailResponse> {
@@ -172,7 +180,7 @@ export async function getDetail(accountId: string, id: string): Promise<Property
         archivedAt: isoOrNull(u.archivedAt),
         status: lease ? ('occupied' as const) : ('vacant' as const),
         currentLease: lease
-          ? { ...toApiLease(lease), tenants: lease.leaseTenants.map((lt) => toApiTenant(lt.tenant)) }
+          ? { ...toApiLease(lease), tenants: lease.leaseTenants.map(toTenantOnLease) }
           : null,
       };
     }),
@@ -304,16 +312,18 @@ export async function getPnl(
   let incomeCents = 0;
   let expenseCents = 0;
   for (const t of txns) {
-    if (t.type === 'income') incomeCents += t.amountCents;
-    else expenseCents += t.amountCents;
-    const key = `${t.categoryId ?? 'uncategorized'}:${t.type}`;
+    const b = pnlBucket(t);
+    if (!b) continue; // transfers/owner contributions don't count
+    if (b.bucket === 'income') incomeCents += b.amountCents;
+    else expenseCents += b.amountCents; // refunds arrive here negative
+    const key = `${t.categoryId ?? 'uncategorized'}:${b.bucket}`;
     const line = byCategory.get(key) ?? {
       categoryId: t.categoryId,
       categoryName: t.category?.name ?? 'Uncategorized',
-      type: t.type as TransactionType,
+      type: b.bucket as TransactionType,
       totalCents: 0,
     };
-    line.totalCents += t.amountCents;
+    line.totalCents += b.amountCents;
     byCategory.set(key, line);
   }
   return {
