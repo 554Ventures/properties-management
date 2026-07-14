@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { TransactionTypeSchema } from '../enums';
 import { InsightSchema } from './insight';
 import { LeaseSchema } from './lease';
+import { RentStatusSchema } from './rent';
 import { TenantOnLeaseSchema } from './tenant';
 import { CreateUnitInputSchema, UnitSchema } from './unit';
 
@@ -79,10 +80,25 @@ export const LeaseWithTenantsSchema = LeaseSchema.extend({
   tenants: z.array(TenantOnLeaseSchema),
 });
 
+// This month's rent snapshot for a unit's active lease — derived read-only
+// from the period's charge row, or synthesized in memory when no row exists
+// yet (same derivation as rent-charge materialization; never persisted).
+export const PropertyDetailUnitRentSchema = z.object({
+  period: z.string(),
+  status: RentStatusSchema,
+  daysLate: z.number().int().nullable(),
+  paidCents: z.number().int(),
+  amountCents: z.number().int(),
+  dueDate: z.string().datetime(),
+});
+
 // Occupancy derived: occupied iff an active lease exists.
 export const PropertyDetailUnitSchema = UnitSchema.extend({
   status: z.enum(['occupied', 'vacant']),
   currentLease: LeaseWithTenantsSchema.nullable(),
+  rent: PropertyDetailUnitRentSchema.nullable(), // null when no active lease
+  leaseCount: z.number().int(), // total leases ever recorded for the unit
+  pendingLease: LeaseWithTenantsSchema.nullable(), // pending_signature lease, if any
 });
 
 // GET /properties/:id

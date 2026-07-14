@@ -28,6 +28,7 @@ export type PnlSummary = z.infer<typeof s.PnlSummarySchema>;
 export type PnlCategoryLine = z.infer<typeof s.PnlCategoryLineSchema>;
 export type PropertyPnlResponse = z.infer<typeof s.PropertyPnlResponseSchema>;
 export type LeaseWithTenants = z.infer<typeof s.LeaseWithTenantsSchema>;
+export type PropertyDetailUnitRent = z.infer<typeof s.PropertyDetailUnitRentSchema>;
 export type PropertyDetailUnit = z.infer<typeof s.PropertyDetailUnitSchema>;
 export type PropertyDetailResponse = z.infer<typeof s.PropertyDetailResponseSchema>;
 

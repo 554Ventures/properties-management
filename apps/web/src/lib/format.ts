@@ -63,6 +63,12 @@ export function fromDateInputValue(value: string): string {
   return new Date(`${value}T00:00:00.000Z`).toISOString();
 }
 
+/** Whole days from now until an ISO date (ceil; negative once past). Pairs
+ *  with RENEW_SOON_DAYS from @hearth/shared for renewal-window badge math. */
+export function daysUntil(iso: string): number {
+  return Math.ceil((new Date(iso).getTime() - Date.now()) / 86_400_000);
+}
+
 /** Current period as "YYYY-MM". */
 export function currentPeriod(): string {
   const now = new Date();

@@ -6,43 +6,28 @@ import type { RenewalDraftResponse, TenantLease } from '@hearth/shared';
 import { useParams } from 'react-router-dom';
 import {
   useArchiveTenant,
-  useCreateRenewal,
   useDraftRenewal,
   useRestoreTenant,
-  useSendEsign,
   useTenantDetail,
   useTerminateLease,
 } from '../api/queries';
 import { DocumentsCard } from '../components/documents/DocumentsCard';
 import { LeaseFormModal } from '../components/forms/LeaseFormModal';
 import { LeaseTenantsModal } from '../components/forms/LeaseTenantsModal';
+import { RenewalModal } from '../components/forms/RenewalModal';
 import { TenantFormModal } from '../components/forms/TenantFormModal';
 import { PageHeader } from '../components/shell/PageHeader';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { ErrorNotice } from '../components/ui/ErrorNotice';
-import { Modal } from '../components/ui/Modal';
 import { Skeleton } from '../components/ui/Skeleton';
-import { StatusBadge, type BadgeTone } from '../components/ui/StatusBadge';
+import { StatusBadge } from '../components/ui/StatusBadge';
 import { Table, Td, Th, Tr } from '../components/ui/Table';
 import { useToast } from '../components/ui/Toast';
 import { formatDate, formatMonth } from '../lib/format';
+import { leaseStatusBadge, rentStatusBadge } from '../lib/statusBadges';
 import { usePageTitle } from '../lib/usePageTitle';
-
-const leaseStatusBadge: Record<string, { tone: BadgeTone; label: string }> = {
-  active: { tone: 'positive', label: 'Active' },
-  pending_signature: { tone: 'warning', label: 'Pending signature' },
-  ended: { tone: 'neutral', label: 'Ended' },
-};
-
-const rentStatusBadge: Record<string, { tone: BadgeTone; label: string }> = {
-  paid: { tone: 'positive', label: 'Paid' },
-  due: { tone: 'neutral', label: 'Due' },
-  processing: { tone: 'neutral', label: 'Processing' },
-  failed: { tone: 'danger', label: 'Failed' },
-  late: { tone: 'danger', label: 'Late' },
-};
 
 export function TenantDetail() {
   const { id } = useParams<{ id: string }>();
@@ -57,8 +42,6 @@ export function TenantDetail() {
   const [coTenantsLeaseId, setCoTenantsLeaseId] = useState<string | null>(null);
   const [terminating, setTerminating] = useState<TenantLease | null>(null);
   const draftRenewal = useDraftRenewal();
-  const sendEsign = useSendEsign();
-  const createRenewal = useCreateRenewal();
   const archiveTenant = useArchiveTenant();
   const restoreTenant = useRestoreTenant();
   const terminateLease = useTerminateLease();
@@ -98,38 +81,6 @@ export function TenantDetail() {
       onSuccess: (proposal) => setDraft(proposal),
       onError: () => toast('Could not draft a renewal. Try again.', 'danger'),
     });
-  };
-
-  const sendForSignature = () => {
-    if (!draft) return;
-    sendEsign.mutate(draft.leaseId, {
-      onSuccess: (envelope) => {
-        toast(`Renewal sent for e-signature (envelope ${envelope.envelopeId}).`, 'positive');
-        setDraft(null);
-      },
-      onError: () => toast('Could not send for e-signature. Try again.', 'danger'),
-    });
-  };
-
-  const acceptRenewal = () => {
-    if (!draft) return;
-    createRenewal.mutate(
-      {
-        leaseId: draft.leaseId,
-        rentCents: draft.suggestedRentCents,
-        dueDay: draft.dueDay,
-        startDate: draft.proposedStartDate,
-        endDate: draft.proposedEndDate,
-      },
-      {
-        onSuccess: () => {
-          toast('Renewal accepted — the new lease is now active.', 'positive');
-          setDraft(null);
-        },
-        onError: (err) =>
-          toast(err instanceof Error ? err.message : 'Could not create the renewal.', 'danger'),
-      },
-    );
   };
 
   const doArchiveTenant = () => {
@@ -352,58 +303,7 @@ export function TenantDetail() {
         </Card>
       </section>
 
-      <Modal open={draft !== null} onClose={() => setDraft(null)} title="Renewal proposal">
-        {draft && (
-          <div className="flex flex-col gap-4">
-            <Table caption="Proposed renewal terms">
-              <tbody>
-                <Tr>
-                  <Th scope="row">Current rent</Th>
-                  <Td align="right">{formatUsd(draft.currentRentCents)}/mo</Td>
-                </Tr>
-                <Tr>
-                  <Th scope="row">Suggested rent</Th>
-                  <Td align="right" className="font-semibold">
-                    {formatUsd(draft.suggestedRentCents)}/mo
-                  </Td>
-                </Tr>
-                {draft.marketRentCents != null && (
-                  <Tr>
-                    <Th scope="row">Market rent</Th>
-                    <Td align="right">{formatUsd(draft.marketRentCents)}/mo</Td>
-                  </Tr>
-                )}
-                <Tr>
-                  <Th scope="row">Proposed term</Th>
-                  <Td align="right">
-                    {formatDate(draft.proposedStartDate)} – {formatDate(draft.proposedEndDate)}
-                  </Td>
-                </Tr>
-                <Tr>
-                  <Th scope="row">Rent due day</Th>
-                  <Td align="right">{draft.dueDay}</Td>
-                </Tr>
-              </tbody>
-            </Table>
-            <p className="text-xs text-ink-muted">
-              Send for e-signature creates a Docusign envelope (mocked here) — the tenant signs and
-              the lease status updates. Accept &amp; create renewal ends the current lease
-              immediately and activates the new one at the terms above.
-            </p>
-            <div className="flex flex-wrap justify-end gap-2">
-              <Button variant="ghost" onClick={() => setDraft(null)}>
-                Cancel
-              </Button>
-              <Button variant="secondary" busy={sendEsign.isPending} onClick={sendForSignature}>
-                Send for e-signature
-              </Button>
-              <Button busy={createRenewal.isPending} onClick={acceptRenewal}>
-                Accept &amp; create renewal
-              </Button>
-            </div>
-          </div>
-        )}
-      </Modal>
+      <RenewalModal draft={draft} onClose={() => setDraft(null)} />
 
       <TenantFormModal
         mode="edit"

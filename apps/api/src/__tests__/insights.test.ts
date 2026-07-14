@@ -2,7 +2,7 @@
 // dedupe keeps dismissed keys from coming back.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { InsightSchema } from '@hearth/shared';
+import { InsightSchema, RENEW_SOON_DAYS } from '@hearth/shared';
 import { expectedInsightDedupeKeys } from '../../prisma/seed-constants';
 import { buildApp } from '../app';
 import { addDays, currentPeriod } from '../lib/dates';
@@ -88,7 +88,7 @@ describe('insight generation rules', () => {
     expect(lateRent?.severity).toBe('warning');
     expect(lateRent?.type).toBe('late_rent');
     const renewal = active.find((i) => i.dedupeKey === keys.renewalWindow);
-    expect(renewal?.title).toBe('2 leases up for renewal in the next 60 days');
+    expect(renewal?.title).toBe(`2 leases up for renewal in the next ${RENEW_SOON_DAYS} days`);
     const review = active.find((i) => i.dedupeKey === reviewKey);
     expect(review?.severity).toBe('info');
     expect(review?.title).toBe('3 imported transactions are waiting for review');

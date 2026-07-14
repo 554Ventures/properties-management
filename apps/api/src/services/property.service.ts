@@ -3,20 +3,29 @@ import type {
   PnlTotals,
   Property,
   PropertyDetailResponse,
+  PropertyDetailUnitRent,
   PropertyListResponse,
   PropertyPnlResponse,
   TransactionType,
   UpdatePropertyInput,
 } from '@hearth/shared';
 import type { Property as DbProperty } from '@prisma/client';
-import { currentPeriod, iso, isoOrNull, monthEndExclusive, monthStart } from '../lib/dates';
+import {
+  addDays,
+  currentPeriod,
+  iso,
+  isoOrNull,
+  monthEndExclusive,
+  monthStart,
+  startOfUtcDay,
+} from '../lib/dates';
 import { ConflictError, NotFoundError } from '../lib/errors';
 import { pnlBucket, pnlSums } from '../lib/pnl';
 import { prisma } from '../lib/prisma';
 import { writeAudit, type AuditActor } from './audit.service';
 import { generateInsights, toApiInsight } from './insight.service';
 import { toApiLease } from './lease.service';
-import { deriveRentStatus } from './rent.service';
+import { deriveRentStatus, expectedChargeCents } from './rent.service';
 import { toTenantOnLease } from './tenant.service';
 
 export function toApiProperty(p: DbProperty): Property {
@@ -131,21 +140,52 @@ export async function pnlTotals(
   return pnlSums(grouped);
 }
 
+/**
+ * In-memory expected charge for a lease/period with no RentPayment row yet —
+ * same derivation as rent.service's materializeExpectedPayments (prorated
+ * charge, due date never before the lease starts) but NEVER persisted: the
+ * property detail is a read.
+ */
+function synthesizeExpectedCharge(
+  lease: { rentCents: number; dueDay: number; startDate: Date; endDate: Date },
+  period: string,
+): { status: string; dueDate: Date; amountCents: number; paidCents: number } {
+  const nominalDue = addDays(monthStart(period), lease.dueDay - 1);
+  const startDay = startOfUtcDay(lease.startDate);
+  return {
+    status: 'due',
+    dueDate: nominalDue < startDay ? startDay : nominalDue,
+    amountCents: expectedChargeCents(lease, period),
+    paidCents: 0,
+  };
+}
+
 export async function getDetail(accountId: string, id: string): Promise<PropertyDetailResponse> {
   const property = await getOwned(accountId, id);
+  const account = await prisma.account.findUniqueOrThrow({ where: { id: accountId } });
   const units = await prisma.unit.findMany({
     where: { propertyId: id },
     include: {
       leases: {
-        where: { status: 'active' },
+        where: { status: { in: ['active', 'pending_signature'] } },
         include: { leaseTenants: { include: { tenant: true }, orderBy: { isPrimary: 'desc' } } },
       },
+      _count: { select: { leases: true } },
     },
     orderBy: { label: 'asc' },
   });
 
   const now = new Date();
   const period = currentPeriod(now);
+
+  // This month's charge per unit, read-only. Keyed by unitId (not leaseId):
+  // one charge per unit per month, and a renewal switchover leaves the
+  // month's charge on the outgoing lease (rent.service materialization guard).
+  const payments = await prisma.rentPayment.findMany({
+    where: { period, lease: { unitId: { in: units.map((u) => u.id) } } },
+    include: { lease: { select: { unitId: true } } },
+  });
+  const paymentByUnit = new Map(payments.map((p) => [p.lease.unitId, p]));
   const mtd = await pnlTotals(
     accountId,
     { from: monthStart(period), to: monthEndExclusive(period) },
@@ -169,7 +209,32 @@ export async function getDetail(accountId: string, id: string): Promise<Property
   return {
     property: toApiProperty(property),
     units: units.map((u) => {
-      const lease = u.leases[0];
+      const lease = u.leases.find((l) => l.status === 'active');
+      const pending = u.leases.find((l) => l.status === 'pending_signature');
+
+      let rent: PropertyDetailUnitRent | null = null;
+      if (lease) {
+        // Charge row when one exists; otherwise (e.g. a lease created after
+        // this month's charges materialized) synthesize the expected charge
+        // in memory. A lease that doesn't touch this month has no charge.
+        const row =
+          paymentByUnit.get(u.id) ??
+          (lease.startDate < monthEndExclusive(period) && lease.endDate >= monthStart(period)
+            ? synthesizeExpectedCharge(lease, period)
+            : undefined);
+        if (row) {
+          const derived = deriveRentStatus(row, account.graceDays, now);
+          rent = {
+            period,
+            status: derived.status,
+            daysLate: derived.daysLate ?? null,
+            paidCents: row.paidCents,
+            amountCents: row.amountCents,
+            dueDate: iso(row.dueDate),
+          };
+        }
+      }
+
       return {
         id: u.id,
         propertyId: u.propertyId,
@@ -181,6 +246,11 @@ export async function getDetail(accountId: string, id: string): Promise<Property
         status: lease ? ('occupied' as const) : ('vacant' as const),
         currentLease: lease
           ? { ...toApiLease(lease), tenants: lease.leaseTenants.map(toTenantOnLease) }
+          : null,
+        rent,
+        leaseCount: u._count.leases,
+        pendingLease: pending
+          ? { ...toApiLease(pending), tenants: pending.leaseTenants.map(toTenantOnLease) }
           : null,
       };
     }),

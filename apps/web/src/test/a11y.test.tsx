@@ -32,6 +32,8 @@ import { ContractorDetail } from '../pages/ContractorDetail';
 import { ContractorsPage } from '../pages/ContractorsPage';
 import { Dashboard } from '../pages/Dashboard';
 import { MoneyReview } from '../pages/MoneyReview';
+import { PropertyDetail } from '../pages/PropertyDetail';
+import { hubRoutes, makeFetch, makeProperty, pnl } from './propertyHubFixtures';
 
 const kpis: DashboardKpisResponse = {
   netCashFlowMtdCents: 845000,
@@ -591,6 +593,77 @@ describe('review queue accessibility', () => {
     // Rent-match chip + both items' selects rendered before auditing.
     await screen.findByText(/T\. Okafor's Jul 2026 rent/);
     await screen.findByText('LOWES #00907');
+
+    const results = await axe.run(container, {
+      rules: { 'color-contrast': { enabled: false } },
+    });
+    expect(
+      results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`),
+    ).toEqual([]);
+  }, 20_000);
+});
+
+// --- Property hub --------------------------------------------------------------
+
+describe('property hub accessibility', () => {
+  function renderPropertyHub() {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <MemoryRouter initialEntries={['/properties/p1']}>
+            <Routes>
+              {/* Pages render inside AppShell's <main> in the app. */}
+              <Route
+                path="/properties/:id"
+                element={
+                  <main>
+                    <PropertyDetail />
+                  </main>
+                }
+              />
+            </Routes>
+          </MemoryRouter>
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+  }
+
+  it('populated hub (triage rows, enriched units table) has no axe violations', async () => {
+    vi.stubGlobal('fetch', makeFetch(hubRoutes()));
+    const { container } = renderPropertyHub();
+
+    // Triage, units table, financials, and documents all settled.
+    await screen.findByRole('heading', { name: 'Needs attention' });
+    await screen.findByText('5 units · 2 of 4 paid this month · 1 late');
+    await screen.findByText('Renews in 58 days');
+    await screen.findByText('No documents on file.');
+
+    const results = await axe.run(container, {
+      rules: { 'color-contrast': { enabled: false } },
+    });
+    expect(
+      results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`),
+    ).toEqual([]);
+  }, 20_000);
+
+  it('empty hub (no units) has no axe violations', async () => {
+    vi.stubGlobal(
+      'fetch',
+      makeFetch(
+        hubRoutes([
+          {
+            method: 'GET',
+            path: '/api/v1/properties/p1',
+            body: { property: makeProperty(), units: [], pnl, insights: [] },
+          },
+        ]),
+      ),
+    );
+    const { container } = renderPropertyHub();
+
+    await screen.findByText('No units yet');
+    await screen.findByText('No documents on file.');
 
     const results = await axe.run(container, {
       rules: { 'color-contrast': { enabled: false } },

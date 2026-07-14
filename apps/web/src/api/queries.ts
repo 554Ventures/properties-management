@@ -702,6 +702,8 @@ export function useSetLeaseTenantShare() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['leases'] });
       void qc.invalidateQueries({ queryKey: ['rent'] });
+      // Shares surface on the property hub too (TenantQuickSheet).
+      void qc.invalidateQueries({ queryKey: ['properties'] });
     },
   });
 }

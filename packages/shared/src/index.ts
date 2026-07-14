@@ -2,6 +2,7 @@
 // Populated per docs/ARCHITECTURE.md; both apps/api and apps/web import from here.
 
 export * from './branding';
+export * from './constants';
 export * from './enums';
 export * from './money';
 // schemas/api re-exports every schema file (entities, composites, chat blocks,

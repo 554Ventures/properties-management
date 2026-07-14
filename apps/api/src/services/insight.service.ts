@@ -1,6 +1,7 @@
 import {
   formatUsdWhole,
   InsightActionSchema,
+  RENEW_SOON_DAYS,
   type Insight,
   type InsightAction,
   type InsightScope,
@@ -167,7 +168,6 @@ interface InsightCandidate {
 }
 
 const LATE_RENT_MIN_DAYS = 5; // rule fires when daysLate > 5
-const RENEWAL_WINDOW_DAYS = 60;
 const SPIKE_RATIO = 1.25;
 const UNDERPERFORM_RATIO = 0.8;
 const CONTRACTOR_COST_RATIO = 1.5; // latest job > 150% of the contractor's prior average
@@ -286,13 +286,13 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
     }
   }
 
-  // Rule 3 — renewal_window: active leases ending within 60 days.
+  // Rule 3 — renewal_window: active leases ending within RENEW_SOON_DAYS.
   const today = new Date();
   const renewals = await prisma.lease.findMany({
     where: {
       status: 'active',
       unit: { property: { accountId } },
-      endDate: { gte: today, lte: addDays(today, RENEWAL_WINDOW_DAYS) },
+      endDate: { gte: today, lte: addDays(today, RENEW_SOON_DAYS) },
     },
     include: { leaseTenants: { include: { tenant: true } } },
     orderBy: { endDate: 'asc' },
@@ -313,7 +313,7 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
       scope: 'portfolio',
       type: 'renewal_window',
       severity: 'info',
-      title: `${renewals.length} lease${renewals.length === 1 ? '' : 's'} up for renewal in the next 60 days`,
+      title: `${renewals.length} lease${renewals.length === 1 ? '' : 's'} up for renewal in the next ${RENEW_SOON_DAYS} days`,
       body: `${names.length > 0 ? `Coming up: ${names.join(', ')}. ` : ''}Review terms and draft renewals before the leases lapse into month-to-month.`,
       actionLabel: 'Review renewals',
       actionTarget: target,

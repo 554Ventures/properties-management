@@ -16,31 +16,19 @@ import { DocumentsCard } from '../components/documents/DocumentsCard';
 import { LeaseFormModal } from '../components/forms/LeaseFormModal';
 import { LeaseTenantsModal } from '../components/forms/LeaseTenantsModal';
 import { UnitFormModal } from '../components/forms/UnitFormModal';
+import { LeaseHistoryTable } from '../components/property/LeaseHistoryTable';
 import { PageHeader } from '../components/shell/PageHeader';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { ErrorNotice } from '../components/ui/ErrorNotice';
 import { Skeleton } from '../components/ui/Skeleton';
-import { StatusBadge, type BadgeTone } from '../components/ui/StatusBadge';
+import { StatusBadge } from '../components/ui/StatusBadge';
 import { Table, Td, Th, Tr } from '../components/ui/Table';
 import { useToast } from '../components/ui/Toast';
 import { formatDate, formatMonth } from '../lib/format';
+import { rentStatusBadge } from '../lib/statusBadges';
 import { usePageTitle } from '../lib/usePageTitle';
-
-const leaseStatusBadge: Record<string, { tone: BadgeTone; label: string }> = {
-  active: { tone: 'positive', label: 'Active' },
-  pending_signature: { tone: 'warning', label: 'Pending signature' },
-  ended: { tone: 'neutral', label: 'Ended' },
-};
-
-const rentStatusBadge: Record<string, { tone: BadgeTone; label: string }> = {
-  paid: { tone: 'positive', label: 'Paid' },
-  due: { tone: 'neutral', label: 'Due' },
-  processing: { tone: 'neutral', label: 'Processing' },
-  failed: { tone: 'danger', label: 'Failed' },
-  late: { tone: 'danger', label: 'Late' },
-};
 
 type UnitModal =
   | { kind: 'edit-unit' }
@@ -91,8 +79,16 @@ export function UnitDetail() {
     detail.data;
 
   // UnitFormModal's edit mode expects a PropertyDetailUnit (unit + occupancy
-  // context) — recompose it from the flat response fields.
-  const detailUnit: PropertyDetailUnit = { ...unit, status, currentLease };
+  // context) — recompose it from the flat response fields. The form only reads
+  // the unit facts, so the rent snapshot (absent from this response) stays null.
+  const detailUnit: PropertyDetailUnit = {
+    ...unit,
+    status,
+    currentLease,
+    rent: null,
+    leaseCount: leases.length,
+    pendingLease: leases.find((l) => l.status === 'pending_signature') ?? null,
+  };
 
   const doArchiveUnit = () => {
     archiveUnit.mutate(
@@ -308,60 +304,7 @@ export function UnitDetail() {
       <section aria-label="Lease history" className="flex flex-col gap-3">
         <h2 className="text-base font-semibold text-ink">Lease history</h2>
         <Card flush>
-          {leases.length === 0 ? (
-            <p className="p-5 text-sm text-ink-muted">No leases on file for this unit.</p>
-          ) : (
-            <Table caption={`${unit.label} — lease history`}>
-              <thead>
-                <tr>
-                  <Th>Tenant</Th>
-                  <Th align="right">Rent / mo</Th>
-                  <Th>Term</Th>
-                  <Th>Status</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {leases.map((lease) => {
-                  const badge = leaseStatusBadge[lease.status] ?? leaseStatusBadge.ended;
-                  return (
-                    <Tr key={lease.id}>
-                      <Td>
-                        {lease.tenants.length > 0 ? (
-                          lease.tenants.map((tenant, i) => (
-                            <span key={tenant.id}>
-                              {i > 0 && ', '}
-                              <Link
-                                to={`/tenants/${tenant.id}`}
-                                className="text-ink transition-colors duration-fast hover:text-brand"
-                              >
-                                {tenant.fullName}
-                              </Link>
-                            </span>
-                          ))
-                        ) : (
-                          <span className="text-ink-muted">—</span>
-                        )}
-                      </Td>
-                      <Td align="right">{formatUsd(lease.rentCents)}</Td>
-                      <Td>
-                        {formatDate(lease.startDate)} – {formatDate(lease.endDate)}
-                      </Td>
-                      <Td>
-                        <div className="flex flex-wrap gap-2">
-                          {badge && <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge>}
-                          {lease.esignStatus && (
-                            <StatusBadge tone={lease.esignStatus === 'signed' ? 'positive' : 'neutral'}>
-                              E-sign: {lease.esignStatus}
-                            </StatusBadge>
-                          )}
-                        </div>
-                      </Td>
-                    </Tr>
-                  );
-                })}
-              </tbody>
-            </Table>
-          )}
+          <LeaseHistoryTable leases={leases} unitLabel={unit.label} />
         </Card>
       </section>
 

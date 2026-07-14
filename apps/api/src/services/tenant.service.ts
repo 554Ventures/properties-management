@@ -7,6 +7,7 @@ import type {
   TenantStatus,
   UpdateTenantInput,
 } from '@hearth/shared';
+import { RENEW_SOON_DAYS } from '@hearth/shared';
 import type { Tenant as DbTenant } from '@prisma/client';
 import { addDays, iso, isoOrNull } from '../lib/dates';
 import { ConflictError, NotFoundError } from '../lib/errors';
@@ -37,8 +38,6 @@ export function toApiTenant(t: DbTenant): Tenant {
     archivedAt: isoOrNull(t.archivedAt),
   };
 }
-
-const RENEW_SOON_DAYS = 60;
 
 /**
  * Derivation rule (ARCHITECTURE §4, binding): late if any unpaid rent past
