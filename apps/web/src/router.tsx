@@ -17,7 +17,6 @@ import { Reports } from './pages/Reports';
 import { ReportViewer } from './pages/ReportViewer';
 import { Settings } from './pages/Settings';
 import { TenantDetail } from './pages/TenantDetail';
-import { TenantsList } from './pages/TenantsList';
 import { TermsOfService } from './pages/TermsOfService';
 import { UnitDetail } from './pages/UnitDetail';
 import { AuthGate } from './state/auth';
@@ -56,7 +55,11 @@ export const router = createBrowserRouter([
       { path: 'properties', element: <PropertiesList /> },
       { path: 'properties/:id', element: <PropertyDetail /> },
       { path: 'units/:id', element: <UnitDetail /> },
-      { path: 'tenants', element: <TenantsList /> },
+      // The standalone tenants list is gone — tenants are reached via
+      // Properties → Unit (and the "Tenants without a lease" section on
+      // Properties). Old bookmarks and push deep links land on Properties;
+      // /tenants/:id detail pages remain.
+      { path: 'tenants', element: <Navigate to="/properties" replace /> },
       { path: 'tenants/:id', element: <TenantDetail /> },
       // Maintenance has one screen today; the index redirect keeps the
       // "Maintenance" breadcrumb from 404ing.

@@ -8,7 +8,6 @@ import {
   IconFileText,
   IconGear,
   IconHome,
-  IconUsers,
   IconWrench,
 } from '../ui/icons';
 
@@ -25,7 +24,6 @@ export interface NavItem {
 export const navItems: NavItem[] = [
   { to: '/', label: 'Dashboard', shortLabel: 'Home', icon: IconHome, end: true },
   { to: '/properties', label: 'Properties', icon: IconBuilding },
-  { to: '/tenants', label: 'Tenants & Leases', icon: IconUsers },
   { to: '/maintenance/contractors', label: 'Maintenance', icon: IconWrench },
   { to: '/money', label: 'Money', icon: IconDollar },
   { to: '/rent', label: 'Rent Collection', shortLabel: 'Rent', icon: IconCalendarCheck },

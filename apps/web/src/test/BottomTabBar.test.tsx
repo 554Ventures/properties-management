@@ -39,7 +39,6 @@ describe('BottomTabBar', () => {
     const dialog = await screen.findByRole('dialog', { name: 'More menu' });
     for (const label of [
       'Properties',
-      'Tenants & Leases',
       'Maintenance',
       'Documents',
       'Reports & Tax',

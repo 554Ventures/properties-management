@@ -121,12 +121,28 @@ describe('insight generation rules', () => {
     expect(spike?.actionTarget).toMatch(/^\/money\?type=expense&categoryId=.+/);
     expect(spike?.action?.action).toEqual({ kind: 'navigate', to: spike!.actionTarget });
 
-    // renewal_window: the old "Draft renewal" overpromise is gone — the honest
-    // action is the tenants list pre-filtered to expiring leases.
+    // renewal_window: the standalone tenants list is gone — the deep link
+    // lands on the soonest-ending lease's primary tenant (home of the
+    // "Draft renewal" flow), and the body names every renewing tenant.
     const renewal = active.find((i) => i.dedupeKey === keys.renewalWindow);
     expect(renewal?.actionLabel).toBe('Review renewals');
-    expect(renewal?.actionTarget).toBe('/tenants?status=renew_soon');
-    expect(renewal?.action?.action).toEqual({ kind: 'navigate', to: '/tenants?status=renew_soon' });
+    const soonestRenewal = await prisma.lease.findFirst({
+      where: {
+        status: 'active',
+        unit: { property: { accountId } },
+        endDate: { gte: new Date(), lte: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000) },
+      },
+      orderBy: { endDate: 'asc' },
+      include: { leaseTenants: { where: { isPrimary: true }, include: { tenant: true } } },
+    });
+    const soonestTenant = soonestRenewal!.leaseTenants[0]!.tenant;
+    expect(renewal?.actionTarget).toBe(`/tenants/${soonestTenant.id}`);
+    expect(renewal?.action?.action).toEqual({
+      kind: 'navigate',
+      to: `/tenants/${soonestTenant.id}`,
+    });
+    expect(renewal?.tenantId).toBe(soonestTenant.id);
+    expect(renewal?.body).toContain(soonestTenant.fullName);
 
     // transactions_pending_review: deep link straight into the review queue.
     const review = active.find((i) => i.type === 'transactions_pending_review');

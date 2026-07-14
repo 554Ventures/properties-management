@@ -133,12 +133,12 @@ const renewalInsight: Insight = {
   title: '2 leases up for renewal in the next 60 days',
   body: 'Review terms and draft renewals before the leases lapse into month-to-month.',
   actionLabel: 'Review renewals',
-  actionTarget: '/tenants?status=renew_soon',
+  actionTarget: '/tenants/t1',
   action: {
     label: 'Review renewals',
-    action: { kind: 'navigate', to: '/tenants?status=renew_soon' },
+    action: { kind: 'navigate', to: '/tenants/t1' },
   },
-  tenantId: null,
+  tenantId: 't1',
   dedupeKey: 'renewal_window:2026-07',
   createdAt: '2026-07-02T08:00:00.000Z',
 };

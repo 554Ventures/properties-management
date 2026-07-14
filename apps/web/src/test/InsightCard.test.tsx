@@ -133,17 +133,17 @@ describe('InsightCard structured actions', () => {
       insight({
         type: 'renewal_window',
         actionLabel: 'Review renewals',
-        actionTarget: '/tenants?status=renew_soon',
+        actionTarget: '/tenants/t1',
         action: {
           label: 'Review renewals',
-          action: { kind: 'navigate', to: '/tenants?status=renew_soon' },
+          action: { kind: 'navigate', to: '/tenants/t1' },
         },
       }),
     );
 
     const links = screen.getAllByRole('link', { name: 'Review renewals' });
     expect(links).toHaveLength(1);
-    expect(links[0]).toHaveAttribute('href', '/tenants?status=renew_soon');
+    expect(links[0]).toHaveAttribute('href', '/tenants/t1');
   });
 
   it('hides navigation that points at the page the card is on (contextual placements)', () => {

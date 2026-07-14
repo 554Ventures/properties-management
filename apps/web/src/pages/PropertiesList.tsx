@@ -1,11 +1,14 @@
 // Properties list (PRD §5.2): create/edit/archive properties with per-row
-// actions. The property form modal is shared with PropertyDetail.
+// actions. The property form modal is shared with PropertyDetail. Also hosts
+// the "Tenants without a lease" section — with the standalone tenants list
+// gone, this is the only surface where an unassigned tenant is reachable.
 import { useState } from 'react';
 import type { PropertyWithStats } from '@hearth/shared';
 import { formatUsdWhole } from '@hearth/shared';
 import { Link } from 'react-router-dom';
-import { useArchiveProperty, useProperties } from '../api/queries';
+import { useArchiveProperty, useProperties, useTenants } from '../api/queries';
 import { PropertyFormModal } from '../components/forms/PropertyFormModal';
+import { TenantFormModal } from '../components/forms/TenantFormModal';
 import { PageHeader } from '../components/shell/PageHeader';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
@@ -32,13 +35,18 @@ function statusTone(label: string): BadgeTone {
 export function PropertiesList() {
   usePageTitle('Properties');
   const properties = useProperties();
+  const tenants = useTenants();
   const archive = useArchiveProperty();
   const { can } = usePermissions();
   const canEdit = can('properties');
+  const canTenants = can('tenants');
   const { toast } = useToast();
   const [createOpen, setCreateOpen] = useState(false);
+  const [addTenantOpen, setAddTenantOpen] = useState(false);
   const [editing, setEditing] = useState<PropertyWithStats | null>(null);
   const [archiving, setArchiving] = useState<PropertyWithStats | null>(null);
+
+  const unassignedTenants = tenants.data?.filter((t) => t.unitId === null) ?? [];
 
   const columns: DataTableColumn<PropertyWithStats>[] = [
     {
@@ -172,7 +180,39 @@ export function PropertiesList() {
         </Card>
       )}
 
+      {unassignedTenants.length > 0 && (
+        <Card>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold text-ink">Tenants without a lease</h2>
+              <p className="mt-1 text-sm text-ink-muted">
+                Assign them by creating a lease from a vacant unit on a property.
+              </p>
+            </div>
+            {canTenants && (
+              <Button variant="secondary" size="sm" onClick={() => setAddTenantOpen(true)}>
+                <IconPlus size={14} />
+                Add tenant
+              </Button>
+            )}
+          </div>
+          <ul className="mt-3 flex flex-wrap gap-x-4 gap-y-2">
+            {unassignedTenants.map((t) => (
+              <li key={t.id}>
+                <Link
+                  to={`/tenants/${t.id}`}
+                  className="text-sm font-medium text-ink transition-colors duration-fast hover:text-brand"
+                >
+                  {t.fullName}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
       <PropertyFormModal mode="create" open={createOpen} onClose={() => setCreateOpen(false)} />
+      <TenantFormModal mode="create" open={addTenantOpen} onClose={() => setAddTenantOpen(false)} />
       <PropertyFormModal
         mode="edit"
         open={editing !== null}

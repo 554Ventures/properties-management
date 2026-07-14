@@ -294,24 +294,35 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
       unit: { property: { accountId } },
       endDate: { gte: today, lte: addDays(today, RENEWAL_WINDOW_DAYS) },
     },
+    include: { leaseTenants: { include: { tenant: true } } },
+    orderBy: { endDate: 'asc' },
   });
   if (renewals.length > 0) {
+    // The standalone tenants list is gone — the honest landing is the tenant
+    // detail (home of the "Draft renewal" flow) for the soonest-ending lease.
+    // The body names every renewing tenant so the multi-lease case loses
+    // nothing without a filtered list.
+    const primaryTenant = (lease: (typeof renewals)[number]) =>
+      (lease.leaseTenants.find((lt) => lt.isPrimary) ?? lease.leaseTenants[0])?.tenant ?? null;
+    const names = renewals
+      .map((lease) => primaryTenant(lease)?.fullName)
+      .filter((name): name is string => Boolean(name));
+    const soonestTenant = primaryTenant(renewals[0]!);
+    const target = soonestTenant ? `/tenants/${soonestTenant.id}` : '/properties';
     candidates.push({
       scope: 'portfolio',
       type: 'renewal_window',
       severity: 'info',
       title: `${renewals.length} lease${renewals.length === 1 ? '' : 's'} up for renewal in the next 60 days`,
-      body: 'Review terms and draft renewals before the leases lapse into month-to-month.',
-      // "Draft renewal" overpromised — there is no renewal-drafting flow. The
-      // honest action is the tenants list pre-filtered to expiring leases.
+      body: `${names.length > 0 ? `Coming up: ${names.join(', ')}. ` : ''}Review terms and draft renewals before the leases lapse into month-to-month.`,
       actionLabel: 'Review renewals',
-      actionTarget: '/tenants?status=renew_soon',
+      actionTarget: target,
       action: {
         label: 'Review renewals',
-        action: { kind: 'navigate', to: '/tenants?status=renew_soon' },
+        action: { kind: 'navigate', to: target },
       },
       propertyId: null,
-      tenantId: null,
+      tenantId: soonestTenant?.id ?? null,
       leaseId: renewals.length === 1 ? (renewals[0]?.id ?? null) : null,
       dedupeKey: `renewal_window:${period}`,
     });

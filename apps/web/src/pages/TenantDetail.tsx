@@ -80,7 +80,7 @@ export function TenantDetail() {
       <div className="flex flex-col gap-6">
         <PageHeader
           title="Tenant"
-          breadcrumbs={[{ label: 'Tenants & Leases', to: '/tenants' }, { label: 'Detail' }]}
+          breadcrumbs={[{ label: 'Properties', to: '/properties' }, { label: 'Tenant' }]}
         />
         <ErrorNotice error={detail.error} onRetry={() => void detail.refetch()} />
       </div>
@@ -88,6 +88,10 @@ export function TenantDetail() {
   }
 
   const { tenant, leases, paymentHistory, documents } = detail.data;
+
+  // With the standalone tenants list gone, the breadcrumb anchors to the
+  // tenant's property (active lease first, else the most recent one).
+  const breadcrumbLease = leases.find((lease) => lease.status === 'active') ?? leases[0];
 
   const startDraft = (lease: TenantLease) => {
     draftRenewal.mutate(lease.id, {
@@ -163,7 +167,18 @@ export function TenantDetail() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title={tenant.fullName}
-        breadcrumbs={[{ label: 'Tenants & Leases', to: '/tenants' }, { label: tenant.fullName }]}
+        breadcrumbs={
+          breadcrumbLease
+            ? [
+                { label: 'Properties', to: '/properties' },
+                {
+                  label: breadcrumbLease.propertyLabel,
+                  to: `/properties/${breadcrumbLease.propertyId}`,
+                },
+                { label: tenant.fullName },
+              ]
+            : [{ label: 'Properties', to: '/properties' }, { label: tenant.fullName }]
+        }
         actions={
           <div className="flex gap-2">
             <Button variant="secondary" size="sm" onClick={() => setEditTenant(true)}>

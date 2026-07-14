@@ -1,6 +1,6 @@
 // Shared "Reminders composed" modal — used everywhere send_rent_reminders can
-// be triggered from (Rent Collection, Tenants & Leases, chat action cards) so
-// the mailto: hand-off looks and behaves the same everywhere.
+// be triggered from (Rent Collection, chat action cards) so the mailto:
+// hand-off looks and behaves the same everywhere.
 import { Button, buttonClasses } from '../ui/Button';
 import { Modal } from '../ui/Modal';
 import { IconBell } from '../ui/icons';
