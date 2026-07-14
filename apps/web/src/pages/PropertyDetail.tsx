@@ -2,7 +2,7 @@
 // "Needs attention" triage card, the enriched units & leases table (tenant
 // quick sheets, this-month rent status, renewal affordances), financials, and
 // documents. Write controls hide behind usePermissions; reads stay visible.
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { RENEW_SOON_DAYS, formatUsd, formatUsdWhole } from '@hearth/shared';
 import type {
   Lease,
@@ -20,10 +20,11 @@ import {
   useRestoreProperty,
   useRestoreUnit,
   useTerminateLease,
+  useUnitDetail,
 } from '../api/queries';
 import { InsightCard } from '../components/ai/InsightCard';
 import { DocumentsCard } from '../components/documents/DocumentsCard';
-import { LeaseFormModal } from '../components/forms/LeaseFormModal';
+import { LeaseFormModal, type LeasePrefill } from '../components/forms/LeaseFormModal';
 import { LeaseTenantsModal } from '../components/forms/LeaseTenantsModal';
 import { PropertyFormModal } from '../components/forms/PropertyFormModal';
 import { RenewalModal } from '../components/forms/RenewalModal';
@@ -97,6 +98,25 @@ export function PropertyDetail() {
   const [modal, setModal] = useState<PropertyModal>(null);
   const [renewalDraft, setRenewalDraft] = useState<RenewalDraftResponse | null>(null);
   const [showArchived, setShowArchived] = useState(false);
+
+  // Re-lease prefill: when creating a lease on a unit that had one before,
+  // lazily fetch the unit's lease history and seed the form from the most
+  // recent ended lease. Memoized so the modal's prefill effect sees a stable
+  // object across renders.
+  const createLeaseUnit = modal?.kind === 'create-lease' ? modal.unit : null;
+  const priorUnit = useUnitDetail(
+    createLeaseUnit && createLeaseUnit.leaseCount > 0 ? createLeaseUnit.id : undefined,
+  );
+  const leasePrefill = useMemo<LeasePrefill | null>(() => {
+    const prior = priorUnit.data?.leases.find((l) => l.status === 'ended');
+    if (!prior) return null;
+    return {
+      rentCents: prior.rentCents,
+      dueDay: prior.dueDay,
+      tenantIds: prior.tenants.map((t) => t.id),
+      tenantName: prior.tenants[0]?.fullName,
+    };
+  }, [priorUnit.data]);
 
   if (detail.isPending) {
     return (
@@ -452,6 +472,7 @@ export function PropertyDetail() {
           unitId={modal.unit.id}
           unitLabel={modal.unit.label}
           suggestedRentCents={modal.unit.marketRentCents}
+          prefill={leasePrefill}
           onClose={() => setModal(null)}
         />
       )}
@@ -526,8 +547,10 @@ function UnitRow({
   const formatDelta = (cents: number) =>
     cents % 100 === 0 ? formatUsdWhole(cents) : formatUsd(cents);
 
+  // Past end dates stay in the window: an expired lease is still 'active'
+  // (month-to-month lapse), and renewing it is the most urgent case.
   const renewDays = lease ? daysUntil(lease.endDate) : null;
-  const inRenewWindow = renewDays != null && renewDays >= 0 && renewDays <= RENEW_SOON_DAYS;
+  const inRenewWindow = renewDays != null && renewDays <= RENEW_SOON_DAYS;
   // leaseCount is the unit's unfiltered lease total — subtract the current and
   // pending leases so a renewal awaiting signature doesn't read as history.
   const priorLeases = unit.leaseCount - (lease ? 1 : 0) - (unit.pendingLease ? 1 : 0);
@@ -622,8 +645,12 @@ function UnitRow({
                 {inRenewWindow &&
                   (unit.pendingLease ? (
                     <StatusBadge tone="neutral">Renewal awaiting signature</StatusBadge>
+                  ) : renewDays < 0 ? (
+                    <StatusBadge tone="danger">Month-to-month</StatusBadge>
                   ) : (
-                    <StatusBadge tone="warning">Renews in {daysLabel(renewDays)}</StatusBadge>
+                    <StatusBadge tone="warning">
+                      {renewDays === 0 ? 'Lease ends today' : `Renews in ${daysLabel(renewDays)}`}
+                    </StatusBadge>
                   ))}
                 {lease.esignStatus && (
                   <StatusBadge tone={lease.esignStatus === 'signed' ? 'positive' : 'neutral'}>

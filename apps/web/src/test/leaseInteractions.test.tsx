@@ -216,17 +216,140 @@ describe('renewal acceptance', () => {
           (i as RequestInit | undefined)?.method === 'POST',
       );
       expect(call).toBeDefined();
+      // The editable form round-trips dates through the date inputs, so the
+      // accepted terms come back normalized to UTC midnight.
       expect(call?.[1]?.body).toBe(
         JSON.stringify({
           rentCents: 132000,
           dueDay: 1,
-          startDate: '2026-08-01T12:00:00.000Z',
-          endDate: '2027-07-31T12:00:00.000Z',
+          startDate: '2026-08-01T00:00:00.000Z',
+          endDate: '2027-07-31T00:00:00.000Z',
         }),
       );
     });
     expect(
       await screen.findByText('Renewal accepted — the new lease is now active.'),
     ).toBeInTheDocument();
+  });
+
+  it('renewal terms are editable — accepting posts the adjusted rent and due day', async () => {
+    const fetchMock = makeFetch([
+      { method: 'GET', path: '/api/v1/tenants/t1', body: tenantDetail },
+      { method: 'POST', path: '/api/v1/leases/l1/renewal-draft', body: draft },
+      { method: 'POST', path: '/api/v1/leases/l1/renewal', body: { ...baseLease, id: 'l2' } },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithProviders(
+      <MemoryRouter initialEntries={['/tenants/t1']}>
+        <Routes>
+          <Route path="/tenants/:id" element={<TenantDetail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Draft renewal' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Renewal proposal' });
+    fireEvent.input(within(dialog).getByLabelText(/Monthly rent/), {
+      target: { value: '1350' },
+    });
+    fireEvent.input(within(dialog).getByLabelText(/Rent due day/), { target: { value: '5' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: /Accept & create renewal/ }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([u, i]) =>
+          String(u) === '/api/v1/leases/l1/renewal' &&
+          (i as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(call).toBeDefined();
+      expect(call?.[1]?.body).toBe(
+        JSON.stringify({
+          rentCents: 135000,
+          dueDay: 5,
+          startDate: '2026-08-01T00:00:00.000Z',
+          endDate: '2027-07-31T00:00:00.000Z',
+        }),
+      );
+    });
+  });
+
+  it('accepting with an attached agreement uploads it against the new lease', async () => {
+    const fetchMock = makeFetch([
+      { method: 'GET', path: '/api/v1/tenants/t1', body: tenantDetail },
+      { method: 'POST', path: '/api/v1/leases/l1/renewal-draft', body: draft },
+      { method: 'POST', path: '/api/v1/leases/l1/renewal', body: { ...baseLease, id: 'l2' } },
+      {
+        method: 'POST',
+        path: '/api/v1/documents',
+        body: { id: 'd1', name: 'renewal.pdf' },
+      },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithProviders(
+      <MemoryRouter initialEntries={['/tenants/t1']}>
+        <Routes>
+          <Route path="/tenants/:id" element={<TenantDetail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Draft renewal' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Renewal proposal' });
+    const file = new File(['pdf-bytes'], 'renewal.pdf', { type: 'application/pdf' });
+    fireEvent.change(within(dialog).getByLabelText(/Signed agreement/), {
+      target: { files: [file] },
+    });
+    expect(within(dialog).getByText('renewal.pdf', { exact: false })).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: /Accept & create renewal/ }));
+
+    await waitFor(() => {
+      const docCall = fetchMock.mock.calls.find(
+        ([u, i]) =>
+          String(u) === '/api/v1/documents' && (i as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(docCall).toBeDefined();
+      const body = docCall?.[1]?.body as FormData;
+      expect(body.get('entityType')).toBe('lease');
+      expect(body.get('entityId')).toBe('l2'); // the NEW lease, not the source
+      expect(body.get('type')).toBe('lease');
+      expect((body.get('file') as File).name).toBe('renewal.pdf');
+    });
+    expect(
+      await screen.findByText('Renewal accepted — new lease active, agreement attached.'),
+    ).toBeInTheDocument();
+  });
+
+  it('renewal rejects an invalid edit (zero rent) without posting', async () => {
+    const fetchMock = makeFetch([
+      { method: 'GET', path: '/api/v1/tenants/t1', body: tenantDetail },
+      { method: 'POST', path: '/api/v1/leases/l1/renewal-draft', body: draft },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithProviders(
+      <MemoryRouter initialEntries={['/tenants/t1']}>
+        <Routes>
+          <Route path="/tenants/:id" element={<TenantDetail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Draft renewal' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Renewal proposal' });
+    fireEvent.input(within(dialog).getByLabelText(/Monthly rent/), { target: { value: '0' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: /Accept & create renewal/ }));
+
+    expect(
+      await within(dialog).findByText('Enter a monthly rent greater than zero.'),
+    ).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(
+        ([u, i]) =>
+          String(u) === '/api/v1/leases/l1/renewal' &&
+          (i as RequestInit | undefined)?.method === 'POST',
+      ),
+    ).toBe(false);
   });
 });

@@ -3,8 +3,12 @@
 // edits terms only (co-tenants are managed via LeaseTenantsModal).
 import { useEffect, useState, type FormEvent } from 'react';
 import type { Lease } from '@hearth/shared';
-import { useCreateLease, useTenants, useUpdateLease } from '../../api/queries';
-import { fromDateInputValue, toDateInputValue } from '../../lib/format';
+import { useCreateLease, useTenants, useUpdateLease, useUploadDocument } from '../../api/queries';
+import {
+  AgreementFileField,
+  AGREEMENT_MAX_SIZE_BYTES,
+} from '../documents/AgreementFileField';
+import { formatBytes, fromDateInputValue, toDateInputValue } from '../../lib/format';
 import { Button } from '../ui/Button';
 import { FormField, Input } from '../ui/FormField';
 import { Modal } from '../ui/Modal';
@@ -34,6 +38,15 @@ function fromLease(lease: Lease): FormState {
   };
 }
 
+/** Re-lease starting point taken from a unit's most recent ended lease. */
+export interface LeasePrefill {
+  rentCents: number;
+  dueDay: number;
+  tenantIds: string[];
+  /** Primary tenant's name, for the "prefilled from" note. */
+  tenantName?: string;
+}
+
 export interface LeaseFormModalProps {
   open: boolean;
   onClose: () => void;
@@ -42,6 +55,10 @@ export interface LeaseFormModalProps {
   unitId?: string;
   unitLabel?: string;
   suggestedRentCents?: number | null;
+  /** Create mode: seed terms + tenants from the unit's previous lease. May
+   *  arrive after the modal opens (lazy fetch) — applied only while the form
+   *  is untouched, so it never clobbers user input. Callers should memoize. */
+  prefill?: LeasePrefill | null;
   /** Edit mode: the lease being edited. */
   lease?: Lease;
 }
@@ -53,15 +70,25 @@ export function LeaseFormModal({
   unitId,
   unitLabel,
   suggestedRentCents,
+  prefill,
   lease,
 }: LeaseFormModalProps) {
   const create = useCreateLease();
   const update = useUpdateLease();
+  const upload = useUploadDocument();
   const tenants = useTenants();
   const { toast } = useToast();
   const [form, setForm] = useState<FormState>(emptyForm);
   const [tenantIds, setTenantIds] = useState<string[]>([]);
-  const [errors, setErrors] = useState<{ rent?: string; dates?: string; tenants?: string }>({});
+  const [agreement, setAgreement] = useState<File | null>(null);
+  const [errors, setErrors] = useState<{
+    rent?: string;
+    dates?: string;
+    tenants?: string;
+    agreement?: string;
+  }>({});
+  const [dirty, setDirty] = useState(false);
+  const [prefillApplied, setPrefillApplied] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -74,11 +101,32 @@ export function LeaseFormModal({
       });
     }
     setTenantIds([]);
+    setAgreement(null);
     setErrors({});
+    setDirty(false);
+    setPrefillApplied(false);
   }, [open, mode, lease, suggestedRentCents]);
 
-  const set = (key: keyof FormState) => (event: FormEvent<HTMLInputElement>) =>
+  // Seed from the previous lease once it's known — dates stay blank (the new
+  // term is always the landlord's call). Tenant ids are pruned against the
+  // live tenant list so an archived tenant can't ride in invisibly.
+  useEffect(() => {
+    if (!open || mode !== 'create' || !prefill || dirty || prefillApplied) return;
+    setForm((prev) => ({
+      ...prev,
+      rent: (prefill.rentCents / 100).toString(),
+      dueDay: String(prefill.dueDay),
+    }));
+    if (tenants.data) {
+      setTenantIds(prefill.tenantIds.filter((id) => tenants.data.some((t) => t.id === id)));
+      setPrefillApplied(true);
+    }
+  }, [open, mode, prefill, dirty, prefillApplied, tenants.data]);
+
+  const set = (key: keyof FormState) => (event: FormEvent<HTMLInputElement>) => {
+    setDirty(true);
     setForm((prev) => ({ ...prev, [key]: (event.target as HTMLInputElement).value }));
+  };
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -134,16 +182,53 @@ export function LeaseFormModal({
         endDate: fromDateInputValue(form.endDate),
       },
       {
-        onSuccess: () => {
-          toast('Lease created.', 'positive');
-          onClose();
+        onSuccess: (created) => {
+          if (!agreement) {
+            toast('Lease created.', 'positive');
+            onClose();
+            return;
+          }
+          // The lease exists either way — an upload failure must not read as a
+          // failed save, so it closes with a pointed follow-up instead.
+          const docForm = new FormData();
+          docForm.append('entityType', 'lease');
+          docForm.append('entityId', created.id);
+          docForm.append('type', 'lease');
+          docForm.append('file', agreement);
+          upload.mutate(docForm, {
+            onSuccess: () => {
+              toast('Lease created and agreement attached.', 'positive');
+              onClose();
+            },
+            onError: () => {
+              toast(
+                'Lease created, but the agreement upload failed — attach it from the lease documents.',
+                'danger',
+              );
+              onClose();
+            },
+          });
         },
         onError,
       },
     );
   };
 
-  const busy = create.isPending || update.isPending;
+  const pickAgreement = (picked: File | undefined) => {
+    if (!picked) return;
+    if (picked.size > AGREEMENT_MAX_SIZE_BYTES) {
+      setAgreement(null);
+      setErrors((prev) => ({
+        ...prev,
+        agreement: `That file is ${formatBytes(picked.size)} — the limit is 10 MB.`,
+      }));
+      return;
+    }
+    setAgreement(picked);
+    setErrors((prev) => ({ ...prev, agreement: undefined }));
+  };
+
+  const busy = create.isPending || update.isPending || upload.isPending;
   const title = mode === 'edit' ? 'Edit lease terms' : `Create lease${unitLabel ? ` — ${unitLabel}` : ''}`;
 
   return (
@@ -159,7 +244,10 @@ export function LeaseFormModal({
                 description: t.email ?? undefined,
               }))}
               value={tenantIds}
-              onChange={setTenantIds}
+              onChange={(ids) => {
+                setDirty(true);
+                setTenantIds(ids);
+              }}
               loading={tenants.isPending}
               placeholder={
                 (tenants.data ?? []).length === 0
@@ -171,10 +259,18 @@ export function LeaseFormModal({
               required
             />
             <InlineNewTenant
-              onCreated={(tenant) =>
-                setTenantIds((prev) => (prev.includes(tenant.id) ? prev : [...prev, tenant.id]))
-              }
+              onCreated={(tenant) => {
+                setDirty(true);
+                setTenantIds((prev) => (prev.includes(tenant.id) ? prev : [...prev, tenant.id]));
+              }}
             />
+            {prefillApplied && !dirty && prefill && (
+              <p className="text-xs text-ink-muted">
+                Prefilled from the previous lease
+                {prefill.tenantName ? ` (${prefill.tenantName})` : ''} — adjust anything before
+                saving. Dates are intentionally blank.
+              </p>
+            )}
           </div>
         )}
 
@@ -202,6 +298,17 @@ export function LeaseFormModal({
             <Input type="date" value={form.endDate} onInput={set('endDate')} />
           </FormField>
         </div>
+
+        {mode === 'create' && (
+          <AgreementFileField
+            id="lease-agreement"
+            file={agreement}
+            error={errors.agreement}
+            hint="PDF, image, or Word (.docx) — up to 10 MB. Attached to the lease as a Lease document."
+            onPick={pickAgreement}
+            onRemove={() => setAgreement(null)}
+          />
+        )}
 
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>

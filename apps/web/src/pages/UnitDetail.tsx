@@ -13,7 +13,7 @@ import {
   useUnitDetail,
 } from '../api/queries';
 import { DocumentsCard } from '../components/documents/DocumentsCard';
-import { LeaseFormModal } from '../components/forms/LeaseFormModal';
+import { LeaseFormModal, type LeasePrefill } from '../components/forms/LeaseFormModal';
 import { LeaseTenantsModal } from '../components/forms/LeaseTenantsModal';
 import { UnitFormModal } from '../components/forms/UnitFormModal';
 import { LeaseHistoryTable } from '../components/property/LeaseHistoryTable';
@@ -89,6 +89,18 @@ export function UnitDetail() {
     leaseCount: leases.length,
     pendingLease: leases.find((l) => l.status === 'pending_signature') ?? null,
   };
+
+  // Re-lease starting point: seed Create lease from the most recent ended
+  // lease (LeaseFormModal only applies it while the form is untouched).
+  const priorLease = leases.find((l) => l.status === 'ended');
+  const leasePrefill: LeasePrefill | null = priorLease
+    ? {
+        rentCents: priorLease.rentCents,
+        dueDay: priorLease.dueDay,
+        tenantIds: priorLease.tenants.map((t) => t.id),
+        tenantName: priorLease.tenants[0]?.fullName,
+      }
+    : null;
 
   const doArchiveUnit = () => {
     archiveUnit.mutate(
@@ -388,6 +400,7 @@ export function UnitDetail() {
         unitId={modal?.kind === 'create-lease' ? unit.id : undefined}
         unitLabel={modal?.kind === 'create-lease' ? unit.label : undefined}
         suggestedRentCents={modal?.kind === 'create-lease' ? unit.marketRentCents : undefined}
+        prefill={leasePrefill}
         onClose={() => setModal(null)}
       />
       <LeaseFormModal

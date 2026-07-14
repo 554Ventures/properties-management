@@ -102,10 +102,13 @@ export function PropertyTasks({
       }
     }
 
-    // --- Lease-expiry rows --------------------------------------------------
+    // --- Lease-expiry rows. A lease whose endDate has passed stays 'active'
+    //     (nothing auto-ends it) — that's a de facto month-to-month lapse and
+    //     the moment renewal most needs attention, so it ranks above the
+    //     merely-expiring rows. ---------------------------------------------
     if (lease) {
       const days = daysUntil(lease.endDate);
-      if (days >= 0 && days <= RENEW_SOON_DAYS) {
+      if (days <= RENEW_SOON_DAYS) {
         if (unit.pendingLease) {
           rows.push({
             key: `renewal-${unit.id}`,
@@ -117,14 +120,18 @@ export function PropertyTasks({
               : `The renewal on ${unit.label} is awaiting signature`,
           });
         } else {
+          const whose = primary ? `${primary}'s lease` : 'The lease';
+          const lapsed = days < 0;
           rows.push({
             key: `renewal-${unit.id}`,
-            severity: 1,
-            tone: 'warning',
-            badge: 'Lease ending',
-            sentence: primary
-              ? `${primary}'s lease on ${unit.label} ends in ${daysLabel(days)}`
-              : `The lease on ${unit.label} ends in ${daysLabel(days)}`,
+            severity: lapsed ? 0 : 1,
+            tone: lapsed ? 'danger' : 'warning',
+            badge: lapsed ? 'Month-to-month' : 'Lease ending',
+            sentence: lapsed
+              ? `${whose} on ${unit.label} ended ${daysLabel(-days)} ago — now running month-to-month`
+              : days === 0
+                ? `${whose} on ${unit.label} ends today`
+                : `${whose} on ${unit.label} ends in ${daysLabel(days)}`,
             affordance: canTenants ? (
               <Button
                 variant="secondary"

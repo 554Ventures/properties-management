@@ -448,3 +448,210 @@ describe('permission gating', () => {
     expect(screen.queryByRole('button', { name: 'Restore' })).not.toBeInTheDocument();
   });
 });
+
+// --- Lapsed lease (month-to-month) + re-lease prefill -------------------------
+
+describe('lapsed lease and re-lease prefill', () => {
+  it('a lease past its end date surfaces as month-to-month with a Draft renewal affordance', async () => {
+    const lapsed = hubDetailResponse();
+    const unitB = lapsed.units.find((u) => u.id === 'u2')!;
+    unitB.currentLease = { ...unitB.currentLease!, endDate: isoIn(-10.5) };
+    renderHub(hubRoutes([{ method: 'GET', path: '/api/v1/properties/p1', body: lapsed }]));
+
+    const card = await findTriageCard();
+    expect(card).toHaveTextContent(
+      "S. Novak's lease on Unit B ended 10 days ago — now running month-to-month",
+    );
+    // Lapsed ranks with the danger rows, ahead of merely-expiring leases.
+    const rows = within(card).getAllByRole('listitem');
+    expect(rows[0]).toHaveTextContent(/3 days late|month-to-month/);
+    expect(within(card).getByText('Month-to-month')).toBeInTheDocument();
+    // The renew affordance stays available past the end date.
+    expect(within(card).getByRole('button', { name: 'Draft renewal' })).toBeInTheDocument();
+
+    // The units table mirrors it (badge shares the same window math as the
+    // row's Renew… action; RowActions collapses to a sheet in jsdom).
+    const table = findUnitsTable();
+    expect(within(table).getByText('Month-to-month')).toBeInTheDocument();
+  });
+
+  it('Create lease on a previously-leased unit prefills terms and tenants from the last ended lease', async () => {
+    const former = makeTenant('t-former', 'F. Ormer');
+    const endedLease = makeLease('l-old', 'u3', 98000, [former], {
+      startDate: isoIn(-700),
+      endDate: isoIn(-30),
+      status: 'ended',
+      dueDay: 5,
+    });
+    const detail = hubDetailResponse();
+    const unitC = detail.units.find((u) => u.id === 'u3')!;
+    unitC.leaseCount = 1;
+
+    renderHub(
+      hubRoutes([
+        { method: 'GET', path: '/api/v1/properties/p1', body: detail },
+        {
+          method: 'GET',
+          path: '/api/v1/units/u3',
+          body: {
+            unit: {
+              id: 'u3',
+              propertyId: 'p1',
+              label: 'Unit C',
+              bedrooms: 1,
+              bathrooms: 1,
+              marketRentCents: 95000,
+              archivedAt: null,
+            },
+            propertyId: 'p1',
+            propertyLabel: '12 Maple St',
+            status: 'vacant',
+            currentLease: null,
+            leases: [endedLease],
+            rentPayments: [],
+            pnl,
+          },
+        },
+        {
+          method: 'GET',
+          path: '/api/v1/tenants',
+          body: [
+            {
+              id: 't-former',
+              fullName: 'F. Ormer',
+              email: null,
+              phone: null,
+              unitId: null,
+              unitLabel: null,
+              propertyId: null,
+              propertyLabel: null,
+              rentCents: null,
+              leaseEndDate: null,
+              status: 'current',
+            },
+          ],
+        },
+      ]),
+    );
+
+    const card = await findTriageCard();
+    fireEvent.click(within(card).getByRole('button', { name: 'Create lease' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Create lease — Unit C' });
+
+    // Terms + tenant arrive from the lazy unit fetch; dates stay blank.
+    await waitFor(() =>
+      expect(within(dialog).getByLabelText(/Monthly rent/)).toHaveValue(980),
+    );
+    expect(within(dialog).getByLabelText(/Rent due day/)).toHaveValue(5);
+    await waitFor(() =>
+      expect(
+        within(dialog).getByText(/Prefilled from the previous lease \(F\. Ormer\)/),
+      ).toBeInTheDocument(),
+    );
+    expect(within(dialog).getByText('F. Ormer')).toBeInTheDocument();
+    expect(within(dialog).getByLabelText(/Start date/)).toHaveValue('');
+    expect(within(dialog).getByLabelText(/End date/)).toHaveValue('');
+
+    // User edits win: typing a rent stops any later prefill overwrite.
+    fireEvent.input(within(dialog).getByLabelText(/Monthly rent/), { target: { value: '1010' } });
+    expect(within(dialog).getByLabelText(/Monthly rent/)).toHaveValue(1010);
+  });
+
+  it('Create lease with an attached agreement uploads it against the created lease', async () => {
+    const former = makeTenant('t-former', 'F. Ormer');
+    const endedLease = makeLease('l-old', 'u3', 98000, [former], {
+      startDate: isoIn(-700),
+      endDate: isoIn(-30),
+      status: 'ended',
+      dueDay: 5,
+    });
+    const detail = hubDetailResponse();
+    const unitC = detail.units.find((u) => u.id === 'u3')!;
+    unitC.leaseCount = 1;
+
+    const fetchMock = renderHub(
+      hubRoutes([
+        { method: 'GET', path: '/api/v1/properties/p1', body: detail },
+        {
+          method: 'GET',
+          path: '/api/v1/units/u3',
+          body: {
+            unit: {
+              id: 'u3',
+              propertyId: 'p1',
+              label: 'Unit C',
+              bedrooms: 1,
+              bathrooms: 1,
+              marketRentCents: 95000,
+              archivedAt: null,
+            },
+            propertyId: 'p1',
+            propertyLabel: '12 Maple St',
+            status: 'vacant',
+            currentLease: null,
+            leases: [endedLease],
+            rentPayments: [],
+            pnl,
+          },
+        },
+        {
+          method: 'GET',
+          path: '/api/v1/tenants',
+          body: [
+            {
+              id: 't-former',
+              fullName: 'F. Ormer',
+              email: null,
+              phone: null,
+              unitId: null,
+              unitLabel: null,
+              propertyId: null,
+              propertyLabel: null,
+              rentCents: null,
+              leaseEndDate: null,
+              status: 'current',
+            },
+          ],
+        },
+        {
+          method: 'POST',
+          path: '/api/v1/leases',
+          body: makeLease('l-new', 'u3', 101000, [former]),
+        },
+        { method: 'POST', path: '/api/v1/documents', body: { id: 'd1', name: 'lease.pdf' } },
+      ]),
+    );
+
+    const card = await findTriageCard();
+    fireEvent.click(within(card).getByRole('button', { name: 'Create lease' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Create lease — Unit C' });
+    // Wait for the prefill (rent, due day, tenant) so the form is submittable.
+    await waitFor(() => expect(within(dialog).getByLabelText(/Monthly rent/)).toHaveValue(980));
+
+    fireEvent.input(within(dialog).getByLabelText(/Start date/), {
+      target: { value: '2026-08-01' },
+    });
+    fireEvent.input(within(dialog).getByLabelText(/End date/), {
+      target: { value: '2027-07-31' },
+    });
+    const file = new File(['pdf-bytes'], 'lease.pdf', { type: 'application/pdf' });
+    fireEvent.change(within(dialog).getByLabelText(/Signed agreement/), {
+      target: { files: [file] },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create lease' }));
+
+    await waitFor(() => {
+      const docCall = fetchMock.mock.calls.find(
+        ([u, i]) =>
+          String(u) === '/api/v1/documents' && (i as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(docCall).toBeDefined();
+      const body = docCall?.[1]?.body as FormData;
+      expect(body.get('entityType')).toBe('lease');
+      expect(body.get('entityId')).toBe('l-new');
+      expect(body.get('type')).toBe('lease');
+      expect((body.get('file') as File).name).toBe('lease.pdf');
+    });
+    expect(await screen.findByText('Lease created and agreement attached.')).toBeInTheDocument();
+  });
+});
