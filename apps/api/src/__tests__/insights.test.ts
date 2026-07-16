@@ -13,6 +13,7 @@ import * as dashboardService from '../services/dashboard.service';
 import * as insightService from '../services/insight.service';
 import * as leaseService from '../services/lease.service';
 import * as propertyService from '../services/property.service';
+import * as rentService from '../services/rent.service';
 import * as tenantService from '../services/tenant.service';
 
 let app: FastifyInstance;
@@ -327,6 +328,43 @@ describe('insight generation rules', () => {
   });
 });
 
+describe('late_rent auto-resolve', () => {
+  it('paying a late charge in full flips its insight from active to resolved on the next read', async () => {
+    // Own throwaway fixture — never pay off a seeded charge (pinned
+    // constants); cleaned up by this file's global afterAll (deletes every
+    // account under @integrationtest.example, cascading to its rent/insight
+    // rows).
+    const { accountId, lease } = await createLateRentFixture('resolve', 'Late Payer Resolve');
+    await makeRentLate(lease.id);
+
+    const active = await insightService.listActive(accountId);
+    const lateRent = active.find((i) => i.type === 'late_rent');
+    expect(lateRent).toBeDefined();
+    expect(lateRent!.status).toBe('active');
+
+    const payment = await prisma.rentPayment.findFirstOrThrow({
+      where: { leaseId: lease.id, period: currentPeriod() },
+    });
+    await rentService.recordPayment(accountId, {
+      leaseId: lease.id,
+      period: currentPeriod(),
+      amountCents: payment.amountCents,
+      method: 'manual',
+    });
+
+    // Re-listing regenerates insights: the charge is no longer late, so the
+    // auto-resolve sweep must flip the existing row rather than leaving it
+    // active or dedupe-suppressing a would-be replacement.
+    const afterPayment = await insightService.listActive(accountId);
+    expect(afterPayment.find((i) => i.type === 'late_rent')).toBeUndefined();
+
+    const row = await prisma.insight.findFirst({
+      where: { accountId, type: 'late_rent', dedupeKey: lateRent!.dedupeKey },
+    });
+    expect(row?.status).toBe('resolved');
+  });
+});
+
 describe('contractor_cost_spike rule', () => {
   /** Fresh account + contractor + vendor-matched confirmed expenses. */
   async function createContractorFixture(
@@ -480,7 +518,14 @@ describe('transactions_pending_review rule lifecycle', () => {
     // Confirming the older row keeps the key (newest is unchanged) but the
     // live card's count must refresh in place — no new row.
     await prisma.transaction.update({ where: { id: older.id }, data: { status: 'confirmed' } });
-    expect(await insightService.generateInsights(account.id)).toEqual([]);
+    // Confirming a property-less bank row legitimately raises the separate
+    // unassigned_transactions card, so scope this to the pending-review rule:
+    // no NEW pending-review insight — its count refreshes in place instead.
+    expect(
+      (await insightService.generateInsights(account.id)).filter(
+        (i) => i.type === 'transactions_pending_review',
+      ),
+    ).toEqual([]);
     const card = await prisma.insight.findFirst({
       where: { accountId: account.id, type: 'transactions_pending_review', status: 'active' },
     });
@@ -489,7 +534,11 @@ describe('transactions_pending_review rule lifecycle', () => {
 
     // Clearing the queue resolves the card instead of leaving it stale.
     await prisma.transaction.update({ where: { id: newest.id }, data: { status: 'confirmed' } });
-    expect(await insightService.generateInsights(account.id)).toEqual([]);
+    expect(
+      (await insightService.generateInsights(account.id)).filter(
+        (i) => i.type === 'transactions_pending_review',
+      ),
+    ).toEqual([]);
     const resolved = await prisma.insight.findFirst({
       where: { accountId: account.id, type: 'transactions_pending_review' },
     });
@@ -546,5 +595,49 @@ describe('transactions_pending_review rule lifecycle', () => {
         [`transactions_pending_review:${newer.id}`, 'active'],
       ]),
     );
+  });
+});
+
+describe('unassigned_transactions rule', () => {
+  it('does not fire on the seeded demo portfolio (manual portfolio overhead is legitimately unassigned)', async () => {
+    const accountId = await getDemoAccountId();
+    const active = await insightService.listActive(accountId);
+    expect(active.filter((i) => i.type === 'unassigned_transactions')).toEqual([]);
+  });
+
+  it('fires for a confirmed, bank-source, property-less, unclassified row this month', async () => {
+    const accountId = await getDemoAccountId();
+    const period = currentPeriod();
+    // A realistic bank pull: source 'bank' + externalId, no property, no
+    // classification. The source:'bank' filter is what keeps the seed quiet.
+    const txn = await prisma.transaction.create({
+      data: {
+        accountId,
+        date: new Date(),
+        amountCents: 4200,
+        type: 'expense',
+        description: 'ZZUNASSIGNED bank charge',
+        source: 'bank',
+        status: 'confirmed',
+        externalId: `txn_test_unassigned_${Date.now()}`,
+      },
+    });
+
+    try {
+      const active = await insightService.listActive(accountId);
+      const insight = active.find((i) => i.type === 'unassigned_transactions');
+      expect(insight).toBeDefined();
+      expect(insight!.severity).toBe('info');
+      expect(insight!.scope).toBe('portfolio');
+      expect(insight!.dedupeKey).toBe(`unassigned_transactions:${period}`);
+      expect(insight!.actionTarget).toBe('/money?unassigned=true');
+      expect(insight!.action?.action).toEqual({ kind: 'navigate', to: '/money?unassigned=true' });
+    } finally {
+      // Never leave demo-account rows behind — later files pin the seed exactly.
+      await prisma.transaction.delete({ where: { id: txn.id } });
+      await prisma.insight.deleteMany({
+        where: { accountId, dedupeKey: `unassigned_transactions:${period}` },
+      });
+    }
   });
 });

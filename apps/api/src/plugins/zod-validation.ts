@@ -23,3 +23,22 @@ export function coerceNumbers(
   }
   return out;
 }
+
+/**
+ * Query strings arrive as strings — map the literal 'true'/'false' of named
+ * keys to real booleans before parsing. Deliberately NOT z.coerce.boolean(),
+ * which treats every non-empty string (including 'false') as true; any other
+ * value is left as-is for the schema to reject.
+ */
+export function coerceBooleans(
+  query: Record<string, unknown>,
+  keys: string[],
+): Record<string, unknown> {
+  const out = { ...query };
+  for (const key of keys) {
+    const v = out[key];
+    if (v === 'true') out[key] = true;
+    else if (v === 'false') out[key] = false;
+  }
+  return out;
+}

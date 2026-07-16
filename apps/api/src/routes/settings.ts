@@ -8,6 +8,7 @@ import {
 } from '@hearth/shared';
 import type { Account as DbAccount } from '@prisma/client';
 import type { FastifyInstance } from 'fastify';
+import { requireOwner } from '../lib/authz';
 import { iso, isoOrNull } from '../lib/dates';
 import { BadRequestError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
@@ -25,6 +26,7 @@ function toApiAccount(a: DbAccount): AccountSettings {
     taxRatePct: a.taxRatePct,
     taxYearStartMonth: a.taxYearStartMonth,
     graceDays: a.graceDays,
+    defaultLateFeeCents: a.defaultLateFeeCents,
     createdAt: iso(a.createdAt),
     deletionRequestedAt: isoOrNull(a.deletionRequestedAt),
   };
@@ -36,7 +38,10 @@ export async function settingsRoutes(app: FastifyInstance): Promise<void> {
     return toApiAccount(account);
   });
 
-  app.patch('/settings/account', async (req) => {
+  // Owner-only (CLAUDE.md authz conventions): these settings steer account-wide
+  // money math — timezone moves every period boundary, graceDays/defaultLateFeeCents
+  // change rent derivation, taxRatePct changes the set-aside.
+  app.patch('/settings/account', { preHandler: requireOwner() }, async (req) => {
     const input = parseBody(UpdateAccountSettingsInputSchema, req.body);
     const account = await prisma.account.update({ where: { id: req.accountId }, data: input });
     return toApiAccount(account);
@@ -46,12 +51,12 @@ export async function settingsRoutes(app: FastifyInstance): Promise<void> {
   // grace-window deletion request. The actual hard delete only ever runs
   // from the daily scheduler once the grace period elapses (accountService.
   // processScheduledDeletions) — this endpoint never deletes anything itself.
-  app.post('/settings/account/deletion', async (req, reply) => {
+  app.post('/settings/account/deletion', { preHandler: requireOwner() }, async (req, reply) => {
     const result = await accountService.requestDeletion(req.accountId);
     return reply.code(202).send(result);
   });
 
-  app.delete('/settings/account/deletion', async (req, reply) => {
+  app.delete('/settings/account/deletion', { preHandler: requireOwner() }, async (req, reply) => {
     await accountService.cancelDeletion(req.accountId);
     return reply.code(204).send();
   });

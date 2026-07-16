@@ -11,19 +11,19 @@ import type { Prisma, Report as DbReport } from '@prisma/client';
 import { toCsv, type CsvColumn } from '../lib/csv';
 import {
   addMonthsToPeriod,
-  currentPeriod,
+  currentPeriodInTz,
   iso,
-  monthEndExclusive,
-  monthStart,
+  monthEndExclusiveInTz,
+  monthStartInTz,
   periodLabel,
-  periodOf,
-  trailingPeriods,
-  yearRange,
+  periodOfInTz,
+  yearRangeInTz,
 } from '../lib/dates';
 import { BadRequestError, NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { renderReportPdf, type PdfBlock } from '../lib/pdf';
 import { mockEmail } from '../integrations/mock/mock-email';
+import { accountTimezone } from './account.service';
 import { writeAudit, type AuditActor } from './audit.service';
 import { ordinaryExpense, pnlBucket } from '../lib/pnl';
 import { deriveRentStatus } from './rent.service';
@@ -168,6 +168,7 @@ async function buildPnl(accountId: string, range: { from: Date; to: Date }, prop
 async function buildNetCashflow(
   accountId: string,
   range: { from: Date; to: Date },
+  tz: string,
   propertyId?: string,
 ) {
   const txns = await fetchLedger(accountId, range, propertyId);
@@ -175,7 +176,7 @@ async function buildNetCashflow(
   for (const t of txns) {
     const b = pnlBucket(t);
     if (!b) continue; // transfers/owner contributions aren't cashflow-from-operations
-    const month = periodOf(t.date);
+    const month = periodOfInTz(t.date, tz);
     const row = months.get(month) ?? { month, incomeCents: 0, expenseCents: 0, netCents: 0 };
     if (b.bucket === 'income') row.incomeCents += b.amountCents;
     else row.expenseCents += b.amountCents;
@@ -313,7 +314,7 @@ async function buildTenantLedger(
     orderBy: [{ dueDate: 'asc' }],
   });
   const rows = payments.map((p) => {
-    const derived = deriveRentStatus(p, account.graceDays);
+    const derived = deriveRentStatus(p, account.graceDays, account.timezone);
     return {
       tenantName: p.lease.leaseTenants[0]?.tenant.fullName ?? '',
       propertyLabel: p.lease.unit.property.nickname ?? p.lease.unit.property.addressLine1,
@@ -596,8 +597,8 @@ async function buildStressTest(
   };
 }
 
-async function buildMonthlyReview(accountId: string, period: string) {
-  const range = { from: monthStart(period), to: monthEndExclusive(period) };
+async function buildMonthlyReview(accountId: string, period: string, tz: string) {
+  const range = { from: monthStartInTz(period, tz), to: monthEndExclusiveInTz(period, tz) };
   const pnl = await buildPnl(accountId, range);
   const properties = await prisma.property.findMany({ where: { accountId }, include: { units: true } });
   const grouped = await prisma.transaction.groupBy({
@@ -606,11 +607,19 @@ async function buildMonthlyReview(accountId: string, period: string) {
     _sum: { amountCents: true },
   });
   const netByProperty = new Map<string, number>();
+  // Portfolio-level (property-less) lines used to be dropped here, so the
+  // per-property nets silently disagreed with the report's own bottom line.
+  // Accumulate them into an Unassigned bucket instead — same label Schedule E
+  // uses (buildScheduleE) — so the rows reconcile with pnl.totals.
+  let unassignedNet = 0;
   for (const g of grouped) {
-    if (!g.propertyId) continue;
     const b = pnlBucket({ ...g, amountCents: g._sum.amountCents ?? 0 });
     if (!b) continue;
     const signed = b.amountCents * (b.bucket === 'income' ? 1 : -1);
+    if (!g.propertyId) {
+      unassignedNet += signed;
+      continue;
+    }
     netByProperty.set(g.propertyId, (netByProperty.get(g.propertyId) ?? 0) + signed);
   }
   const propertyNets = properties.map((p) => ({
@@ -618,11 +627,14 @@ async function buildMonthlyReview(accountId: string, period: string) {
     units: p.units.length,
     netCents: netByProperty.get(p.id) ?? 0,
   }));
+  if (unassignedNet !== 0) {
+    propertyNets.push({ propertyLabel: 'Portfolio / unassigned', units: 0, netCents: unassignedNet });
+  }
 
   // Watch items: expense categories that spiked vs. the prior 3 months, plus
   // upcoming renewals.
   const watchItems: string[] = [];
-  const priorStart = monthStart(addMonthsToPeriod(period, -3));
+  const priorStart = monthStartInTz(addMonthsToPeriod(period, -3), tz);
   const currentByCat = await prisma.transaction.groupBy({
     by: ['categoryId'],
     where: {
@@ -687,14 +699,20 @@ async function buildMonthlyReview(accountId: string, period: string) {
 
 // ── generate / export / email ────────────────────────────────────────────────
 
-function resolveRange(input: GenerateReportInput): {
+function resolveRange(
+  input: GenerateReportInput,
+  tz: string,
+): {
   from: Date;
   to: Date;
   taxYear: number | null;
   label: string;
 } {
+  // Tax-year and default-year ranges bucket on the account's local calendar
+  // (WS4): Schedule E stays IRS calendar-year, but its boundary is the
+  // landlord's local Jan 1, not UTC's.
   if (input.taxYear !== undefined) {
-    const { from, to } = yearRange(input.taxYear);
+    const { from, to } = yearRangeInTz(input.taxYear, tz);
     return { from, to, taxYear: input.taxYear, label: String(input.taxYear) };
   }
   if (input.from && input.to) {
@@ -707,8 +725,8 @@ function resolveRange(input: GenerateReportInput): {
       label: `${from.toISOString().slice(0, 10)} – ${to.toISOString().slice(0, 10)}`,
     };
   }
-  const year = new Date().getUTCFullYear();
-  const { from, to } = yearRange(year);
+  const year = Number(currentPeriodInTz(tz).slice(0, 4));
+  const { from, to } = yearRangeInTz(year, tz);
   return { from, to, taxYear: year, label: String(year) };
 }
 
@@ -717,6 +735,7 @@ async function buildData(
   type: ReportType,
   range: { from: Date; to: Date },
   taxYear: number | null,
+  tz: string,
   propertyId?: string,
 ): Promise<unknown> {
   switch (type) {
@@ -724,7 +743,7 @@ async function buildData(
     case 'income_statement':
       return buildPnl(accountId, range, propertyId);
     case 'net_cashflow':
-      return buildNetCashflow(accountId, range, propertyId);
+      return buildNetCashflow(accountId, range, tz, propertyId);
     case 'rent_roll':
       return buildRentRoll(accountId, propertyId);
     case 'general_ledger':
@@ -742,11 +761,11 @@ async function buildData(
     case 'escrow_ledger':
       return buildEscrowLedger();
     case 'tax_package':
-      return buildTaxPackage(accountId, range, taxYear ?? new Date().getUTCFullYear());
+      return buildTaxPackage(accountId, range, taxYear ?? Number(currentPeriodInTz(tz).slice(0, 4)));
     case 'stress_test':
       return buildStressTest(accountId, range, propertyId);
     case 'monthly_review':
-      return buildMonthlyReview(accountId, periodOf(range.from));
+      return buildMonthlyReview(accountId, periodOfInTz(range.from, tz), tz);
   }
 }
 
@@ -756,13 +775,16 @@ export async function generate(
   input: GenerateReportInput,
   actor: AuditActor = 'user',
 ): Promise<Report> {
+  const tz = await accountTimezone(accountId);
   if (input.type === 'monthly_review') {
-    const period = input.from ? periodOf(new Date(input.from)) : addMonthsToPeriod(currentPeriod(), -1);
+    const period = input.from
+      ? periodOfInTz(new Date(input.from), tz)
+      : addMonthsToPeriod(currentPeriodInTz(tz), -1);
     return generateMonthlyReviewReport(accountId, period, actor);
   }
   const info = typeInfo(input.type);
-  const { from, to, taxYear, label } = resolveRange(input);
-  const data = await buildData(accountId, input.type, { from, to }, taxYear, input.propertyId);
+  const { from, to, taxYear, label } = resolveRange(input, tz);
+  const data = await buildData(accountId, input.type, { from, to }, taxYear, tz, input.propertyId);
   const row = await prisma.report.create({
     data: {
       accountId,
@@ -792,14 +814,15 @@ export async function generateMonthlyReviewReport(
   period: string,
   actor: AuditActor = 'system',
 ): Promise<Report> {
-  const data = await buildMonthlyReview(accountId, period);
+  const tz = await accountTimezone(accountId);
+  const data = await buildMonthlyReview(accountId, period, tz);
   const row = await prisma.report.create({
     data: {
       accountId,
       type: 'monthly_review',
       title: `Monthly review — ${periodLabel(period)}`,
-      periodStart: monthStart(period),
-      periodEnd: monthEndExclusive(period),
+      periodStart: monthStartInTz(period, tz),
+      periodEnd: monthEndExclusiveInTz(period, tz),
       taxYear: null,
       propertyId: null,
       dataJson: JSON.stringify(data),

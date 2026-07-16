@@ -3,9 +3,10 @@
 // never before the lease starts, and renewal/termination adjusting the open
 // charges they shorten. Every row this file creates is removed again.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { addDays, addMonthsToPeriod, currentPeriod, iso, monthEndExclusive, monthStart, startOfUtcDay } from '../lib/dates';
+import { addDays, addMonthsToPeriod, currentPeriodInTz, dayOfMonthInTz, iso, monthEndExclusiveInTz, monthStartInTz, startOfDayInTz } from '../lib/dates';
 import { prisma } from '../lib/prisma';
 import { getDemoAccountId } from '../plugins/auth';
+import { DEMO_TIMEZONE } from '../../prisma/seed-constants';
 import * as leaseService from '../services/lease.service';
 import * as propertyService from '../services/property.service';
 import * as rentService from '../services/rent.service';
@@ -13,15 +14,20 @@ import * as tenantService from '../services/tenant.service';
 
 const DAY_MS = 86_400_000;
 
+// The demo account lives in DEMO_TIMEZONE, and rent proration/materialization
+// now bucket on that local calendar (WS4). Build fixture dates + expectations
+// on the same tz so the test's proration math matches the service's.
+const TZ = DEMO_TIMEZONE;
+
 let accountId: string;
 let propertyId: string;
 let unitIds: string[] = [];
 const tenantIds: string[] = [];
 const leaseIds: string[] = [];
 
-const period = currentPeriod();
-const periodStart = monthStart(period);
-const daysInMonth = Math.round((monthEndExclusive(period).getTime() - periodStart.getTime()) / DAY_MS);
+const period = currentPeriodInTz(TZ);
+const periodStart = monthStartInTz(period, TZ);
+const daysInMonth = Math.round((monthEndExclusiveInTz(period, TZ).getTime() - periodStart.getTime()) / DAY_MS);
 
 async function makeLease(
   unitId: string,
@@ -152,7 +158,7 @@ describe('mid-month termination', () => {
       data: {
         leaseId,
         period: nextPeriod,
-        dueDate: monthEndExclusive(period),
+        dueDate: monthEndExclusiveInTz(period, TZ),
         amountCents: rent,
         status: 'due',
       },
@@ -160,8 +166,9 @@ describe('mid-month termination', () => {
 
     await leaseService.terminate(accountId, leaseId);
 
-    const occupiedDays =
-      Math.round((startOfUtcDay(new Date()).getTime() - periodStart.getTime()) / DAY_MS) + 1;
+    // terminate ends the lease on today's local day, so the final month covers
+    // days 1..(local day-of-month), inclusive — matched on the account tz.
+    const occupiedDays = dayOfMonthInTz(startOfDayInTz(new Date(), TZ), TZ);
     const row = await prisma.rentPayment.findUniqueOrThrow({
       where: { leaseId_period: { leaseId, period } },
     });

@@ -50,12 +50,15 @@ function deriveTenantStatus(
     rentPayments: Array<{ status: string; dueDate: Date; amountCents: number; paidCents: number }>;
   }>,
   graceDays: number,
+  tz: string,
   today: Date,
 ): TenantStatus {
   const anyLate = leases.some((l) =>
-    l.rentPayments.some((p) => deriveRentStatus(p, graceDays, today).daysLate !== undefined),
+    l.rentPayments.some((p) => deriveRentStatus(p, graceDays, tz, today).daysLate !== undefined),
   );
   if (anyLate) return 'late';
+  // renew_soon is a rolling 60-day duration off the current instant — no
+  // period bucketing, so it stays timezone-agnostic (WS4).
   const renewCutoff = addDays(today, RENEW_SOON_DAYS);
   if (leases.some((l) => l.endDate <= renewCutoff)) return 'renew_soon';
   return 'current';
@@ -84,7 +87,7 @@ export async function list(accountId: string): Promise<TenantListResponse> {
   return tenants.map((t) => {
     const activeLeases = t.leaseTenants.map((lt) => lt.lease).filter((l) => l.status === 'active');
     const lease = activeLeases[0];
-    const status = deriveTenantStatus(activeLeases, account.graceDays, today);
+    const status = deriveTenantStatus(activeLeases, account.graceDays, account.timezone, today);
     return {
       id: t.id,
       fullName: t.fullName,
@@ -125,13 +128,14 @@ export async function getDetail(accountId: string, id: string): Promise<TenantDe
     .flatMap((l) => l.rentPayments)
     .sort((a, b) => b.dueDate.getTime() - a.dueDate.getTime())
     .map((p) => {
-      const derived = deriveRentStatus(p, account.graceDays);
+      const derived = deriveRentStatus(p, account.graceDays, account.timezone);
       return {
         id: p.id,
         period: p.period,
         dueDate: iso(p.dueDate),
         amountCents: p.amountCents,
         paidCents: p.paidCents,
+        lateFeeCents: p.lateFeeCents,
         status: derived.status,
         ...(derived.daysLate !== undefined ? { daysLate: derived.daysLate } : {}),
         method: p.method as 'online' | 'manual' | 'bank' | null,

@@ -10,6 +10,13 @@ export const IntegrationSchema = z.object({
   externalRef: z.string().nullable(),
   scopes: z.array(z.string()), // parsed from scopesJson
   lastSyncedAt: z.string().datetime().nullable(), // plaid: last transaction import
+  // Nightly-sync health (bank feeds only): the last error message + when it
+  // occurred, and how many consecutive syncs have failed. A successful sync
+  // resets all three to null/null/0. Powers the Settings "last sync failed"
+  // line and the bank_sync_failing insight.
+  lastSyncError: z.string().nullable(),
+  lastSyncErrorAt: z.string().datetime().nullable(),
+  syncFailureCount: z.number().int(),
   createdAt: z.string().datetime(),
 });
 

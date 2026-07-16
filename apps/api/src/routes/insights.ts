@@ -1,7 +1,6 @@
 import { InsightScopeSchema, InsightStatusSchema } from '@hearth/shared';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { addMonthsToPeriod, currentPeriod } from '../lib/dates';
 import { parseQuery } from '../plugins/zod-validation';
 import * as insightService from '../services/insight.service';
 import * as reportService from '../services/report.service';
@@ -26,10 +25,10 @@ export async function insightsRoutes(app: FastifyInstance): Promise<void> {
     reportService.getById(req.accountId, req.params.id),
   );
 
-  // Dev/demo trigger for the scheduled job — reviews the last full month.
+  // Dev/demo trigger for the scheduled job — reviews the last full month
+  // (resolved on the account's timezone inside the service, WS4).
   app.post('/insights/monthly-reviews/generate', async (req, reply) => {
-    const period = addMonthsToPeriod(currentPeriod(), -1);
-    const report = await insightService.generateMonthlyReview(req.accountId, period);
+    const report = await insightService.generateMonthlyReview(req.accountId);
     return reply.code(201).send(report);
   });
 

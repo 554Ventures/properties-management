@@ -35,6 +35,10 @@ model Account {
   taxRatePct          Int       @default(20)
   taxYearStartMonth   Int       @default(1)
   graceDays           Int       @default(0)
+  // Account-wide default late fee (integer cents) applied when a landlord marks
+  // a late charge (WS7). 0 = late fees disabled account-wide. A Lease may
+  // override this (Lease.lateFeeCents). Policy only — never auto-applied.
+  defaultLateFeeCents Int       @default(0)
   // Set when the account owner requests deletion (data erasure); the daily
   // scheduler hard-deletes the account once ACCOUNT_DELETION_GRACE_DAYS have
   // elapsed. Clearing this field (a "cancel deletion" action) recovers the
@@ -58,6 +62,7 @@ model Account {
   pushDevices  PushDevice[]
   onboarding   OnboardingState?
   vendorCategoryMemories VendorCategoryMemory[]
+  bankSyncDiscrepancies  BankSyncDiscrepancy[]
 }
 
 // Getting-started checklist state (one row per account, created lazily on the
@@ -184,6 +189,9 @@ model Lease {
   unitId          String
   rentCents       Int
   dueDay          Int      @default(1)
+  // Per-lease late-fee override (WS7). null = fall back to the account default;
+  // 0 = explicitly no late fee for this lease even if the account has a default.
+  lateFeeCents    Int?
   startDate       DateTime
   endDate         DateTime
   status          String // LeaseStatus (@hearth/shared): active | ended | pending_signature
@@ -280,10 +288,39 @@ model Transaction {
   category    Category?    @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   rentPayment RentPayment?
   rentDeposit RentPaymentDeposit?
+  bankSyncDiscrepancies BankSyncDiscrepancy[]
 
   @@index([accountId, date])
   @@index([accountId, status])
   @@unique([accountId, externalId])
+}
+
+// A bank-side change (Plaid/Stripe FC `modified` or `removed`) that arrived
+// AFTER the local transaction was confirmed/dismissed. applySyncBatch never
+// rewrites a user-vouched row silently, so it records the pending change here
+// for the landlord to accept (apply the restated values through the same
+// guarded update/remove path so rent-link protections hold) or dismiss (keep
+// their version). Keyed loosely on (accountId, externalId, kind) while pending
+// so nightly mock-adapter replays refresh a single row in place rather than
+// accreting duplicates.
+model BankSyncDiscrepancy {
+  id            String    @id @default(cuid())
+  accountId     String
+  // The local ledger row the change targets. SetNull if that row is later
+  // deleted by other means — the discrepancy is then only dismissable.
+  transactionId String?
+  externalId    String    // provider transaction id (matches Transaction.externalId)
+  provider      String    // BankSyncProvider (@hearth/shared): plaid | stripe_fc
+  kind          String    // BankDiscrepancyKind (@hearth/shared): modified | removed
+  bankDataJson  String?   // BankDiscrepancyData (@hearth/shared) for a 'modified' change; null for 'removed'
+  status        String    @default("pending") // BankDiscrepancyStatus (@hearth/shared): pending | accepted | dismissed
+  createdAt     DateTime  @default(now())
+  resolvedAt    DateTime?
+
+  account     Account      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  transaction Transaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+
+  @@index([accountId, status])
 }
 
 model RentPayment {
@@ -296,6 +333,13 @@ model RentPayment {
   // $transaction as every deposit write). 0 < paidCents < amountCents derives
   // the 'partial' display status; stored status stays 'due' until fully paid.
   paidCents     Int       @default(0)
+  // Late fee stamped on this charge by an explicit human action (WS7); one fee
+  // per charge in v1. 0 = no fee applied. totalDueCents = amountCents +
+  // lateFeeCents everywhere the remaining balance is computed; tenant shares
+  // stay against the base amountCents. Fee income lands in P&L on a cash basis,
+  // via the deposit-created ledger Transaction (categorized 'Late Fees'), not
+  // this column.
+  lateFeeCents  Int       @default(0)
   method        String? // RentPaymentMethod (@hearth/shared): online | manual | bank — null until paid
   status        String // RentPaymentStatus (@hearth/shared): due | processing | paid | failed
   paidAt        DateTime?
@@ -441,6 +485,13 @@ model Integration {
   scopesJson  String    @default("[]")
   configJson  String    @default("{}") // provider-specific config, e.g. Plaid { accessTokenEncrypted, itemId, cursor }
   lastSyncedAt DateTime? // plaid: last transaction import (display + import cooldown)
+  // Nightly-sync health (jobs.service.ts): the scheduler bumps the failure
+  // count + stamps the last error on a bank feed that throws, and a later
+  // successful sync resets all three. Surfaces the bank_sync_failing insight
+  // (>= 3) and the Settings "last sync failed" line.
+  lastSyncError    String?
+  lastSyncErrorAt  DateTime?
+  syncFailureCount Int       @default(0)
   createdAt   DateTime  @default(now())
 
   account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)

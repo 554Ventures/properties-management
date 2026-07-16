@@ -19,10 +19,11 @@ import type {
   Tenant as DbTenant,
   Unit as DbUnit,
 } from '@prisma/client';
-import { addDays, iso, isoOrNull, startOfUtcDay } from '../lib/dates';
+import { addDays, iso, isoOrNull, startOfDayInTz } from '../lib/dates';
 import { ConflictError, NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { mockDocusign } from '../integrations/mock/mock-docusign';
+import { accountTimezone } from './account.service';
 import { writeAudit, type AuditActor } from './audit.service';
 import { coveredDaysInPeriod, deriveRentStatus, proratedRentShare } from './rent.service';
 import { toApiTenant, toTenantOnLease } from './tenant.service';
@@ -33,6 +34,7 @@ export function toApiLease(l: DbLease): Lease {
     unitId: l.unitId,
     rentCents: l.rentCents,
     dueDay: l.dueDay,
+    lateFeeCents: l.lateFeeCents,
     startDate: iso(l.startDate),
     endDate: iso(l.endDate),
     status: l.status as LeaseStatus,
@@ -107,13 +109,14 @@ export async function getDetail(accountId: string, id: string): Promise<LeaseDet
   return {
     lease: toLeaseWithContext(lease as LeaseWithJoins),
     rentPayments: lease.rentPayments.map((p) => {
-      const derived = deriveRentStatus(p, account.graceDays);
+      const derived = deriveRentStatus(p, account.graceDays, account.timezone);
       return {
         id: p.id,
         period: p.period,
         dueDate: iso(p.dueDate),
         amountCents: p.amountCents,
         paidCents: p.paidCents,
+        lateFeeCents: p.lateFeeCents,
         status: derived.status,
         ...(derived.daysLate !== undefined ? { daysLate: derived.daysLate } : {}),
         method: p.method as 'online' | 'manual' | 'bank' | null,
@@ -142,6 +145,8 @@ export async function create(
       unitId: input.unitId,
       rentCents: input.rentCents,
       dueDay: input.dueDay,
+      // Optional per-lease late-fee override (WS7); omitted → null → account default.
+      ...(input.lateFeeCents !== undefined ? { lateFeeCents: input.lateFeeCents } : {}),
       startDate: new Date(input.startDate),
       endDate: new Date(input.endDate),
       status: 'active',
@@ -172,6 +177,8 @@ export async function update(
     data: {
       ...(input.rentCents !== undefined ? { rentCents: input.rentCents } : {}),
       ...(input.dueDay !== undefined ? { dueDay: input.dueDay } : {}),
+      // omitted → unchanged; null → clear to account default; number → set (WS7).
+      ...(input.lateFeeCents !== undefined ? { lateFeeCents: input.lateFeeCents } : {}),
       ...(input.startDate !== undefined ? { startDate: new Date(input.startDate) } : {}),
       ...(input.endDate !== undefined ? { endDate: new Date(input.endDate) } : {}),
       ...(input.status !== undefined ? { status: input.status } : {}),
@@ -182,7 +189,7 @@ export async function update(
     action: 'update',
     entityType: 'lease',
     entityId: id,
-    detail: { rentCents: row.rentCents, dueDay: row.dueDay, status: row.status },
+    detail: { rentCents: row.rentCents, dueDay: row.dueDay, lateFeeCents: row.lateFeeCents, status: row.status },
   });
   return toApiLease(row);
 }
@@ -211,6 +218,7 @@ async function reconcileShortenedLeaseCharges(
   tx: Prisma.TransactionClient,
   lease: { id: string; rentCents: number; startDate: Date },
   endExclusive: Date,
+  tz: string,
   successor?: { rentCents: number; startDate: Date; endDate: Date },
 ): Promise<ChargeAdjustment[]> {
   const open = await tx.rentPayment.findMany({
@@ -218,7 +226,7 @@ async function reconcileShortenedLeaseCharges(
   });
   const adjustments: ChargeAdjustment[] = [];
   for (const row of open) {
-    if (coveredDaysInPeriod(row.period, lease.startDate, endExclusive) === 0) {
+    if (coveredDaysInPeriod(row.period, lease.startDate, endExclusive, tz) === 0) {
       await tx.rentPayment.delete({ where: { id: row.id } });
       adjustments.push({
         action: 'rent_payment.voided',
@@ -229,13 +237,14 @@ async function reconcileShortenedLeaseCharges(
       continue;
     }
     const blended = Math.round(
-      proratedRentShare(lease.rentCents, row.period, lease.startDate, endExclusive) +
+      proratedRentShare(lease.rentCents, row.period, lease.startDate, endExclusive, tz) +
         (successor
           ? proratedRentShare(
               successor.rentCents,
               row.period,
               successor.startDate,
-              addDays(startOfUtcDay(successor.endDate), 1),
+              addDays(startOfDayInTz(successor.endDate, tz), 1),
+              tz,
             )
           : 0),
     );
@@ -287,7 +296,10 @@ export async function terminate(
   actor: AuditActor = 'user',
 ): Promise<Lease> {
   const existing = await getOwned(accountId, id);
-  const today = startOfUtcDay(new Date());
+  const tz = await accountTimezone(accountId);
+  // "Today" is the landlord's local day (WS4) so a late-evening termination
+  // ends the lease on the intended local date, not tomorrow in UTC.
+  const today = startOfDayInTz(new Date(), tz);
   const endDate = existing.endDate < today ? existing.endDate : today;
   const { row, adjustments } = await prisma.$transaction(async (tx) => {
     const updated = await tx.lease.update({
@@ -297,7 +309,8 @@ export async function terminate(
     const changes = await reconcileShortenedLeaseCharges(
       tx,
       existing,
-      addDays(startOfUtcDay(endDate), 1),
+      addDays(startOfDayInTz(endDate, tz), 1),
+      tz,
     );
     return { row: updated, adjustments: changes };
   });
@@ -429,6 +442,7 @@ export async function createRenewal(
   }
 
   const startDate = new Date(input.startDate);
+  const tz = await accountTimezone(accountId);
   const { created, adjustments } = await prisma.$transaction(async (tx) => {
     const newLease = await tx.lease.create({
       data: {
@@ -438,6 +452,10 @@ export async function createRenewal(
         startDate,
         endDate: new Date(input.endDate),
         status: 'active',
+        // Carry the per-lease late-fee policy across the renewal — an explicit
+        // override (incl. 0 = "no late fee for this tenant") must not silently
+        // revert to the account default. Editable afterwards via lease edit.
+        lateFeeCents: source.lateFeeCents,
         leaseTenants: { create: tenantLinks },
       },
     });
@@ -446,7 +464,7 @@ export async function createRenewal(
       data: { status: 'ended', endDate: startDate },
     });
     // The old lease now covers only the days before the switchover.
-    const changes = await reconcileShortenedLeaseCharges(tx, source, startDate, {
+    const changes = await reconcileShortenedLeaseCharges(tx, source, startDate, tz, {
       rentCents: newLease.rentCents,
       startDate: newLease.startDate,
       endDate: newLease.endDate,
@@ -480,6 +498,9 @@ export async function draftRenewal(
     marketRentCents && marketRentCents > lease.rentCents
       ? marketRentCents
       : Math.round((lease.rentCents * 1.03) / 100) * 100;
+  // Deliberately UTC (WS4): these are *suggested*, fully-editable renewal
+  // dates (start = day after the current lease ends, end ≈ one year later), not
+  // period/tax bucketing. The user reviews and adjusts them before accepting.
   const proposedStartDate = addDays(lease.endDate, 1);
   const proposedEnd = new Date(proposedStartDate);
   proposedEnd.setUTCFullYear(proposedEnd.getUTCFullYear() + 1);

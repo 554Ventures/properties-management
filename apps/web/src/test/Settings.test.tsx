@@ -11,7 +11,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import axe from 'axe-core';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ToastProvider, ToastViewport } from '../components/ui/Toast';
 import { Settings } from '../pages/Settings';
 
@@ -34,6 +34,24 @@ vi.mock('@stripe/stripe-js', () => ({
   loadStripe: (...args: unknown[]) => loadStripeMock(...(args as [])),
 }));
 
+// Auth defaults to demo mode (enabled: false) for every test below, matching
+// the real useAuth() context value when no <AuthProvider> wraps the tree —
+// so the vast majority of this file (written for demo mode) needs no change.
+// Individual tests override via useAuthMock.mockReturnValue(...) to exercise
+// AccountForm's owner-only gating (PATCH /settings/account is
+// requireOwner()-gated server-side).
+const { useAuthMock } = vi.hoisted(() => ({ useAuthMock: vi.fn() }));
+vi.mock('../state/auth', () => ({ useAuth: useAuthMock }));
+
+const demoAuth = {
+  enabled: false,
+  session: null,
+  loading: false,
+  recovering: false,
+  endRecovery: vi.fn(),
+  signOut: vi.fn(),
+};
+
 const account: AccountSettings = {
   id: 'acc1',
   name: 'Test User',
@@ -42,6 +60,7 @@ const account: AccountSettings = {
   taxRatePct: 20,
   taxYearStartMonth: 1,
   graceDays: 0,
+  defaultLateFeeCents: 0,
   createdAt: '2025-01-01T00:00:00.000Z',
   deletionRequestedAt: null,
 };
@@ -107,6 +126,10 @@ function renderWithProviders(ui: ReactNode) {
   );
 }
 
+beforeEach(() => {
+  useAuthMock.mockReturnValue(demoAuth);
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
@@ -160,6 +183,55 @@ describe('Settings integrations', () => {
 
     const plaidRow = (await screen.findByText('Plaid (bank import)')).closest('li') as HTMLElement;
     expect(within(plaidRow).getByRole('button', { name: 'Disconnect' })).toBeInTheDocument();
+  });
+
+  it('shows a "Last sync failed" line (icon + text) when the integration carries lastSyncErrorAt', async () => {
+    vi.stubGlobal(
+      'fetch',
+      makeFetch([
+        { method: 'GET', path: '/api/v1/settings/account', body: account },
+        {
+          method: 'GET',
+          path: '/api/v1/integrations',
+          body: [
+            {
+              ...connectedStripeFcIntegration,
+              lastSyncedAt: '2026-07-14T09:00:00.000Z',
+              lastSyncError: 'The bank connection needs to be reauthorized.',
+              lastSyncErrorAt: '2026-07-15T03:00:00.000Z',
+              syncFailureCount: 3,
+            },
+          ],
+        },
+      ]),
+    );
+
+    renderWithProviders(<Settings />);
+
+    const fcRow = (
+      await screen.findByText('Stripe Financial Connections (bank import)')
+    ).closest('li') as HTMLElement;
+    const note = await within(fcRow).findByText(
+      /Last sync failed .*: The bank connection needs to be reauthorized\./,
+    );
+    expect(note).toBeInTheDocument();
+    // Icon + text, not color alone (root CLAUDE.md a11y bar).
+    expect(note.querySelector('svg')).toBeInTheDocument();
+  });
+
+  it('renders no last-sync-failed line when lastSyncErrorAt is null', async () => {
+    vi.stubGlobal(
+      'fetch',
+      makeFetch([
+        { method: 'GET', path: '/api/v1/settings/account', body: account },
+        { method: 'GET', path: '/api/v1/integrations', body: [connectedStripeFcIntegration] },
+      ]),
+    );
+
+    renderWithProviders(<Settings />);
+
+    await screen.findByText('Stripe Financial Connections (bank import)');
+    expect(screen.queryByText(/Last sync failed/)).not.toBeInTheDocument();
   });
 
   it('mock-mode Connect on Plaid exchanges immediately without opening Link (VITE_SHOW_PLAID=true)', async () => {
@@ -444,6 +516,172 @@ describe('Settings integrations', () => {
     expect(
       fetchMock.mock.calls.some(([url]) => String(url).includes('/integrations/stripe_fc/complete')),
     ).toBe(false);
+  });
+});
+
+describe('Settings account form — default late fee (WS7)', () => {
+  it('prefills the field from the account and PATCHes defaultLateFeeCents on save', async () => {
+    const fetchMock = makeFetch([
+      {
+        method: 'GET',
+        path: '/api/v1/settings/account',
+        body: { ...account, defaultLateFeeCents: 5000 },
+      },
+      { method: 'GET', path: '/api/v1/integrations', body: [] },
+      {
+        method: 'PATCH',
+        path: '/api/v1/settings/account',
+        body: { ...account, defaultLateFeeCents: 7500 },
+      },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithProviders(<Settings />);
+
+    const input = await screen.findByLabelText('Default late fee (USD)');
+    expect(input).toHaveValue(50);
+
+    fireEvent.change(input, { target: { value: '75' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url) === '/api/v1/settings/account' &&
+          (init as RequestInit | undefined)?.method === 'PATCH',
+      );
+      expect(call).toBeDefined();
+      const body = JSON.parse((call![1] as RequestInit).body as string) as Record<
+        string,
+        unknown
+      >;
+      expect(body.defaultLateFeeCents).toBe(7500);
+    });
+    expect(await screen.findByText('Settings saved.')).toBeInTheDocument();
+  });
+
+  it('explains that $0 disables late fees, and treats a blank field as $0', async () => {
+    const fetchMock = makeFetch([
+      { method: 'GET', path: '/api/v1/settings/account', body: account },
+      { method: 'GET', path: '/api/v1/integrations', body: [] },
+      { method: 'PATCH', path: '/api/v1/settings/account', body: account },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithProviders(<Settings />);
+
+    const input = await screen.findByLabelText('Default late fee (USD)');
+    expect(input).toHaveValue(0);
+    expect(
+      screen.getByText(
+        "Applied when a lease doesn't set its own late fee. $0 disables late fees for those leases — applying one is always a manual action on the Rent Collection page, never automatic.",
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url) === '/api/v1/settings/account' &&
+          (init as RequestInit | undefined)?.method === 'PATCH',
+      );
+      expect(call).toBeDefined();
+      const body = JSON.parse((call![1] as RequestInit).body as string) as Record<
+        string,
+        unknown
+      >;
+      expect(body.defaultLateFeeCents).toBe(0);
+    });
+  });
+
+  it('surfaces the server error verbatim when the save fails (owner still exercises the save path)', async () => {
+    // Auth mode, role owner: the form stays editable and Save is exposed, so
+    // this covers the API-level 403 surfacing path (e.g. a permission change
+    // mid-session) independent of the client-side owner gate below.
+    useAuthMock.mockReturnValue({ ...demoAuth, enabled: true, session: { user: { email: 'owner@example.com' } } });
+    const fetchMock = makeFetch([
+      { method: 'GET', path: '/api/v1/settings/account', body: account },
+      { method: 'GET', path: '/api/v1/integrations', body: [] },
+      {
+        method: 'GET',
+        path: '/api/v1/settings/me',
+        body: { userId: 'u-owner', role: 'owner', permissions: [] },
+      },
+      {
+        method: 'GET',
+        path: '/api/v1/team',
+        body: {
+          members: [
+            {
+              userId: 'u-owner',
+              email: 'owner@example.com',
+              role: 'owner',
+              permissions: [],
+              createdAt: '2025-01-01T00:00:00.000Z',
+            },
+          ],
+          pendingInvites: [],
+          seatsUsed: 1,
+          seatLimit: 2,
+        },
+      },
+      {
+        method: 'PATCH',
+        path: '/api/v1/settings/account',
+        status: 403,
+        body: { error: { code: 'forbidden', message: 'only the account owner can do this' } },
+      },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithProviders(<Settings />);
+
+    await screen.findByLabelText('Default late fee (USD)');
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    expect(await screen.findByText('only the account owner can do this')).toBeInTheDocument();
+  });
+
+  it('a non-owner member sees the account form read-only, with an explanatory note (icon + text) and no Save button', async () => {
+    useAuthMock.mockReturnValue({ ...demoAuth, enabled: true, session: { user: { email: 'member@example.com' } } });
+    const fetchMock = makeFetch([
+      { method: 'GET', path: '/api/v1/settings/account', body: account },
+      { method: 'GET', path: '/api/v1/integrations', body: [] },
+      {
+        method: 'GET',
+        path: '/api/v1/settings/me',
+        body: { userId: 'u-member', role: 'member', permissions: ['rent'] },
+      },
+      {
+        method: 'GET',
+        path: '/api/v1/team',
+        body: { members: [], pendingInvites: [], seatsUsed: 1, seatLimit: 2 },
+      },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { container } = renderWithProviders(<Settings />);
+
+    const note = await screen.findByText('Only the account owner can change these settings.');
+    expect(note.querySelector('svg')).toBeInTheDocument();
+
+    // Name/Email are `required`, which appends a visually-hidden " *" to the
+    // <label> textContent — match with exact: false rather than the full string.
+    expect(screen.getByLabelText('Name', { exact: false })).toBeDisabled();
+    expect(screen.getByLabelText('Email', { exact: false })).toBeDisabled();
+    expect(screen.getByLabelText('Tax set-aside rate (%)')).toBeDisabled();
+    expect(screen.getByLabelText('Default late fee (USD)')).toBeDisabled();
+    expect(screen.getByLabelText('Timezone')).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument();
+
+    const results = await axe.run(container, {
+      rules: { 'color-contrast': { enabled: false } }, // jsdom can't compute this
+    });
+    expect(
+      results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`),
+    ).toEqual([]);
   });
 });
 

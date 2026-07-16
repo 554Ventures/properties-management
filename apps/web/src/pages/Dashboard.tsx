@@ -60,6 +60,32 @@ export function Dashboard() {
   const series = useCashflowSeries(6);
   const expenseBreakdown = useExpenseBreakdown();
   const noiByProperty = useNoiByProperty();
+  // Per-property rows plus, when present, the portfolio-level "Unassigned"
+  // bucket (transactions with no property — omitted by the API when zero).
+  // Reconciles: sum(properties.noiCents) + unassigned.noiCents === the
+  // dashboard's net-cash-flow KPI.
+  const noiRows = noiByProperty.data
+    ? [
+        ...noiByProperty.data.properties.map((p) => ({
+          label: p.label,
+          income: p.incomeCents,
+          expense: p.expenseCents,
+          noi: p.noiCents,
+          neutral: false,
+        })),
+        ...(noiByProperty.data.unassigned
+          ? [
+              {
+                label: 'Unassigned',
+                income: noiByProperty.data.unassigned.incomeCents,
+                expense: noiByProperty.data.unassigned.expenseCents,
+                noi: noiByProperty.data.unassigned.noiCents,
+                neutral: true,
+              },
+            ]
+          : []),
+      ]
+    : [];
   const activity = useActivity(10);
   const insights = useInsights({ status: 'active' });
   const properties = useProperties();
@@ -273,35 +299,45 @@ export function Dashboard() {
                 </p>
               </Card>
             ) : (
-              <ChartContainer
-                title="Operating income by property — this month"
-                description={`This month's operating income (rent collected minus directly-billed expenses) per property; portfolio-level costs are excluded. ${noiByProperty.data.properties
-                  .map((p) => `${p.label}: ${formatUsdWhole(p.noiCents)}`)
-                  .join('; ')}.`}
-                headingLevel={2}
-                table={{
-                  columns: [
-                    { key: 'label', label: 'Property' },
-                    { key: 'income', label: 'Income', align: 'right', format: 'usd' },
-                    { key: 'expense', label: 'Expenses', align: 'right', format: 'usd' },
-                    { key: 'noi', label: 'Net', align: 'right', format: 'usd' },
-                  ],
-                  rows: noiByProperty.data.properties.map((p) => ({
-                    label: p.label,
-                    income: p.incomeCents,
-                    expense: p.expenseCents,
-                    noi: p.noiCents,
-                  })),
-                }}
-              >
-                <HorizontalBarChart
-                  data={noiByProperty.data.properties.map((p) => ({
-                    label: p.label,
-                    value: p.noiCents,
-                  }))}
-                  valueLabel="Net operating income"
-                />
-              </ChartContainer>
+              <div className="flex flex-col gap-2">
+                <ChartContainer
+                  title="Operating income by property — this month"
+                  description={`This month's operating income (rent collected minus directly-billed expenses) per property.${
+                    noiByProperty.data.unassigned
+                      ? ' Includes a separate Unassigned bucket for transactions not tied to one property.'
+                      : ''
+                  } ${noiRows.map((r) => `${r.label}: ${formatUsdWhole(r.noi)}`).join('; ')}.`}
+                  headingLevel={2}
+                  table={{
+                    columns: [
+                      { key: 'label', label: 'Property' },
+                      { key: 'income', label: 'Income', align: 'right', format: 'usd' },
+                      { key: 'expense', label: 'Expenses', align: 'right', format: 'usd' },
+                      { key: 'noi', label: 'Net', align: 'right', format: 'usd' },
+                    ],
+                    rows: noiRows.map((r) => ({
+                      label: r.label,
+                      income: r.income,
+                      expense: r.expense,
+                      noi: r.noi,
+                    })),
+                  }}
+                >
+                  <HorizontalBarChart
+                    data={noiRows.map((r) => ({
+                      label: r.label,
+                      value: r.noi,
+                      neutral: r.neutral,
+                    }))}
+                    valueLabel="Net operating income"
+                  />
+                </ChartContainer>
+                {noiByProperty.data.unassigned && (
+                  <p className="px-1 text-xs text-ink-faint">
+                    Includes unassigned transactions — totals match the dashboard KPIs.
+                  </p>
+                )}
+              </div>
             )}
           </div>
         </div>

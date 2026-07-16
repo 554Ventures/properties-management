@@ -71,7 +71,7 @@ async function inject(method: string, url: string, payload?: unknown) {
 }
 
 /** Create an isolated property + unit + tenant + active lease for lifecycle tests. */
-async function makeSandboxLease(opts?: { label?: string }): Promise<{
+async function makeSandboxLease(opts?: { label?: string; lateFeeCents?: number }): Promise<{
   propertyId: string;
   unitId: string;
   tenantId: string;
@@ -105,6 +105,7 @@ async function makeSandboxLease(opts?: { label?: string }): Promise<{
     dueDay: 1,
     startDate: iso(start),
     endDate: iso(end),
+    ...(opts?.lateFeeCents !== undefined ? { lateFeeCents: opts.lateFeeCents } : {}),
   });
   const lease = LeaseSchema.parse(leaseRes.json());
   touchedEntityIds.add(lease.id);
@@ -374,6 +375,32 @@ describe('lease lifecycle', () => {
       where: { accountId, action: 'renew', entityType: 'lease', entityId: newLease.id },
     });
     expect(audit?.actor).toBe('user');
+  });
+
+  it('renewal carries forward an explicit lateFeeCents override, including 0 (no late fee)', async () => {
+    // 0 is the dangerous case to lose: an explicit "no late fee for this tenant"
+    // override must not silently revert to the account default on renewal.
+    const { leaseId } = await makeSandboxLease({ lateFeeCents: 0 });
+    const source = await prisma.lease.findUniqueOrThrow({ where: { id: leaseId } });
+    expect(source.lateFeeCents).toBe(0);
+
+    const now = new Date();
+    const start = new Date(Date.UTC(now.getUTCFullYear() + 1, now.getUTCMonth(), 1));
+    const end = new Date(Date.UTC(now.getUTCFullYear() + 2, now.getUTCMonth(), 1));
+
+    const res = await inject('POST', `/leases/${leaseId}/renewal`, {
+      rentCents: 105000,
+      dueDay: 1,
+      startDate: iso(start),
+      endDate: iso(end),
+    });
+    expect(res.statusCode).toBe(201);
+    const newLease = LeaseSchema.parse(res.json());
+    touchedEntityIds.add(newLease.id);
+    expect(newLease.lateFeeCents).toBe(0);
+
+    const newRow = await prisma.lease.findUniqueOrThrow({ where: { id: newLease.id } });
+    expect(newRow.lateFeeCents).toBe(0);
   });
 });
 

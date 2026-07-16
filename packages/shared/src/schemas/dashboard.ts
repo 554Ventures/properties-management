@@ -45,7 +45,10 @@ export const ExpenseBreakdownResponseSchema = z.object({
 
 // GET /dashboard/noi-by-property — this month's operating income per property
 // (directly-attributed confirmed income − expense). Portfolio-level (unassigned)
-// transactions are excluded since they can't be attributed to one property.
+// transactions can't be attributed to one property, so they surface as the
+// separate `unassigned` bucket (present only when nonzero) — that way
+// sum(properties.noiCents) + unassigned.noiCents reconciles exactly with the
+// dashboard KPI net, which has always included them.
 // Sorted descending by noiCents.
 export const PropertyNoiSchema = z.object({
   propertyId: z.string(),
@@ -55,9 +58,16 @@ export const PropertyNoiSchema = z.object({
   noiCents: z.number().int(),
 });
 
+export const UnassignedNoiSchema = z.object({
+  incomeCents: z.number().int(),
+  expenseCents: z.number().int(),
+  noiCents: z.number().int(),
+});
+
 export const PropertyNoiResponseSchema = z.object({
   month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'expected "YYYY-MM"'),
   properties: z.array(PropertyNoiSchema),
+  unassigned: UnassignedNoiSchema.optional(), // omitted when all-zero
 });
 
 // GET /dashboard/activity?limit=10

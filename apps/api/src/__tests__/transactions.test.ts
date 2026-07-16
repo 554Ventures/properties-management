@@ -17,12 +17,15 @@ import {
 } from '@hearth/shared';
 import { OKAFOR_NAME, OKAFOR_RENT_CENTS } from '../../prisma/seed-constants';
 import { buildApp } from '../app';
-import { addDays, currentPeriod, iso } from '../lib/dates';
+import { addDays, currentPeriod, iso, monthStart } from '../lib/dates';
 import { prisma } from '../lib/prisma';
 import { getDemoAccountId } from '../plugins/auth';
 import { exchangePublicToken } from '../services/integration.service';
+import * as leaseService from '../services/lease.service';
+import * as propertyService from '../services/property.service';
 import * as rentService from '../services/rent.service';
 import { deriveRentStatus, pickRentMatch, type RentMatchCandidate } from '../services/rent.service';
+import * as tenantService from '../services/tenant.service';
 
 let app: FastifyInstance;
 const createdIds: string[] = [];
@@ -224,6 +227,7 @@ describe('pickRentMatch (pure matcher)', () => {
     dueDate: new Date('2026-07-01T00:00:00.000Z'),
     amountCents: 115000,
     paidCents: 0,
+    lateFeeCents: 0,
     ...over,
   });
   const txnOn = (date: string, amountCents = 115000) => ({
@@ -593,7 +597,7 @@ describe('POST /transactions — manual income rent match and linked-row guard',
     expect(partial.transactionId).toBeNull(); // legacy link is single-full-payment only
     expect(partial.deposits).toHaveLength(1);
     expect(partial.deposits[0]!.transactionId).toBe(short.id);
-    expect(deriveRentStatus(partial, 0).status).toBe('partial');
+    expect(deriveRentStatus(partial, 0, 'America/New_York').status).toBe('partial');
 
     // The deposit-backed row is guarded like a legacy-linked one.
     const patchRes = await app.inject({
@@ -694,11 +698,18 @@ describe('POST /transactions — manual income rent match and linked-row guard',
     expect(odd.rentMatch).toBeNull();
   });
 
-  it('blocks amount/date/type edits on the rent-linked row but allows category changes', async () => {
+  it('blocks amount/date/type/category edits on the rent-linked row', async () => {
+    const rentCategory = await prisma.category.findFirst({
+      where: { name: 'Rent', type: 'income', isSystem: true },
+    });
+    const otherIncome = await prisma.category.findFirst({
+      where: { name: 'Other Income', type: 'income', isSystem: true },
+    });
     for (const payload of [
       { amountCents: OKAFOR_RENT_CENTS + 100 },
       { date: iso(addDays(new Date(), -3)) },
       { type: 'expense' },
+      { categoryId: otherIncome?.id },
     ]) {
       const res = await app.inject({
         method: 'PATCH',
@@ -707,12 +718,12 @@ describe('POST /transactions — manual income rent match and linked-row guard',
       });
       expect(res.statusCode).toBe(400);
       expect(res.json().error.message).toMatch(/backs a recorded rent payment/);
+      expect(res.json().error.message).toMatch(/category/);
     }
 
-    // Unchanged values and unlinked fields still go through.
-    const rentCategory = await prisma.category.findFirst({
-      where: { name: 'Rent', type: 'income', isSystem: true },
-    });
+    // Values that resolve to the same as-stored value (a no-op patch) and
+    // unlinked fields still go through — the guard only fires on an actual
+    // change.
     const okRes = await app.inject({
       method: 'PATCH',
       url: `/api/v1/transactions/${linkedTxnId}`,
@@ -720,6 +731,94 @@ describe('POST /transactions — manual income rent match and linked-row guard',
     });
     expect(okRes.statusCode).toBe(200);
     expect(TransactionSchema.parse(okRes.json()).categoryId).toBe(rentCategory?.id);
+  });
+});
+
+// ── WS6: rent-link category guard + property/unit looseness (own fixture) ───
+
+describe('PATCH /transactions/:id — rent-link category guard (own lease fixture)', () => {
+  let accountId: string;
+  let propertyId: string;
+  let unitAId: string;
+  let unitBId: string;
+  let tenantId: string;
+  let leaseId: string;
+  let linkedTxnId: string;
+
+  beforeAll(async () => {
+    accountId = await getDemoAccountId();
+    const property = await propertyService.create(accountId, {
+      addressLine1: 'ZZCATGUARD 1 Test Way',
+      city: 'X',
+      state: 'CA',
+      zip: '00000',
+      units: [{ label: 'A' }, { label: 'B' }],
+    });
+    propertyId = property.id;
+    const units = await prisma.unit.findMany({ where: { propertyId }, orderBy: { label: 'asc' } });
+    unitAId = units[0]!.id;
+    unitBId = units[1]!.id;
+
+    const tenant = await tenantService.create(accountId, { fullName: 'ZZCatguard Tenant' });
+    tenantId = tenant.id;
+
+    const period = currentPeriod();
+    const periodStart = monthStart(period);
+    const lease = await leaseService.create(accountId, {
+      unitId: unitAId,
+      tenantIds: [tenantId],
+      rentCents: 120_000,
+      dueDay: 1,
+      startDate: iso(addDays(periodStart, -365)),
+      endDate: iso(addDays(periodStart, 365)),
+    });
+    leaseId = lease.id;
+
+    const payment = await rentService.recordPayment(accountId, {
+      leaseId,
+      period,
+      amountCents: 120_000,
+      method: 'manual',
+    });
+    linkedTxnId = payment.transactionId!;
+    createdIds.push(linkedTxnId);
+  });
+
+  afterAll(async () => {
+    await prisma.rentPayment.deleteMany({ where: { leaseId } });
+    await prisma.lease.delete({ where: { id: leaseId } });
+    await prisma.tenant.delete({ where: { id: tenantId } });
+    await prisma.unit.deleteMany({ where: { propertyId } });
+    await prisma.property.delete({ where: { id: propertyId } });
+    await prisma.auditLog.deleteMany({
+      where: { accountId, entityId: { in: [propertyId, leaseId, tenantId, linkedTxnId] } },
+    });
+  });
+
+  it('rejects a category change on the rent-linked row', async () => {
+    const supplies = await prisma.category.findFirst({
+      where: { name: 'Supplies', isSystem: true },
+    });
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/transactions/${linkedTxnId}`,
+      payload: { categoryId: supplies?.id },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toMatch(/backs a recorded rent payment/);
+    expect(res.json().error.message).toMatch(/category/);
+  });
+
+  it('still allows property/unit reattribution on the same linked row', async () => {
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/transactions/${linkedTxnId}`,
+      payload: { unitId: unitBId },
+    });
+    expect(res.statusCode).toBe(200);
+    const txn = TransactionSchema.parse(res.json());
+    expect(txn.unitId).toBe(unitBId);
+    expect(txn.propertyId).toBe(propertyId); // unchanged, still owned
   });
 });
 
@@ -986,6 +1085,63 @@ describe('GET /transactions — ledger search, sort, and offset paging', () => {
     expect(dismissed.total).toBe(1);
     expect(dismissed.items[0]?.description).toBe('ZZLEDGER BRAVO');
   });
+
+  it('unassigned=true returns only property-less rows; false is not coerced to true', async () => {
+    const accountId = await getDemoAccountId();
+    const property = await prisma.property.findFirstOrThrow({
+      where: { accountId, archivedAt: null },
+    });
+
+    // Distinctive amounts so these confirmed rows don't become duplicate
+    // matches for other files' default-amount pending rows (confirm-all skips
+    // possible duplicates).
+    const withProperty = await createQueueRow(accountId, {
+      description: 'ZZUNASSIGNEDFILTER WITH',
+      status: 'confirmed',
+      amountCents: 90011,
+    });
+    await prisma.transaction.update({
+      where: { id: withProperty.id },
+      data: { propertyId: property.id },
+    });
+    const withoutProperty = await createQueueRow(accountId, {
+      description: 'ZZUNASSIGNEDFILTER WITHOUT',
+      status: 'confirmed',
+      amountCents: 90022,
+    });
+
+    // Filter honored: propertyId = null only.
+    const filtered = TransactionListResponseSchema.parse(
+      (
+        await app.inject({
+          method: 'GET',
+          url: '/api/v1/transactions?q=zzunassignedfilter&unassigned=true',
+        })
+      ).json(),
+    );
+    expect(filtered.total).toBe(1);
+    expect(filtered.items.map((i) => i.id)).toEqual([withoutProperty.id]);
+
+    // No filter: both rows come back.
+    const all = TransactionListResponseSchema.parse(
+      (
+        await app.inject({ method: 'GET', url: '/api/v1/transactions?q=zzunassignedfilter' })
+      ).json(),
+    );
+    expect(all.total).toBe(2);
+
+    // 'false' must NOT filter — coerceBooleans maps it to real false, unlike
+    // z.coerce.boolean() which would turn every non-empty string into true.
+    const explicitFalse = TransactionListResponseSchema.parse(
+      (
+        await app.inject({
+          method: 'GET',
+          url: '/api/v1/transactions?q=zzunassignedfilter&unassigned=false',
+        })
+      ).json(),
+    );
+    expect(explicitFalse.total).toBe(2);
+  });
 });
 
 describe('POST /transactions/review/confirm-all', () => {
@@ -1109,6 +1265,66 @@ describe('POST /transactions/:id/dismiss and /review/dismiss-all', () => {
     }
     const untouched = await prisma.transaction.findUniqueOrThrow({ where: { id: outside.id } });
     expect(untouched.status).toBe('pending_review');
+  });
+});
+
+describe('POST /transactions/:id/restore', () => {
+  let accountId: string;
+
+  beforeAll(async () => {
+    accountId = await getDemoAccountId();
+  });
+
+  afterAll(async () => {
+    await prisma.auditLog.deleteMany({ where: { accountId, entityId: { in: createdIds } } });
+  });
+
+  it('puts a dismissed transaction back into pending_review and audit-logs it', async () => {
+    const row = await createQueueRow(accountId, {
+      description: 'ZZRESTORE DISMISSED',
+      status: 'dismissed',
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/transactions/${row.id}/restore`,
+    });
+    expect(res.statusCode).toBe(200);
+    const restored = TransactionSchema.parse(res.json());
+    expect(restored.status).toBe('pending_review');
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { accountId, action: 'transaction.restored', entityId: row.id },
+    });
+    expect(audit?.actor).toBe('user');
+    expect(JSON.parse(audit!.detailJson!)).toEqual({
+      source: row.source,
+      amountCents: row.amountCents,
+      vendor: row.vendor,
+    });
+  });
+
+  it('rejects restoring a confirmed transaction', async () => {
+    const row = await createQueueRow(accountId, {
+      description: 'ZZRESTORE CONFIRMED',
+      status: 'confirmed',
+    });
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/transactions/${row.id}/restore`,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toMatch(/dismissed/);
+  });
+
+  it('rejects restoring a still pending-review transaction', async () => {
+    const row = await createQueueRow(accountId, { description: 'ZZRESTORE PENDING' }); // default pending_review
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/transactions/${row.id}/restore`,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toMatch(/dismissed/);
   });
 });
 

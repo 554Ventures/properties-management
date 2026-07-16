@@ -19,6 +19,9 @@ export const RentPaymentSchema = z.object({
   dueDate: z.string().datetime(),
   amountCents: z.number().int(),
   paidCents: z.number().int(), // running total received (sum of deposits)
+  // Late fee applied to this charge (WS7); 0 = none. Total owed is
+  // amountCents + lateFeeCents; remaining = that minus paidCents.
+  lateFeeCents: z.number().int().nonnegative(),
   method: RentPaymentMethodSchema.nullable(), // null until paid
   status: RentPaymentStatusSchema,
   paidAt: z.string().datetime().nullable(),
@@ -46,6 +49,7 @@ export const RentPaymentRowSchema = z.object({
   dueDate: z.string().datetime(),
   amountCents: z.number().int(),
   paidCents: z.number().int(),
+  lateFeeCents: z.number().int().nonnegative(), // late fee applied to this charge (WS7); 0 = none
   status: RentStatusSchema,
   daysLate: z.number().int().min(1).optional(), // present when past grace (late or partial-but-late)
   method: RentPaymentMethodSchema.nullable(),
@@ -77,6 +81,7 @@ export const RentTrackerRowSchema = z.object({
   propertyLabel: z.string(),
   amountCents: z.number().int(),
   paidCents: z.number().int(), // "$X of $Y" display for partials
+  lateFeeCents: z.number().int().nonnegative(), // late fee applied (WS7); 0 = none. total owed = amountCents + lateFeeCents
   dueDate: z.string().datetime(),
   status: RentStatusSchema,
   daysLate: z.number().int().min(1).optional(), // present when past grace (late or partial-but-late)
@@ -152,4 +157,14 @@ export const SendReminderResultSchema = z.object({
 
 export const SendRemindersResponseSchema = z.object({
   results: z.array(SendReminderResultSchema),
+});
+
+// POST /rent/payments/:id/late-fee — apply a late fee to a late charge (WS7).
+// Always an explicit human/user-invoked action, never auto-applied. `feeCents`
+// omitted falls back to the effective policy: the lease override
+// (Lease.lateFeeCents) when set, otherwise the account default
+// (Account.defaultLateFeeCents). With no explicit fee and no policy configured
+// the request is rejected. DELETE on the same path waives the applied fee.
+export const ApplyLateFeeInputSchema = z.object({
+  feeCents: z.number().int().positive().optional(),
 });

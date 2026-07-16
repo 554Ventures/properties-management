@@ -96,6 +96,15 @@ export type DismissAllReviewResponse = z.infer<typeof s.DismissAllReviewResponse
 export type ReceiptScanResponse = z.infer<typeof s.ReceiptScanResponseSchema>;
 export type ImportTransactionsResponse = z.infer<typeof s.ImportTransactionsResponseSchema>;
 
+// Bank-sync discrepancies (post-confirm bank corrections + sync health)
+export type BankSyncProvider = z.infer<typeof s.BankSyncProviderSchema>;
+export type BankDiscrepancyKind = z.infer<typeof s.BankDiscrepancyKindSchema>;
+export type BankDiscrepancyStatus = z.infer<typeof s.BankDiscrepancyStatusSchema>;
+export type BankDiscrepancyData = z.infer<typeof s.BankDiscrepancyDataSchema>;
+export type BankDiscrepancyRow = z.infer<typeof s.BankDiscrepancyRowSchema>;
+export type BankDiscrepancyListResponse = z.infer<typeof s.BankDiscrepancyListResponseSchema>;
+export type BankDiscrepancyResolution = z.infer<typeof s.BankDiscrepancyResolutionSchema>;
+
 // Categories
 export type Category = z.infer<typeof s.CategorySchema>;
 export type CategoryListResponse = z.infer<typeof s.CategoryListResponseSchema>;
@@ -111,6 +120,7 @@ export type RentTenantShare = z.infer<typeof s.RentTenantShareSchema>;
 export type RentTrackerRow = z.infer<typeof s.RentTrackerRowSchema>;
 export type RentTrackerResponse = z.infer<typeof s.RentTrackerResponseSchema>;
 export type RecordRentPaymentInput = z.infer<typeof s.RecordRentPaymentInputSchema>;
+export type ApplyLateFeeInput = z.infer<typeof s.ApplyLateFeeInputSchema>;
 export type UnlinkedRentDeposit = z.infer<typeof s.UnlinkedRentDepositSchema>;
 export type UnlinkedRentDepositsResponse = z.infer<typeof s.UnlinkedRentDepositsResponseSchema>;
 export type PaymentLinkResponse = z.infer<typeof s.PaymentLinkResponseSchema>;
@@ -141,6 +151,7 @@ export type IncomeExpenseSeriesResponse = z.infer<typeof s.IncomeExpenseSeriesRe
 export type ExpenseBreakdownSlice = z.infer<typeof s.ExpenseBreakdownSliceSchema>;
 export type ExpenseBreakdownResponse = z.infer<typeof s.ExpenseBreakdownResponseSchema>;
 export type PropertyNoi = z.infer<typeof s.PropertyNoiSchema>;
+export type UnassignedNoi = z.infer<typeof s.UnassignedNoiSchema>;
 export type PropertyNoiResponse = z.infer<typeof s.PropertyNoiResponseSchema>;
 export type ActivityKind = z.infer<typeof s.ActivityKindSchema>;
 export type ActivityItem = z.infer<typeof s.ActivityItemSchema>;

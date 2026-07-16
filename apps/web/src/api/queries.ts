@@ -12,6 +12,9 @@ import type {
   AccountSettings,
   ActivityItem,
   AddLeaseTenantInput,
+  ApplyLateFeeInput,
+  BankDiscrepancyListResponse,
+  BankDiscrepancyResolution,
   Category,
   ConfirmAllReviewResponse,
   ConfirmTransactionInput,
@@ -493,7 +496,9 @@ export function useSendEsign() {
 
 // ------------------------------------------------------------- transactions
 
-export function useTransactions(query: TransactionListQuery = {}) {
+// `unassigned` filters to property-less rows (`TransactionListQuery.unassigned`,
+// a z.boolean() the API's route coerces from the querystring's literal "true").
+export function useTransactions(query: TransactionListQuery & { unassigned?: boolean } = {}) {
   return useQuery({
     queryKey: ['transactions', 'list', query],
     queryFn: () =>
@@ -522,11 +527,20 @@ export function useReviewQueue(filters: ReviewQueueFilter = {}) {
   });
 }
 
-function invalidateLedger(qc: ReturnType<typeof useQueryClient>) {
+// Every money mutation must invalidate through this single helper — hand-
+// picked key sets are how insights/rent/tenant caches went stale while the
+// ledger/dashboard refreshed (see docs/WHATS_NEXT.md "Money surfaces go
+// stale after writes"). `['reports']` stays excluded: reports are immutable
+// snapshots (see useReportDetail below), not live derivations.
+function invalidateFinancials(qc: ReturnType<typeof useQueryClient>) {
   void qc.invalidateQueries({ queryKey: ['transactions'] });
   void qc.invalidateQueries({ queryKey: ['dashboard'] });
   void qc.invalidateQueries({ queryKey: ['properties'] });
   void qc.invalidateQueries({ queryKey: ['onboarding'] });
+  void qc.invalidateQueries({ queryKey: ['rent'] });
+  void qc.invalidateQueries({ queryKey: ['tenants'] });
+  void qc.invalidateQueries({ queryKey: ['insights'] });
+  void qc.invalidateQueries({ queryKey: ['units'] }); // unit detail carries its own P&L
 }
 
 export function useCreateTransaction() {
@@ -534,7 +548,7 @@ export function useCreateTransaction() {
   return useMutation({
     mutationFn: (input: CreateTransactionInput) =>
       api.post<CreateTransactionResponse>('/transactions', input),
-    onSuccess: () => invalidateLedger(qc),
+    onSuccess: () => invalidateFinancials(qc),
   });
 }
 
@@ -543,13 +557,10 @@ export function useConfirmTransaction() {
   return useMutation({
     mutationFn: ({ id, ...input }: ConfirmTransactionInput & { id: string }) =>
       api.post<Transaction>(`/transactions/${id}/confirm`, input),
-    onSuccess: () => {
-      // Confirming with a rentPaymentId flips a RentPayment to paid, so the
-      // tracker and tenant payment history change alongside the ledger.
-      invalidateLedger(qc);
-      void qc.invalidateQueries({ queryKey: ['rent'] });
-      void qc.invalidateQueries({ queryKey: ['tenants'] });
-    },
+    // Confirming with a rentPaymentId flips a RentPayment to paid, so the
+    // tracker and tenant payment history change alongside the ledger —
+    // invalidateFinancials already covers rent/tenants.
+    onSuccess: () => invalidateFinancials(qc),
   });
 }
 
@@ -558,7 +569,7 @@ export function useDismissTransaction() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.post<Transaction>(`/transactions/${id}/dismiss`, {}),
-    onSuccess: () => invalidateLedger(qc),
+    onSuccess: () => invalidateFinancials(qc),
   });
 }
 
@@ -568,7 +579,7 @@ export function useConfirmAllReview() {
   return useMutation({
     mutationFn: (filters: ReviewQueueFilter) =>
       api.post<ConfirmAllReviewResponse>('/transactions/review/confirm-all', filters),
-    onSuccess: () => invalidateLedger(qc),
+    onSuccess: () => invalidateFinancials(qc),
   });
 }
 
@@ -578,7 +589,7 @@ export function useDismissAllReview() {
   return useMutation({
     mutationFn: (filters: ReviewQueueFilter) =>
       api.post<DismissAllReviewResponse>('/transactions/review/dismiss-all', filters),
-    onSuccess: () => invalidateLedger(qc),
+    onSuccess: () => invalidateFinancials(qc),
   });
 }
 
@@ -587,7 +598,25 @@ export function useUpdateTransaction() {
   return useMutation({
     mutationFn: ({ id, ...input }: UpdateTransactionInput & { id: string }) =>
       api.patch<Transaction>(`/transactions/${id}`, input),
-    onSuccess: () => invalidateLedger(qc),
+    onSuccess: () => invalidateFinancials(qc),
+  });
+}
+
+/** DELETE /transactions/:id — permanent; removes the row from every report. */
+export function useDeleteTransaction() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete(`/transactions/${id}`),
+    onSuccess: () => invalidateFinancials(qc),
+  });
+}
+
+/** POST /transactions/:id/restore — dismissed → pending_review; 400 otherwise. */
+export function useRestoreTransaction() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post<Transaction>(`/transactions/${id}/restore`),
+    onSuccess: () => invalidateFinancials(qc),
   });
 }
 
@@ -605,9 +634,42 @@ export function useImportTransactions() {
     onSuccess: () => {
       // Imports create/update/delete ledger rows and stamp the plaid
       // integration's lastSyncedAt.
-      invalidateLedger(qc);
+      invalidateFinancials(qc);
       void qc.invalidateQueries({ queryKey: ['integrations'] });
     },
+  });
+}
+
+// Post-confirm bank corrections (WS5) — the sync pipeline restated or voided a
+// row the landlord already reviewed. Keyed under the ['transactions'] prefix
+// (not a sibling top-level key) so invalidateFinancials' `['transactions']`
+// sweep refetches it alongside the ledger/review queue.
+export function useBankDiscrepancies() {
+  return useQuery({
+    queryKey: ['transactions', 'bank-discrepancies'],
+    queryFn: () => api.get<BankDiscrepancyListResponse>('/transactions/bank-discrepancies'),
+    staleTime: STALE_SHORT,
+  });
+}
+
+/** Applies the bank's restated/removed version via the guarded update/remove
+ *  path — 400s (e.g. still rent-linked) leave the discrepancy pending. */
+export function useAcceptBankDiscrepancy() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.post<BankDiscrepancyResolution>(`/transactions/bank-discrepancies/${id}/accept`),
+    onSuccess: () => invalidateFinancials(qc),
+  });
+}
+
+/** Terminal keep-my-version resolution. */
+export function useDismissBankDiscrepancy() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.post<BankDiscrepancyResolution>(`/transactions/bank-discrepancies/${id}/dismiss`),
+    onSuccess: () => invalidateFinancials(qc),
   });
 }
 
@@ -712,11 +774,7 @@ export function useRecordPayment() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: RecordRentPaymentInput) => api.post<RentPayment>('/rent/payments', input),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['rent'] });
-      void qc.invalidateQueries({ queryKey: ['tenants'] });
-      invalidateLedger(qc);
-    },
+    onSuccess: () => invalidateFinancials(qc),
   });
 }
 
@@ -727,11 +785,7 @@ export function useUnlinkDeposit() {
   return useMutation({
     mutationFn: (input: { rentPaymentId: string; depositId: string }) =>
       api.delete(`/rent/payments/${input.rentPaymentId}/deposits/${input.depositId}`),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['rent'] });
-      void qc.invalidateQueries({ queryKey: ['tenants'] });
-      invalidateLedger(qc);
-    },
+    onSuccess: () => invalidateFinancials(qc),
   });
 }
 
@@ -740,11 +794,31 @@ export function useSendReminders() {
   return useMutation({
     mutationFn: (input: SendRemindersInput) =>
       api.post<SendRemindersResponse>('/rent/reminders', input),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['rent'] });
-      void qc.invalidateQueries({ queryKey: ['tenants'] });
-      void qc.invalidateQueries({ queryKey: ['dashboard', 'activity'] });
-    },
+    onSuccess: () => invalidateFinancials(qc),
+  });
+}
+
+// Apply a late fee to a charge that's past its grace period (WS7). `feeCents`
+// omitted (the common case — the tracker button doesn't know the lease's
+// effective policy up front) resolves server-side to the lease override or
+// the account default; always an explicit human click, never automatic.
+export function useApplyLateFee() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...input }: ApplyLateFeeInput & { id: string }) =>
+      api.post<RentPayment>(`/rent/payments/${id}/late-fee`, input),
+    onSuccess: () => invalidateFinancials(qc),
+  });
+}
+
+// Waive (remove) an applied late fee — resets it to 0. The server rejects
+// this once the charge is fully collected against its total (would strand an
+// overpayment).
+export function useWaiveLateFee() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete(`/rent/payments/${id}/late-fee`),
+    onSuccess: () => invalidateFinancials(qc),
   });
 }
 

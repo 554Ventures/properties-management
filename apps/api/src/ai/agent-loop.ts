@@ -12,7 +12,7 @@ import type {
   ToolUseBlockParam,
 } from '@anthropic-ai/sdk/resources/messages/messages';
 import type { ChatMessage as DbChatMessage, ChatSession as DbChatSession } from '@prisma/client';
-import { currentPeriod, startOfUtcDay } from '../lib/dates';
+import { currentPeriodInTz, startOfDayInTz } from '../lib/dates';
 import { BadRequestError, ConflictError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { createAiClient } from './client';
@@ -125,8 +125,10 @@ async function runLoop(params: LoopParams): Promise<void> {
     accountName: account.name,
     propertyCount,
     unitCount,
-    todayIso: startOfUtcDay(new Date()).toISOString().slice(0, 10),
-    period: currentPeriod(),
+    // "Today"/"current period" for the assistant match the landlord's local
+    // calendar (WS4) so its answers line up with the tz-bucketed tool data.
+    todayIso: startOfDayInTz(new Date(), account.timezone).toISOString().slice(0, 10),
+    period: currentPeriodInTz(account.timezone),
     ...(context ? { screen: context } : {}),
   });
   const tools = anthropicToolDefs();

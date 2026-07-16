@@ -3,10 +3,22 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { ReportDetailResponseSchema, ReportSchema } from '@hearth/shared';
 import { buildApp } from '../app';
-import { yearRange } from '../lib/dates';
+import {
+  currentPeriodInTz,
+  iso,
+  monthEndExclusiveInTz,
+  monthStartInTz,
+  yearRange,
+} from '../lib/dates';
+import { pnlSums } from '../lib/pnl';
 import { prisma } from '../lib/prisma';
+import { DEMO_TIMEZONE } from '../../prisma/seed-constants';
 import { getDemoAccountId } from '../plugins/auth';
 import * as reportService from '../services/report.service';
+
+// Monthly review buckets its period on the account's local calendar (WS4), so
+// the `from` anchor + reconciliation range use the demo account's timezone.
+const TZ = DEMO_TIMEZONE;
 
 let app: FastifyInstance;
 
@@ -101,10 +113,54 @@ describe('schedule_e report', () => {
     expect(reviews.length).toBeGreaterThanOrEqual(1);
     const first = reviews[0];
     const detail = await reportService.getById(accountId, first!.id);
-    const data = detail.data as { bottomLine: string; propertyNets: unknown[]; watchItems: string[] };
+    const data = detail.data as {
+      bottomLine: string;
+      propertyNets: Array<{ propertyLabel: string; units: number; netCents: number }>;
+      watchItems: string[];
+    };
     expect(data.bottomLine).toContain('You netted');
-    expect(data.propertyNets).toHaveLength(9);
+    // 9 seed properties + the Portfolio / unassigned bucket: the seed's prior
+    // month carries portfolio-level overhead (insurance, mortgage interest,
+    // management fees), so per-property nets reconcile with the bottom line.
+    expect(data.propertyNets).toHaveLength(10);
+    expect(data.propertyNets.some((r) => r.propertyLabel === 'Portfolio / unassigned')).toBe(true);
     expect(data.watchItems.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('a newly generated monthly review appends the Portfolio / unassigned row with the ledger-derived net', async () => {
+    const accountId = await getDemoAccountId();
+    const period = currentPeriodInTz(TZ);
+    const report = await reportService.generate(accountId, {
+      type: 'monthly_review',
+      from: iso(monthStartInTz(period, TZ)),
+    });
+    const detail = await reportService.getById(accountId, report.id);
+    const data = detail.data as {
+      propertyNets: Array<{ propertyLabel: string; units: number; netCents: number }>;
+    };
+
+    // Independent P&L aggregation of the period's confirmed property-less rows
+    // (same style as the schedule_e reconciliation above) — no hardcoded pin.
+    const grouped = await prisma.transaction.groupBy({
+      by: ['type', 'classification'],
+      where: {
+        accountId,
+        status: 'confirmed',
+        propertyId: null,
+        date: { gte: monthStartInTz(period, TZ), lt: monthEndExclusiveInTz(period, TZ) },
+      },
+      _sum: { amountCents: true },
+    });
+    const expectedNet = pnlSums(grouped).netCents;
+    expect(expectedNet).not.toBe(0); // fixture sanity: seed has portfolio overhead
+
+    const unassigned = data.propertyNets.find((r) => r.propertyLabel === 'Portfolio / unassigned');
+    expect(unassigned).toBeDefined();
+    expect(unassigned!.units).toBe(0);
+    expect(unassigned!.netCents).toBe(expectedNet);
+
+    await prisma.report.delete({ where: { id: report.id } });
+    await prisma.auditLog.deleteMany({ where: { accountId, entityId: report.id } });
   });
 });
 

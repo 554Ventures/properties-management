@@ -22,6 +22,9 @@ const ID = '[A-Za-z0-9_-]+';
 const ALLOWED_API_CALLS: ReadonlyArray<{ method: string; pathPattern: RegExp }> = [
   { method: 'POST', pathPattern: /^\/rent\/reminders$/ },
   { method: 'POST', pathPattern: /^\/rent\/payments$/ },
+  // Apply a late fee (WS7): click-gated, reversible from the Rent tracker's
+  // waive action. Waiving itself stays excluded (it's a DELETE).
+  { method: 'POST', pathPattern: new RegExp(`^/rent/payments/${ID}/late-fee$`) },
   { method: 'POST', pathPattern: /^\/transactions$/ },
   { method: 'PATCH', pathPattern: new RegExp(`^/transactions/${ID}$`) },
   { method: 'POST', pathPattern: new RegExp(`^/transactions/${ID}/confirm$`) },

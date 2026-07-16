@@ -19,5 +19,8 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
     css: false,
+    // Pin the process timezone (WS4) so any accidental local-tz-dependent date
+    // rendering surfaces as a failure instead of passing only on a UTC box.
+    env: { TZ: 'UTC' },
   },
 });

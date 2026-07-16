@@ -2,8 +2,9 @@ import { CreatePropertyInputSchema, UpdatePropertyInputSchema } from '@hearth/sh
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { requirePermission } from '../lib/authz';
-import { yearRange } from '../lib/dates';
+import { currentPeriodInTz, yearRangeInTz } from '../lib/dates';
 import { parseBody, parseQuery } from '../plugins/zod-validation';
+import { accountTimezone } from '../services/account.service';
 import * as propertyService from '../services/property.service';
 
 const PnlQuerySchema = z.object({
@@ -42,7 +43,9 @@ export async function propertiesRoutes(app: FastifyInstance): Promise<void> {
 
   app.get<{ Params: { id: string } }>('/properties/:id/pnl', async (req) => {
     const q = parseQuery(PnlQuerySchema, req.query);
-    const currentYear = yearRange(new Date().getUTCFullYear());
+    // Default calendar-year range on the account's timezone (WS4).
+    const tz = await accountTimezone(req.accountId);
+    const currentYear = yearRangeInTz(Number(currentPeriodInTz(tz).slice(0, 4)), tz);
     const from = q.from ? new Date(q.from) : currentYear.from;
     const to = q.to ? new Date(q.to) : currentYear.to;
     return propertyService.getPnl(req.accountId, req.params.id, { from, to });

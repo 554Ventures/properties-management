@@ -6,26 +6,53 @@ import { renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  useAcceptBankDiscrepancy,
   useAddLeaseTenant,
+  useApplyLateFee,
   useArchiveProperty,
   useArchiveTenant,
   useArchiveUnit,
+  useConfirmAllReview,
   useConfirmTransaction,
   useCreateLease,
   useCreateRenewal,
   useCreateTenant,
+  useCreateTransaction,
   useCreateUnit,
+  useDeleteTransaction,
+  useDismissAllReview,
+  useDismissBankDiscrepancy,
+  useDismissTransaction,
   useImportTransactions,
+  useRestoreTransaction,
+  useRecordPayment,
   useRemoveLeaseTenant,
   useRestoreProperty,
   useRestoreUnit,
+  useSendReminders,
   useTerminateLease,
+  useUnlinkDeposit,
   useUpdateLease,
   useUpdateProperty,
   useUpdateTenant,
   useUpdateTransaction,
   useUpdateUnit,
+  useWaiveLateFee,
 } from '../api/queries';
+
+/** invalidateFinancials' full key set — every money mutation must sweep all of these
+ *  (transactions/dashboard/properties/onboarding stay from the old invalidateLedger;
+ *  rent/tenants/insights/units are new so those caches don't go stale after a write). */
+const FINANCIAL_KEYS = [
+  JSON.stringify(['transactions']),
+  JSON.stringify(['dashboard']),
+  JSON.stringify(['properties']),
+  JSON.stringify(['onboarding']),
+  JSON.stringify(['rent']),
+  JSON.stringify(['tenants']),
+  JSON.stringify(['insights']),
+  JSON.stringify(['units']),
+];
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -310,7 +337,26 @@ describe('lease mutations', () => {
 });
 
 describe('transaction mutations', () => {
-  it('useConfirmTransaction with rentPaymentId POSTs /confirm and invalidates ledger + rent + tenants', async () => {
+  it('useCreateTransaction POSTs /transactions and invalidates the full financial key set', async () => {
+    const fetchMock = stubFetch(() => jsonResponse({ id: 'tx1' }));
+    const { keys, wrapper } = setup();
+
+    const { result } = renderHook(() => useCreateTransaction(), { wrapper });
+    result.current.mutate({
+      date: '2026-07-01T12:00:00.000Z',
+      amountCents: 5000,
+      type: 'expense',
+      description: 'Plumbing',
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/v1/transactions');
+    expect(init?.method).toBe('POST');
+    expect(keys).toEqual(expect.arrayContaining(FINANCIAL_KEYS));
+  });
+
+  it('useConfirmTransaction with rentPaymentId POSTs /confirm and invalidates the full financial key set (rent/tenants/insights included)', async () => {
     const fetchMock = stubFetch(() => jsonResponse({ id: 'tx1' }));
     const { keys, wrapper } = setup();
 
@@ -322,17 +368,52 @@ describe('transaction mutations', () => {
     expect(url).toBe('/api/v1/transactions/tx1/confirm');
     expect(init?.method).toBe('POST');
     expect(init?.body).toBe(JSON.stringify({ rentPaymentId: 'rp1' }));
-    expect(keys).toEqual(
-      expect.arrayContaining([
-        JSON.stringify(['transactions']),
-        JSON.stringify(['dashboard']),
-        JSON.stringify(['rent']),
-        JSON.stringify(['tenants']),
-      ]),
-    );
+    expect(keys).toEqual(expect.arrayContaining(FINANCIAL_KEYS));
   });
 
-  it('useUpdateTransaction PATCHes /transactions/:id and invalidates the ledger', async () => {
+  it('useDismissTransaction POSTs /dismiss and invalidates the full financial key set', async () => {
+    const fetchMock = stubFetch(() => jsonResponse({ id: 'tx1' }));
+    const { keys, wrapper } = setup();
+
+    const { result } = renderHook(() => useDismissTransaction(), { wrapper });
+    result.current.mutate('tx1');
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/v1/transactions/tx1/dismiss');
+    expect(init?.method).toBe('POST');
+    expect(keys).toEqual(expect.arrayContaining(FINANCIAL_KEYS));
+  });
+
+  it('useConfirmAllReview POSTs /review/confirm-all and invalidates the full financial key set', async () => {
+    const fetchMock = stubFetch(() => jsonResponse({ confirmed: 3, skipped: 1 }));
+    const { keys, wrapper } = setup();
+
+    const { result } = renderHook(() => useConfirmAllReview(), { wrapper });
+    result.current.mutate({ propertyId: 'p1' });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/v1/transactions/review/confirm-all');
+    expect(init?.method).toBe('POST');
+    expect(keys).toEqual(expect.arrayContaining(FINANCIAL_KEYS));
+  });
+
+  it('useDismissAllReview POSTs /review/dismiss-all and invalidates the full financial key set', async () => {
+    const fetchMock = stubFetch(() => jsonResponse({ dismissed: 2 }));
+    const { keys, wrapper } = setup();
+
+    const { result } = renderHook(() => useDismissAllReview(), { wrapper });
+    result.current.mutate({});
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/v1/transactions/review/dismiss-all');
+    expect(init?.method).toBe('POST');
+    expect(keys).toEqual(expect.arrayContaining(FINANCIAL_KEYS));
+  });
+
+  it('useUpdateTransaction PATCHes /transactions/:id and invalidates the full financial key set', async () => {
     const fetchMock = stubFetch(() => jsonResponse({ id: 'tx1' }));
     const { keys, wrapper } = setup();
 
@@ -344,12 +425,38 @@ describe('transaction mutations', () => {
     expect(url).toBe('/api/v1/transactions/tx1');
     expect(init?.method).toBe('PATCH');
     expect(init?.body).toBe(JSON.stringify({ propertyId: 'p1', unitId: 'u1' }));
-    expect(keys).toEqual(
-      expect.arrayContaining([JSON.stringify(['transactions']), JSON.stringify(['dashboard'])]),
-    );
+    expect(keys).toEqual(expect.arrayContaining(FINANCIAL_KEYS));
   });
 
-  it('useImportTransactions POSTs /transactions/import and invalidates ledger + integrations', async () => {
+  it('useDeleteTransaction DELETEs /transactions/:id and invalidates the full financial key set', async () => {
+    const fetchMock = stubFetch(() => new Response(null, { status: 204 }));
+    const { keys, wrapper } = setup();
+
+    const { result } = renderHook(() => useDeleteTransaction(), { wrapper });
+    result.current.mutate('tx1');
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/v1/transactions/tx1');
+    expect(init?.method).toBe('DELETE');
+    expect(keys).toEqual(expect.arrayContaining(FINANCIAL_KEYS));
+  });
+
+  it('useRestoreTransaction POSTs /transactions/:id/restore and invalidates the full financial key set', async () => {
+    const fetchMock = stubFetch(() => jsonResponse({ id: 'tx1', status: 'pending_review' }));
+    const { keys, wrapper } = setup();
+
+    const { result } = renderHook(() => useRestoreTransaction(), { wrapper });
+    result.current.mutate('tx1');
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/v1/transactions/tx1/restore');
+    expect(init?.method).toBe('POST');
+    expect(keys).toEqual(expect.arrayContaining(FINANCIAL_KEYS));
+  });
+
+  it('useImportTransactions POSTs /transactions/import and invalidates the full financial key set + integrations', async () => {
     const fetchMock = stubFetch(() =>
       jsonResponse({ imported: 2, skipped: 1, updated: 1, removed: 0 }),
     );
@@ -363,12 +470,132 @@ describe('transaction mutations', () => {
     expect(url).toBe('/api/v1/transactions/import');
     expect(init?.method).toBe('POST');
     expect(keys).toEqual(
-      expect.arrayContaining([
-        JSON.stringify(['transactions']),
-        JSON.stringify(['dashboard']),
-        JSON.stringify(['properties']),
-        JSON.stringify(['integrations']),
-      ]),
+      expect.arrayContaining([...FINANCIAL_KEYS, JSON.stringify(['integrations'])]),
     );
+  });
+
+  it('useAcceptBankDiscrepancy POSTs /bank-discrepancies/:id/accept and invalidates the full financial key set', async () => {
+    const fetchMock = stubFetch(() =>
+      jsonResponse({ id: 'bd1', status: 'accepted', resolvedAt: '2026-07-15T00:00:00.000Z' }),
+    );
+    const { keys, wrapper } = setup();
+
+    const { result } = renderHook(() => useAcceptBankDiscrepancy(), { wrapper });
+    result.current.mutate('bd1');
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/v1/transactions/bank-discrepancies/bd1/accept');
+    expect(init?.method).toBe('POST');
+    // Sweeps the ['transactions'] prefix, which is where useBankDiscrepancies
+    // is keyed (['transactions', 'bank-discrepancies']) so the list refetches.
+    expect(keys).toEqual(expect.arrayContaining(FINANCIAL_KEYS));
+  });
+
+  it('useDismissBankDiscrepancy POSTs /bank-discrepancies/:id/dismiss and invalidates the full financial key set', async () => {
+    const fetchMock = stubFetch(() =>
+      jsonResponse({ id: 'bd1', status: 'dismissed', resolvedAt: '2026-07-15T00:00:00.000Z' }),
+    );
+    const { keys, wrapper } = setup();
+
+    const { result } = renderHook(() => useDismissBankDiscrepancy(), { wrapper });
+    result.current.mutate('bd1');
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/v1/transactions/bank-discrepancies/bd1/dismiss');
+    expect(init?.method).toBe('POST');
+    expect(keys).toEqual(expect.arrayContaining(FINANCIAL_KEYS));
+  });
+});
+
+describe('rent mutations', () => {
+  it('useRecordPayment POSTs /rent/payments and invalidates the full financial key set', async () => {
+    const fetchMock = stubFetch(() => jsonResponse({ id: 'rp1' }));
+    const { keys, wrapper } = setup();
+
+    const { result } = renderHook(() => useRecordPayment(), { wrapper });
+    result.current.mutate({
+      leaseId: 'l1',
+      period: '2026-07',
+      amountCents: 125000,
+      method: 'manual',
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/v1/rent/payments');
+    expect(init?.method).toBe('POST');
+    expect(keys).toEqual(expect.arrayContaining(FINANCIAL_KEYS));
+  });
+
+  it('useUnlinkDeposit DELETEs the deposit link and invalidates the full financial key set', async () => {
+    const fetchMock = stubFetch(() => new Response(null, { status: 204 }));
+    const { keys, wrapper } = setup();
+
+    const { result } = renderHook(() => useUnlinkDeposit(), { wrapper });
+    result.current.mutate({ rentPaymentId: 'rp1', depositId: 'tx1' });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/v1/rent/payments/rp1/deposits/tx1');
+    expect(init?.method).toBe('DELETE');
+    expect(keys).toEqual(expect.arrayContaining(FINANCIAL_KEYS));
+  });
+
+  it('useSendReminders POSTs /rent/reminders and invalidates the full financial key set', async () => {
+    const fetchMock = stubFetch(() => jsonResponse({ results: [] }));
+    const { keys, wrapper } = setup();
+
+    const { result } = renderHook(() => useSendReminders(), { wrapper });
+    result.current.mutate({ rentPaymentIds: ['rp1'] });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/v1/rent/reminders');
+    expect(init?.method).toBe('POST');
+    expect(keys).toEqual(expect.arrayContaining(FINANCIAL_KEYS));
+  });
+
+  it('useApplyLateFee POSTs /rent/payments/:id/late-fee with feeCents omitted and invalidates the full financial key set', async () => {
+    const fetchMock = stubFetch(() => jsonResponse({ id: 'rp1', lateFeeCents: 5000 }));
+    const { keys, wrapper } = setup();
+
+    const { result } = renderHook(() => useApplyLateFee(), { wrapper });
+    result.current.mutate({ id: 'rp1' });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/v1/rent/payments/rp1/late-fee');
+    expect(init?.method).toBe('POST');
+    // feeCents omitted — the server resolves the effective policy.
+    expect(init?.body).toBe(JSON.stringify({}));
+    expect(keys).toEqual(expect.arrayContaining(FINANCIAL_KEYS));
+  });
+
+  it('useApplyLateFee sends an explicit feeCents when provided', async () => {
+    const fetchMock = stubFetch(() => jsonResponse({ id: 'rp1', lateFeeCents: 4200 }));
+    const { wrapper } = setup();
+
+    const { result } = renderHook(() => useApplyLateFee(), { wrapper });
+    result.current.mutate({ id: 'rp1', feeCents: 4200 });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(init?.body).toBe(JSON.stringify({ feeCents: 4200 }));
+  });
+
+  it('useWaiveLateFee DELETEs /rent/payments/:id/late-fee and invalidates the full financial key set', async () => {
+    const fetchMock = stubFetch(() => new Response(null, { status: 204 }));
+    const { keys, wrapper } = setup();
+
+    const { result } = renderHook(() => useWaiveLateFee(), { wrapper });
+    result.current.mutate('rp1');
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/v1/rent/payments/rp1/late-fee');
+    expect(init?.method).toBe('DELETE');
+    expect(keys).toEqual(expect.arrayContaining(FINANCIAL_KEYS));
   });
 });

@@ -6,6 +6,7 @@ import type { FastifyInstance } from 'fastify';
 import { PropertyDetailResponseSchema } from '@hearth/shared';
 import {
   BIRCH_ADDRESS,
+  DEMO_TIMEZONE,
   OKAFOR_DAYS_LATE,
   OKAFOR_NAME,
   OKAFOR_RENT_CENTS,
@@ -16,12 +17,16 @@ import {
 import { buildApp } from '../app';
 import {
   addDays,
-  calendarDaysBetween,
-  currentPeriod,
+  calendarDaysBetweenInTz,
+  currentPeriodInTz,
   iso,
-  monthStart,
-  startOfUtcDay,
+  monthStartInTz,
+  startOfDayInTz,
 } from '../lib/dates';
+
+// The demo account is in DEMO_TIMEZONE; the synthesized charge's dueDate/late
+// derive on that local calendar now (WS4), so the expectation must too.
+const TZ = DEMO_TIMEZONE;
 import { prisma } from '../lib/prisma';
 import * as propertyService from '../services/property.service';
 
@@ -52,7 +57,7 @@ describe('GET /properties/:id — per-unit rent snapshot from seed charge rows',
       where: { addressLine1: BIRCH_ADDRESS },
     });
     const detail = await getDetailViaRoute(birch.id);
-    const period = currentPeriod();
+    const period = currentPeriodInTz(TZ);
 
     const parkUnit = detail.units.find((u) =>
       u.currentLease?.tenants.some((t) => t.fullName === PARK_NAME),
@@ -128,8 +133,8 @@ describe('propertyService.getDetail — synthesized charge + pendingLease (fixtu
         unitId,
         rentCents: FIXTURE_RENT_CENTS,
         dueDay: 1,
-        startDate: addDays(monthStart(currentPeriod()), -90),
-        endDate: addDays(startOfUtcDay(new Date()), 300),
+        startDate: addDays(monthStartInTz(currentPeriodInTz(TZ), TZ), -90),
+        endDate: addDays(startOfDayInTz(new Date(), TZ), 300),
         status: 'active',
         leaseTenants: { create: { tenantId: tenant.id, isPrimary: true } },
       },
@@ -138,7 +143,7 @@ describe('propertyService.getDetail — synthesized charge + pendingLease (fixtu
   });
 
   it('synthesizes a non-null rent for a unit with no charge row this period', async () => {
-    const period = currentPeriod();
+    const period = currentPeriodInTz(TZ);
     expect(await prisma.rentPayment.count({ where: { leaseId } })).toBe(0);
 
     const detail = await propertyService.getDetail(accountId, propertyId);
@@ -146,9 +151,9 @@ describe('propertyService.getDetail — synthesized charge + pendingLease (fixtu
 
     // dueDay 1 → due on the 1st; graceDays 0 → late once past it (per dates,
     // not a pinned figure — the fixture must derive correctly any day of the
-    // month).
-    const dueDate = monthStart(period);
-    const daysPast = calendarDaysBetween(dueDate, new Date());
+    // month). Bucketed on the account tz (WS4).
+    const dueDate = monthStartInTz(period, TZ);
+    const daysPast = calendarDaysBetweenInTz(dueDate, new Date(), TZ);
     expect(unit.rent).toEqual({
       period,
       status: daysPast > 0 ? 'late' : 'due',
@@ -191,8 +196,8 @@ describe('propertyService.getDetail — synthesized charge + pendingLease (fixtu
         unitId: property.units[0]!.id,
         rentCents: 99900,
         dueDay: 1,
-        startDate: addDays(monthStart(currentPeriod()), -60),
-        endDate: addDays(startOfUtcDay(new Date()), 300),
+        startDate: addDays(monthStartInTz(currentPeriodInTz(TZ), TZ), -60),
+        endDate: addDays(startOfDayInTz(new Date(), TZ), 300),
         status: 'active',
         leaseTenants: { create: { tenantId, isPrimary: true } },
       },
@@ -213,7 +218,7 @@ describe('propertyService.getDetail — synthesized charge + pendingLease (fixtu
     // No current flow creates pending_signature automatically (lease.create
     // and createRenewal both write 'active'); it arrives via PATCH /leases/:id
     // today — created directly here.
-    const today = startOfUtcDay(new Date());
+    const today = startOfDayInTz(new Date(), TZ);
     const pending = await prisma.lease.create({
       data: {
         unitId,

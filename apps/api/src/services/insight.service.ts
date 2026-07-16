@@ -13,16 +13,18 @@ import { Prisma, type Insight as DbInsight } from '@prisma/client';
 import {
   addDays,
   addMonthsToPeriod,
-  currentPeriod,
+  currentPeriodInTz,
+  dayOfMonthInTz,
   iso,
-  monthEndExclusive,
-  monthStart,
+  monthEndExclusiveInTz,
+  monthStartInTz,
   periodLabel,
 } from '../lib/dates';
 import { NotFoundError } from '../lib/errors';
 import { ordinaryExpense, pnlBucket } from '../lib/pnl';
 import { prisma } from '../lib/prisma';
 import { slugify } from '../lib/strings';
+import { accountTimezone } from './account.service';
 import { writeAudit, type AuditActor } from './audit.service';
 import * as contractorService from './contractor.service';
 import * as rentService from './rent.service';
@@ -179,48 +181,102 @@ const CONTRACTOR_MIN_PRIOR_JOBS = 3; // no baseline, no spike — mirrors expens
  * materially new key (e.g. next month) appears.
  */
 export async function generateInsights(accountId: string): Promise<Insight[]> {
-  const period = currentPeriod();
+  // All month/period windows below bucket on the account's local calendar (WS4)
+  // so an insight's "this month" matches the dashboard/rent surfaces exactly.
+  const tz = await accountTimezone(accountId);
+  const period = currentPeriodInTz(tz);
   const candidates: InsightCandidate[] = [];
 
   // Rule 1 — late_rent: any payment more than 5 days late. 'partial' past
   // grace carries daysLate too — a half-paid tenant 6+ days past due still
   // warrants the nudge, with the shortfall (not the full charge) in the body.
   const tracker = await rentService.getMonthStatus(accountId, period);
-  for (const row of tracker.rows) {
-    if ((row.status === 'late' || row.status === 'partial') && (row.daysLate ?? 0) > LATE_RENT_MIN_DAYS) {
-      candidates.push({
-        scope: 'tenant',
-        type: 'late_rent',
-        severity: 'warning',
-        title: `${row.tenantName} is ${row.daysLate} days late on rent`,
-        body: `${formatUsdWhole(row.amountCents - row.paidCents)} for ${row.propertyLabel} ${row.unitLabel} was due on the ${new Date(row.dueDate).getUTCDate()}. Consider sending a reminder.`,
-        actionLabel: 'Review',
-        actionTarget: `/rent?period=${period}`,
-        // One-click reminder for exactly this payment; sendReminders skips
-        // already-paid rows, so a stale card can't double-charge attention.
-        action: {
-          label: 'Send reminder',
-          action: {
-            kind: 'api_call',
-            method: 'POST',
-            path: '/rent/reminders',
-            body: { rentPaymentIds: [row.rentPaymentId] },
-          },
-        },
-        propertyId: row.propertyId,
-        tenantId: row.tenantId,
-        leaseId: row.leaseId,
-        dedupeKey: `late_rent:${slugify(row.tenantName)}:${period}`,
-      });
-    }
+  const lateRows = tracker.rows.filter(
+    (row) =>
+      (row.status === 'late' || row.status === 'partial') &&
+      (row.daysLate ?? 0) > LATE_RENT_MIN_DAYS,
+  );
+  // Effective late-fee policy per late charge (WS7): lease override, else the
+  // account default. Only fetched when there are late rows, batched to avoid
+  // N+1. Mentions the available fee in the body (application stays a human
+  // action — the primary action remains Send reminder, never an apply-fee call).
+  let defaultLateFeeCents = 0;
+  const leaseFeeById = new Map<string, number | null>();
+  if (lateRows.length > 0) {
+    const acct = await prisma.account.findUniqueOrThrow({
+      where: { id: accountId },
+      select: { defaultLateFeeCents: true },
+    });
+    defaultLateFeeCents = acct.defaultLateFeeCents;
+    const leases = await prisma.lease.findMany({
+      where: { id: { in: [...new Set(lateRows.map((r) => r.leaseId))] } },
+      select: { id: true, lateFeeCents: true },
+    });
+    for (const l of leases) leaseFeeById.set(l.id, l.lateFeeCents);
   }
+  for (const row of lateRows) {
+    const effectiveFeeCents = leaseFeeById.get(row.leaseId) ?? defaultLateFeeCents;
+    // The unit has a fee policy and none is applied to this charge yet.
+    const feeHint =
+      effectiveFeeCents > 0 && row.lateFeeCents === 0
+        ? ` Your policy allows a ${formatUsdWhole(effectiveFeeCents)} late fee — apply it from the Rent tracker.`
+        : '';
+    candidates.push({
+      scope: 'tenant',
+      type: 'late_rent',
+      severity: 'warning',
+      title: `${row.tenantName} is ${row.daysLate} days late on rent`,
+      body: `${formatUsdWhole(row.amountCents + row.lateFeeCents - row.paidCents)} for ${row.propertyLabel} ${row.unitLabel} was due on the ${dayOfMonthInTz(new Date(row.dueDate), tz)}. Consider sending a reminder.${feeHint}`,
+      actionLabel: 'Review',
+      actionTarget: `/rent?period=${period}`,
+      // One-click reminder for exactly this payment; sendReminders skips
+      // already-paid rows, so a stale card can't double-charge attention.
+      action: {
+        label: 'Send reminder',
+        action: {
+          kind: 'api_call',
+          method: 'POST',
+          path: '/rent/reminders',
+          body: { rentPaymentIds: [row.rentPaymentId] },
+        },
+      },
+      propertyId: row.propertyId,
+      tenantId: row.tenantId,
+      leaseId: row.leaseId,
+      dedupeKey: `late_rent:${slugify(row.tenantName)}:${period}`,
+    });
+  }
+
+  // Auto-resolve late_rent: late_rent is the only insight type with an
+  // unambiguous liveness condition — the charge is no longer late (paid off,
+  // or the tracker no longer reports it late/partial past grace). Other types
+  // (expense_spike, renewal_window, ...) have no clean mid-period "resolved"
+  // signal — their rows just wait for the next period's dedupeKey to roll
+  // over — so this sweep is deliberately scoped to late_rent only. Any
+  // previously-active late_rent row whose dedupeKey isn't in this cycle's
+  // currently-late set flips to 'resolved'; when nothing is late this cycle
+  // the notIn list is empty, which resolves every active late_rent row. Not
+  // audited — matches Rule 6's own auto-actioning updateMany below: this is
+  // generateInsights housekeeping a derived state, not a user/AI-driven write.
+  const currentLateRentKeys = candidates
+    .filter((c) => c.type === 'late_rent')
+    .map((c) => c.dedupeKey);
+  await prisma.insight.updateMany({
+    where: {
+      accountId,
+      type: 'late_rent',
+      status: 'active',
+      dedupeKey: { notIn: currentLateRentKeys },
+    },
+    data: { status: 'resolved' },
+  });
 
   // Rule 2 — expense_spike: a category's current-month total > 125% of its
   // trailing-3-month average; attributed to the property with the largest
   // current-month spend in that category.
-  const mStart = monthStart(period);
-  const mEnd = monthEndExclusive(period);
-  const trailingStart = monthStart(addMonthsToPeriod(period, -3));
+  const mStart = monthStartInTz(period, tz);
+  const mEnd = monthEndExclusiveInTz(period, tz);
+  const trailingStart = monthStartInTz(addMonthsToPeriod(period, -3), tz);
   const currentExpenses = await prisma.transaction.findMany({
     where: {
       accountId,
@@ -336,6 +392,12 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
     where: { accountId, archivedAt: null },
     include: { units: { where: { archivedAt: null } } },
   });
+  // Property-less rows stay excluded here (unlike the dashboard NOI/monthly
+  // review, which now surface an Unassigned bucket): this rule compares
+  // relative per-unit attributed nets, and portfolio overhead (insurance,
+  // mortgage interest, management fees) burdens every property equally — so it
+  // can't make one property look worse than another. Reconciliation of those
+  // unassigned dollars happens via the NOI Unassigned bucket, not here.
   const trailingTxns = await prisma.transaction.groupBy({
     by: ['propertyId', 'type', 'classification'],
     where: {
@@ -467,6 +529,125 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
     });
   }
 
+  // Rule 7 — unassigned_transactions: confirmed, bank-imported rows this month
+  // with no property and no classification. They count toward the portfolio
+  // KPIs and the NOI Unassigned bucket, but attributing them to a property
+  // completes per-property reporting. Scoped to source 'bank' on purpose:
+  // manually entered portfolio-level costs (insurance, mortgage interest,
+  // management fees) are legitimate overhead that belongs unassigned, so the
+  // seeded demo — and any hand-keyed account-level line — stays quiet. Monthly
+  // dedupeKey, same as the other info-severity rules.
+  const unassignedCount = await prisma.transaction.count({
+    where: {
+      accountId,
+      status: 'confirmed',
+      source: 'bank',
+      propertyId: null,
+      classification: null,
+      date: { gte: mStart, lt: mEnd },
+    },
+  });
+  if (unassignedCount > 0) {
+    const one = unassignedCount === 1;
+    candidates.push({
+      scope: 'portfolio',
+      type: 'unassigned_transactions',
+      severity: 'info',
+      title: `${unassignedCount} bank transaction${one ? ' is' : 's are'} not assigned to a property`,
+      body: `${unassignedCount} confirmed bank transaction${one ? " isn't" : "s aren't"} tied to a property this month. They still count toward your portfolio totals, but assigning them keeps per-property reporting accurate.`,
+      actionLabel: 'Review transactions',
+      actionTarget: '/money?unassigned=true',
+      action: {
+        label: 'Review transactions',
+        action: { kind: 'navigate', to: '/money?unassigned=true' },
+      },
+      propertyId: null,
+      tenantId: null,
+      leaseId: null,
+      dedupeKey: `unassigned_transactions:${period}`,
+    });
+  }
+
+  // Rule 8 — bank_sync_failing: a connected bank feed (Plaid / Stripe FC) whose
+  // nightly sync has failed >= 3 consecutive times. jobs.service stamps the
+  // failure count + last error; a successful sync resets them, so this stays
+  // quiet once the feed recovers (and on the demo — seed integrations are
+  // status 'mock' with a zero count). dedupeKey carries the provider + the
+  // error's calendar day so a fresh failing streak on a later day re-raises.
+  const failingFeeds = await prisma.integration.findMany({
+    where: {
+      accountId,
+      type: { in: ['plaid', 'stripe_fc'] },
+      status: 'connected',
+      syncFailureCount: { gte: 3 },
+    },
+  });
+  for (const feed of failingFeeds) {
+    const errorDay = (feed.lastSyncErrorAt ?? new Date()).toISOString().slice(0, 10);
+    candidates.push({
+      scope: 'portfolio',
+      type: 'bank_sync_failing',
+      severity: 'warning',
+      title: `${feed.name} sync is failing`,
+      body: `The last ${feed.syncFailureCount} attempts to sync ${feed.name} failed${feed.lastSyncError ? ` (${feed.lastSyncError})` : ''}. Reconnect the feed so new bank transactions keep importing.`,
+      actionLabel: 'Open settings',
+      actionTarget: '/settings',
+      action: { label: 'Open settings', action: { kind: 'navigate', to: '/settings' } },
+      propertyId: null,
+      tenantId: null,
+      leaseId: null,
+      dedupeKey: `bank_sync_failing:${feed.type}:${errorDay}`,
+    });
+  }
+
+  // Rule 9 — bank_discrepancies: the bank restated or voided rows the user had
+  // already confirmed (applySyncBatch records these instead of silently
+  // rewriting a vouched ledger row, which would leave stale P&L). Like the
+  // review-queue rule this is a living count keyed on the newest pending
+  // discrepancy's id: a dismissal holds until a materially newer discrepancy
+  // lands, a superseded/cleared card resolves itself, and an active card's
+  // count refreshes in place.
+  const newestDiscrepancy = await prisma.bankSyncDiscrepancy.findFirst({
+    where: { accountId, status: 'pending' },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+  });
+  const discrepancyKey = newestDiscrepancy ? `bank_discrepancies:${newestDiscrepancy.id}` : null;
+  await prisma.insight.updateMany({
+    where: {
+      accountId,
+      type: 'bank_discrepancies',
+      status: 'active',
+      ...(discrepancyKey ? { dedupeKey: { not: discrepancyKey } } : {}),
+    },
+    data: { status: 'resolved' },
+  });
+  if (discrepancyKey) {
+    const pendingDiscrepancies = await prisma.bankSyncDiscrepancy.count({
+      where: { accountId, status: 'pending' },
+    });
+    const one = pendingDiscrepancies === 1;
+    const title = `Your bank restated ${pendingDiscrepancies} transaction${one ? '' : 's'} you've already confirmed`;
+    const body = `Your bank ${one ? 'changed a transaction' : `changed ${pendingDiscrepancies} transactions`} after you confirmed ${one ? 'it' : 'them'}. Accept the bank's version to update your books, or keep yours.`;
+    await prisma.insight.updateMany({
+      where: { accountId, dedupeKey: discrepancyKey, status: 'active', NOT: { title } },
+      data: { title, body },
+    });
+    candidates.push({
+      scope: 'portfolio',
+      type: 'bank_discrepancies',
+      severity: 'warning',
+      title,
+      body,
+      actionLabel: 'Review changes',
+      actionTarget: '/money/review',
+      action: { label: 'Review changes', action: { kind: 'navigate', to: '/money/review' } },
+      propertyId: null,
+      tenantId: null,
+      leaseId: null,
+      dedupeKey: discrepancyKey,
+    });
+  }
+
   const created: Insight[] = [];
   for (const c of candidates) {
     const existing = await prisma.insight.findUnique({
@@ -514,9 +695,13 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
   return created;
 }
 
-/** Snapshot a monthly_review Report for `period` ("YYYY-MM"). */
-export async function generateMonthlyReview(accountId: string, period: string): Promise<Report> {
-  const report = await generateMonthlyReviewReport(accountId, period);
+/** Snapshot a monthly_review Report for `period` ("YYYY-MM"). Defaults to the
+ *  account's previous local month (WS4 — the route/scheduler default is
+ *  resolved here so it respects the landlord's timezone). */
+export async function generateMonthlyReview(accountId: string, period?: string): Promise<Report> {
+  const resolvedPeriod =
+    period ?? addMonthsToPeriod(currentPeriodInTz(await accountTimezone(accountId)), -1);
+  const report = await generateMonthlyReviewReport(accountId, resolvedPeriod);
   return report;
 }
 

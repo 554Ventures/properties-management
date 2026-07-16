@@ -108,6 +108,7 @@ const tracker: RentTrackerResponse = {
       propertyLabel: '21 Cedar Ct',
       amountCents: 115000,
       paidCents: 0,
+      lateFeeCents: 0,
       dueDate: '2026-07-01T00:00:00.000Z',
       status: 'late',
       daysLate: 6,

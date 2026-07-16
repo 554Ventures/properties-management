@@ -57,6 +57,7 @@ export function makeLease(
     unitId,
     rentCents,
     dueDay: 1,
+    lateFeeCents: null,
     startDate: isoIn(-300),
     endDate: isoIn(300.5),
     status: 'active',

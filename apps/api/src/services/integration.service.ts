@@ -53,6 +53,9 @@ export function toApiIntegration(i: DbIntegration): Integration {
     externalRef: i.externalRef,
     scopes: JSON.parse(i.scopesJson) as string[],
     lastSyncedAt: isoOrNull(i.lastSyncedAt),
+    lastSyncError: i.lastSyncError,
+    lastSyncErrorAt: isoOrNull(i.lastSyncErrorAt),
+    syncFailureCount: i.syncFailureCount,
     createdAt: iso(i.createdAt),
   };
 }

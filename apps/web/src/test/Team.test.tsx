@@ -33,6 +33,7 @@ const account: AccountSettings = {
   taxRatePct: 20,
   taxYearStartMonth: 1,
   graceDays: 0,
+  defaultLateFeeCents: 0,
   createdAt: '2025-01-01T00:00:00.000Z',
   deletionRequestedAt: null,
 };

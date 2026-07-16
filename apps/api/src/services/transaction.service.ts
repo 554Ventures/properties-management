@@ -1,4 +1,10 @@
 import type {
+  BankDiscrepancyKind,
+  BankDiscrepancyListResponse,
+  BankDiscrepancyResolution,
+  BankDiscrepancyRow,
+  BankDiscrepancyStatus,
+  BankSyncProvider,
   ConfirmAllReviewResponse,
   ConfirmTransactionInput,
   CreateTransactionInput,
@@ -20,7 +26,7 @@ import type {
   UpdateTransactionInput,
 } from '@hearth/shared';
 import type { Prisma, Transaction as DbTransaction } from '@prisma/client';
-import { formatUsd } from '@hearth/shared';
+import { BankDiscrepancyDataSchema, formatUsd } from '@hearth/shared';
 import {
   createPlaidAdapter,
   createStripeFcAdapter,
@@ -28,7 +34,7 @@ import {
   isRealStripeFcConfigured,
 } from '../integrations/factory';
 import type { PlaidBankTransaction } from '../integrations/types';
-import { addDays, calendarDaysBetween, currentPeriod, iso, periodOf } from '../lib/dates';
+import { addDays, calendarDaysBetween, currentPeriod, iso, isoOrNull, periodOf } from '../lib/dates';
 import {
   BadRequestError,
   ImportRateLimitedError,
@@ -98,6 +104,9 @@ export async function list(
   const where: Prisma.TransactionWhereInput = {
     accountId,
     ...(query.propertyId ? { propertyId: query.propertyId } : {}),
+    // Portfolio-level (unassigned) rows only — wins over propertyId if both are
+    // passed (contradictory filters yield no rows, as expected).
+    ...(query.unassigned ? { propertyId: null } : {}),
     ...(query.type ? { type: query.type } : {}),
     ...(query.status ? { status: query.status } : {}),
     ...(query.categoryId ? { categoryId: query.categoryId } : {}),
@@ -408,7 +417,8 @@ export async function update(
   // Same desync remove() blocks below: this ledger row may back a rent
   // deposit whose amountCents contributes to a charge's paidCents (and a
   // type flip would erase the rent from reports while the tracker shows paid).
-  // Category/property/unit edits don't touch the link and stay allowed.
+  // Property/unit edits don't touch the link and stay allowed (see the
+  // changesLinkedFields comment below).
   assertClassificationValid(
     input.classification !== undefined ? input.classification : prior.classification,
     input.type !== undefined ? input.type : prior.type,
@@ -416,16 +426,24 @@ export async function update(
   // Classifying a rent-backing deposit out of P&L would erase rent income
   // from reports while the tracker shows the period paid — same divergence
   // the amount/date/type guard prevents, so it rides the same check.
+  // Recategorizing it is the same divergence: the Money↔Rent link is keyed on
+  // this row remaining a Rent-categorized deposit, so swapping the category
+  // would desync the two surfaces exactly like an amount/date/type edit would.
+  // Property/unit are deliberately left out of this guard — reattributing a
+  // deposit to the correct property/unit is a legitimate fix (e.g. it landed
+  // on the wrong unit) that doesn't touch amount/date/type/category/
+  // classification, so it can't create that divergence.
   const changesLinkedFields =
     (input.amountCents !== undefined && input.amountCents !== prior.amountCents) ||
     (input.date !== undefined && new Date(input.date).getTime() !== prior.date.getTime()) ||
     (input.type !== undefined && input.type !== prior.type) ||
+    (input.categoryId !== undefined && input.categoryId !== prior.categoryId) ||
     (input.classification !== undefined && input.classification !== prior.classification);
   if (changesLinkedFields) {
     const period = await rentLinkPeriod(id);
     if (period) {
       throw new BadRequestError(
-        `this transaction backs a recorded rent payment for ${period} — its amount, date, type, and classification can't be changed; unlink the deposit on the Rent page first`,
+        `this transaction backs a recorded rent payment for ${period} — its amount, date, type, category, and classification can't be changed; unlink the deposit on the Rent page first`,
       );
     }
   }
@@ -608,6 +626,10 @@ async function computeRentMatches(
   // Expected RentPayment rows only exist once their period is materialized;
   // cover every period a deposit's ±window can reach, but never a future month
   // (early payments for a not-yet-current period are an accepted miss).
+  // Deliberately UTC (WS4): this is the ±14-day rent-match heuristic (a pure
+  // day-distance window, left UTC per plan). The ±14-day spread already reaches
+  // the adjacent month either way, so a ±1-day tz bucketing wobble at a month
+  // boundary can't drop a candidate period — both months materialize regardless.
   const current = currentPeriod();
   const periods = new Set<string>();
   for (const r of incomeRows) {
@@ -685,6 +707,9 @@ async function computeDuplicates(
     const rKey = r.vendor ? vendorMemoryKey(r.vendor) : null;
     const hit = candidates.find((c) => {
       if (c.id === r.id || c.type !== r.type || c.amountCents !== r.amountCents) return false;
+      // Deliberately UTC (WS4): the ±3-day duplicate window is a pure
+      // day-distance heuristic, not a period/late boundary — a tz wobble is
+      // immaterial against a 3-day tolerance.
       if (Math.abs(calendarDaysBetween(c.date, r.date)) > DUPLICATE_WINDOW_DAYS) return false;
       const cKey = c.vendor ? vendorMemoryKey(c.vendor) : null;
       return !rKey || !cKey || rKey === cKey;
@@ -791,18 +816,26 @@ async function confirmWithRentLink(
   // The heuristic only ever suggests exact-remaining matches, but the endpoint
   // accepts any rentPaymentId — a deposit may undershoot the remaining balance
   // (partial payment) but never overshoot it. Mirrors recordPayment's guard.
-  if (payment.paidCents >= payment.amountCents) {
+  // Remaining is against totalDue = charge + any applied late fee (WS7).
+  const totalDueCents = payment.amountCents + payment.lateFeeCents;
+  if (payment.paidCents >= totalDueCents) {
     throw new BadRequestError(`rent for ${payment.period} is already recorded as paid`);
   }
-  if (existing.amountCents > payment.amountCents - payment.paidCents) {
+  if (existing.amountCents > totalDueCents - payment.paidCents) {
     throw new BadRequestError(
-      `transaction of ${formatUsd(existing.amountCents)} exceeds the ${formatUsd(payment.amountCents - payment.paidCents)} remaining for ${payment.period} — ` +
+      `transaction of ${formatUsd(existing.amountCents)} exceeds the ${formatUsd(totalDueCents - payment.paidCents)} remaining for ${payment.period} — ` +
         `it can't be linked to this rent payment`,
     );
   }
   // Scoped like suggestCategory: never pick up another account's custom "Rent".
   const rentCategory = await prisma.category.findFirst({
     where: { name: 'Rent', type: 'income', OR: [{ isSystem: true }, { accountId }] },
+    orderBy: { isSystem: 'desc' },
+  });
+  // A deposit linked when the base rent is already covered is pure fee money →
+  // 'Late Fees' (WS7); a blended one covering base + fee stays 'Rent'.
+  const lateFeeCategory = await prisma.category.findFirst({
+    where: { name: 'Late Fees', type: 'income', OR: [{ isSystem: true }, { accountId }] },
     orderBy: { isSystem: 'desc' },
   });
   // Bank deposits link with method 'bank'; a manually logged income row that
@@ -814,19 +847,23 @@ async function confirmWithRentLink(
   // hold under concurrent requests (mirrors recordPayment).
   const { row, updatedPayment } = await prisma.$transaction(async (tx) => {
     const fresh = await tx.rentPayment.findUniqueOrThrow({ where: { id: payment.id } });
-    if (fresh.status === 'paid' || fresh.paidCents >= fresh.amountCents) {
+    const freshTotalDue = fresh.amountCents + fresh.lateFeeCents;
+    if (fresh.status === 'paid' || fresh.paidCents >= freshTotalDue) {
       throw new BadRequestError(`rent for ${payment.period} is already recorded as paid`);
     }
-    if (existing.amountCents > fresh.amountCents - fresh.paidCents) {
+    if (existing.amountCents > freshTotalDue - fresh.paidCents) {
       throw new BadRequestError(
-        `transaction of ${formatUsd(existing.amountCents)} exceeds the ${formatUsd(fresh.amountCents - fresh.paidCents)} remaining for ${payment.period}`,
+        `transaction of ${formatUsd(existing.amountCents)} exceeds the ${formatUsd(freshTotalDue - fresh.paidCents)} remaining for ${payment.period}`,
       );
     }
+    // Base rent already covered before this deposit → this is fee money (WS7).
+    const feeOnly = fresh.paidCents >= fresh.amountCents;
     const confirmedRow = await tx.transaction.update({
       where: { id: existing.id },
       data: {
         status: 'confirmed',
-        categoryId: categoryIdOverride ?? rentCategory?.id ?? existing.categoryId,
+        categoryId:
+          categoryIdOverride ?? (feeOnly ? lateFeeCategory : rentCategory)?.id ?? existing.categoryId,
         propertyId: payment.lease.unit.propertyId,
         unitId: payment.lease.unitId,
       },
@@ -841,7 +878,7 @@ async function confirmWithRentLink(
       },
     });
     const newPaidCents = fresh.paidCents + existing.amountCents;
-    const covered = newPaidCents >= fresh.amountCents;
+    const covered = newPaidCents >= freshTotalDue;
     const linkedPayment = await tx.rentPayment.update({
       where: { id: payment.id },
       data: {
@@ -907,6 +944,34 @@ export async function dismiss(
     entityType: 'transaction',
     entityId: id,
     detail: { amountCents: row.amountCents, type: row.type, source: row.source },
+  });
+  return toApiTransaction(row);
+}
+
+/**
+ * Undo a dismiss: puts a dismissed transaction back into the review queue.
+ * Only dismissed rows are eligible — a confirmed or already-pending row has
+ * no "restore" to do (the confirm/dismiss actions are how you'd move it).
+ */
+export async function restore(
+  accountId: string,
+  id: string,
+  actor: AuditActor = 'user',
+): Promise<Transaction> {
+  const existing = await getOwned(accountId, id);
+  if (existing.status !== 'dismissed') {
+    throw new BadRequestError('only a dismissed transaction can be restored');
+  }
+  const row = await prisma.transaction.update({
+    where: { id },
+    data: { status: 'pending_review' },
+  });
+  await writeAudit(accountId, {
+    actor,
+    action: 'transaction.restored',
+    entityType: 'transaction',
+    entityId: id,
+    detail: { source: row.source, amountCents: row.amountCents, vendor: row.vendor },
   });
   return toApiTransaction(row);
 }
@@ -1131,8 +1196,27 @@ async function applySyncBatch(
     }
     // Only machine-owned rows are machine-mutable: once the user confirms (or
     // dismisses) a transaction it's their vouched ledger — a bank-side tweak
-    // must not silently rewrite it.
-    if (existing.status !== 'pending_review') continue;
+    // must not silently rewrite it. Instead record the restated values as a
+    // pending discrepancy for the user to accept or keep their version (WS5:
+    // a bank restatement after confirm otherwise left stale P&L with no notice).
+    if (existing.status !== 'pending_review') {
+      await recordSyncDiscrepancy(
+        accountId,
+        provider,
+        'modified',
+        t.externalId,
+        existing.id,
+        {
+          date: iso(t.date),
+          amountCents: t.amountCents,
+          type: t.type,
+          description: t.description,
+          vendor: t.vendor,
+        },
+        counts,
+      );
+      continue;
+    }
     const suggestion = await suggestCategory(accountId, {
       type: t.type,
       description: t.description,
@@ -1162,8 +1246,15 @@ async function applySyncBatch(
 
   for (const externalId of removed) {
     const existing = await prisma.transaction.findFirst({ where: { accountId, externalId } });
-    // Same ownership rule as `modified`: only still-pending rows are deleted.
-    if (!existing || existing.status !== 'pending_review') continue;
+    // Never stored this id (or already gone) — nothing to delete or flag.
+    if (!existing) continue;
+    // Same ownership rule as `modified`: a confirmed/dismissed row is the
+    // user's vouched ledger — don't delete it silently; flag the bank's void
+    // as a pending discrepancy instead.
+    if (existing.status !== 'pending_review') {
+      await recordSyncDiscrepancy(accountId, provider, 'removed', externalId, existing.id, null, counts);
+      continue;
+    }
     await prisma.transaction.delete({ where: { id: existing.id } });
     await writeAudit(accountId, {
       actor: 'system',
@@ -1174,6 +1265,241 @@ async function applySyncBatch(
     });
     counts.removed += 1;
   }
+}
+
+// ── bank-sync discrepancies (post-confirm bank corrections, WS5) ─────────────
+
+/**
+ * A bank `modified`/`removed` change hit a row the user already
+ * confirmed/dismissed. Record it as a pending discrepancy instead of silently
+ * skipping it. Keyed on (accountId, externalId, kind, status 'pending') so a
+ * nightly mock-adapter replay refreshes the single open row (and its restated
+ * bankData) rather than accreting duplicates. Audited once, on create only —
+ * a replay refresh must not spam the trail. `bankData` is the restated fields
+ * for a 'modified' change; null for a 'removed' void.
+ */
+async function recordSyncDiscrepancy(
+  accountId: string,
+  provider: BankSyncProvider,
+  kind: BankDiscrepancyKind,
+  externalId: string,
+  transactionId: string,
+  bankData: { date: string; amountCents: number; type: TransactionType; description: string; vendor: string | null } | null,
+  counts: ImportTransactionsResponse,
+): Promise<void> {
+  const bankDataJson = bankData ? JSON.stringify(bankData) : null;
+  counts.flaggedForReview = (counts.flaggedForReview ?? 0) + 1;
+  const existing = await prisma.bankSyncDiscrepancy.findFirst({
+    where: { accountId, externalId, kind, status: 'pending' },
+  });
+  if (existing) {
+    await prisma.bankSyncDiscrepancy.update({
+      where: { id: existing.id },
+      data: { bankDataJson, transactionId, provider },
+    });
+    return;
+  }
+  const row = await prisma.bankSyncDiscrepancy.create({
+    data: { accountId, transactionId, externalId, provider, kind, bankDataJson, status: 'pending' },
+  });
+  await writeAudit(accountId, {
+    actor: 'system',
+    action: 'bank_discrepancy.recorded',
+    entityType: 'bank_discrepancy',
+    entityId: row.id,
+    detail: { externalId, kind, provider, transactionId },
+  });
+}
+
+function parseBankData(json: string | null): BankDiscrepancyRow['bankData'] {
+  if (!json) return null;
+  const parsed = BankDiscrepancyDataSchema.safeParse(JSON.parse(json));
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * Rent-link context (deposit shape preferred, legacy single-payment link as a
+ * fallback) for the given ledger rows — powers the frontend's guided
+ * "unlink deposit, then accept" flow. Mirrors the two link shapes
+ * `rentLinkPeriod` checks.
+ */
+async function rentLinkContextForTransactions(
+  ids: string[],
+): Promise<Map<string, { rentPaymentId: string; depositId?: string; period: string }>> {
+  const out = new Map<string, { rentPaymentId: string; depositId?: string; period: string }>();
+  if (ids.length === 0) return out;
+  const deposits = await prisma.rentPaymentDeposit.findMany({
+    where: { transactionId: { in: ids } },
+    include: { rentPayment: { select: { id: true, period: true } } },
+  });
+  for (const d of deposits) {
+    out.set(d.transactionId, {
+      rentPaymentId: d.rentPayment.id,
+      depositId: d.id,
+      period: d.rentPayment.period,
+    });
+  }
+  const legacy = await prisma.rentPayment.findMany({
+    where: { transactionId: { in: ids } },
+    select: { id: true, period: true, transactionId: true },
+  });
+  for (const p of legacy) {
+    if (p.transactionId && !out.has(p.transactionId)) {
+      out.set(p.transactionId, { rentPaymentId: p.id, period: p.period });
+    }
+  }
+  return out;
+}
+
+/** Pending bank-sync discrepancies with their local-row summary + rent-link context. */
+export async function listBankDiscrepancies(
+  accountId: string,
+): Promise<BankDiscrepancyListResponse> {
+  const rows = await prisma.bankSyncDiscrepancy.findMany({
+    where: { accountId, status: 'pending' },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (rows.length === 0) return { items: [] };
+
+  const txnIds = rows.map((r) => r.transactionId).filter((id): id is string => !!id);
+  const txns = txnIds.length
+    ? await prisma.transaction.findMany({ where: { id: { in: txnIds }, accountId } })
+    : [];
+  const txnById = new Map(txns.map((t) => [t.id, t]));
+  const categoryIds = [
+    ...new Set(txns.map((t) => t.categoryId).filter((id): id is string => !!id)),
+  ];
+  const categories = categoryIds.length
+    ? await prisma.category.findMany({ where: { id: { in: categoryIds } }, select: { id: true, name: true } })
+    : [];
+  const categoryName = new Map(categories.map((c) => [c.id, c.name]));
+  const rentLinks = await rentLinkContextForTransactions(txnIds);
+
+  const items: BankDiscrepancyRow[] = rows.map((r) => {
+    const txn = r.transactionId ? (txnById.get(r.transactionId) ?? null) : null;
+    const link = r.transactionId ? rentLinks.get(r.transactionId) : undefined;
+    return {
+      id: r.id,
+      provider: r.provider as BankSyncProvider,
+      kind: r.kind as BankDiscrepancyKind,
+      externalId: r.externalId,
+      bankData: parseBankData(r.bankDataJson),
+      createdAt: iso(r.createdAt),
+      transaction: txn
+        ? {
+            id: txn.id,
+            description: txn.description,
+            vendor: txn.vendor,
+            amountCents: txn.amountCents,
+            date: iso(txn.date),
+            type: txn.type as TransactionType,
+            status: txn.status as TransactionStatus,
+            categoryName: txn.categoryId ? (categoryName.get(txn.categoryId) ?? null) : null,
+          }
+        : null,
+      ...(link
+        ? {
+            rentPaymentId: link.rentPaymentId,
+            ...(link.depositId ? { depositId: link.depositId } : {}),
+            rentPeriod: link.period,
+          }
+        : {}),
+    };
+  });
+  return { items };
+}
+
+function toResolution(row: {
+  id: string;
+  status: string;
+  resolvedAt: Date | null;
+}): BankDiscrepancyResolution {
+  return {
+    id: row.id,
+    status: row.status as BankDiscrepancyStatus,
+    resolvedAt: isoOrNull(row.resolvedAt),
+  };
+}
+
+/**
+ * Apply the bank's version: a 'modified' change routes through the existing
+ * `update()`, a 'removed' change through `remove()` — so the rent-link guards
+ * hold and their 400s bubble to the caller untouched (the discrepancy stays
+ * pending until the user unlinks the deposit). Only on success is the row
+ * marked accepted.
+ */
+export async function acceptBankDiscrepancy(
+  accountId: string,
+  id: string,
+  actor: AuditActor = 'user',
+): Promise<BankDiscrepancyResolution> {
+  const disc = await prisma.bankSyncDiscrepancy.findFirst({ where: { id, accountId } });
+  if (!disc) throw new NotFoundError('bank discrepancy', id);
+  if (disc.status !== 'pending') {
+    throw new BadRequestError('this bank change has already been resolved');
+  }
+  if (!disc.transactionId) {
+    throw new BadRequestError(
+      'the local transaction no longer exists — dismiss this bank change instead',
+    );
+  }
+  if (disc.kind === 'removed') {
+    await remove(accountId, disc.transactionId, actor);
+  } else {
+    const bankData = parseBankData(disc.bankDataJson);
+    if (!bankData) throw new BadRequestError('this bank change is missing its restated values');
+    await update(
+      accountId,
+      disc.transactionId,
+      {
+        date: bankData.date,
+        amountCents: bankData.amountCents,
+        type: bankData.type,
+        description: bankData.description,
+        // vendor can't be cleared through the update contract; only restate it
+        // when the bank gave a concrete value (amount/date/type are what fix P&L).
+        ...(bankData.vendor != null ? { vendor: bankData.vendor } : {}),
+      },
+      actor,
+    );
+  }
+  const resolved = await prisma.bankSyncDiscrepancy.update({
+    where: { id },
+    data: { status: 'accepted', resolvedAt: new Date() },
+  });
+  await writeAudit(accountId, {
+    actor,
+    action: 'bank_discrepancy.accepted',
+    entityType: 'bank_discrepancy',
+    entityId: id,
+    detail: { externalId: disc.externalId, kind: disc.kind, transactionId: disc.transactionId },
+  });
+  return toResolution(resolved);
+}
+
+/** Keep the user's version: mark the discrepancy dismissed (terminal). */
+export async function dismissBankDiscrepancy(
+  accountId: string,
+  id: string,
+  actor: AuditActor = 'user',
+): Promise<BankDiscrepancyResolution> {
+  const disc = await prisma.bankSyncDiscrepancy.findFirst({ where: { id, accountId } });
+  if (!disc) throw new NotFoundError('bank discrepancy', id);
+  if (disc.status !== 'pending') {
+    throw new BadRequestError('this bank change has already been resolved');
+  }
+  const resolved = await prisma.bankSyncDiscrepancy.update({
+    where: { id },
+    data: { status: 'dismissed', resolvedAt: new Date() },
+  });
+  await writeAudit(accountId, {
+    actor,
+    action: 'bank_discrepancy.dismissed',
+    entityType: 'bank_discrepancy',
+    entityId: id,
+    detail: { externalId: disc.externalId, kind: disc.kind },
+  });
+  return toResolution(resolved);
 }
 
 async function syncPlaidFeed(
@@ -1201,9 +1527,10 @@ async function syncPlaidFeed(
   }
   // "Last imported" display + cooldown anchor. Sync metadata, not a money
   // write, so it isn't audited. updateMany no-ops for accounts with no row.
+  // A successful sync also clears any recorded sync-failure health (WS5).
   await prisma.integration.updateMany({
     where: { accountId, type: 'plaid' },
-    data: { lastSyncedAt: new Date() },
+    data: { lastSyncedAt: new Date(), syncFailureCount: 0, lastSyncError: null, lastSyncErrorAt: null },
   });
 }
 
@@ -1222,9 +1549,10 @@ async function syncStripeFcFeed(
   await applySyncBatch(accountId, 'stripe_fc', { added, modified, removed }, counts);
 
   await persistStripeFcCursors(state.integrationId, state.config, nextCursors);
+  // A successful sync also clears any recorded sync-failure health (WS5).
   await prisma.integration.updateMany({
     where: { accountId, type: 'stripe_fc' },
-    data: { lastSyncedAt: new Date() },
+    data: { lastSyncedAt: new Date(), syncFailureCount: 0, lastSyncError: null, lastSyncErrorAt: null },
   });
 }
 

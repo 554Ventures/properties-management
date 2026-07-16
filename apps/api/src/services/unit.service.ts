@@ -1,6 +1,13 @@
 import type { CreateUnitInput, Unit, UnitDetailResponse, UpdateUnitInput } from '@hearth/shared';
 import type { Unit as DbUnit } from '@prisma/client';
-import { currentPeriod, iso, isoOrNull, monthEndExclusive, monthStart } from '../lib/dates';
+import {
+  currentPeriodInTz,
+  iso,
+  isoOrNull,
+  monthEndExclusiveInTz,
+  monthStartInTz,
+  yearRangeInTz,
+} from '../lib/dates';
 import { ConflictError, NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { writeAudit, type AuditActor } from './audit.service';
@@ -80,15 +87,16 @@ export async function getDetail(accountId: string, id: string): Promise<UnitDeta
   const currentLeaseRow = unit.leases.find((l) => l.status === 'active');
 
   const now = new Date();
-  const period = currentPeriod(now);
+  const tz = account.timezone;
+  const period = currentPeriodInTz(tz, now);
   const mtd = await pnlTotals(
     accountId,
-    { from: monthStart(period), to: monthEndExclusive(period) },
+    { from: monthStartInTz(period, tz), to: monthEndExclusiveInTz(period, tz) },
     { unitId: id },
   );
   const ytd = await pnlTotals(
     accountId,
-    { from: new Date(Date.UTC(now.getUTCFullYear(), 0, 1)), to: monthEndExclusive(period) },
+    { from: yearRangeInTz(Number(period.slice(0, 4)), tz).from, to: monthEndExclusiveInTz(period, tz) },
     { unitId: id },
   );
 
@@ -96,13 +104,14 @@ export async function getDetail(accountId: string, id: string): Promise<UnitDeta
     .flatMap((l) => l.rentPayments)
     .sort((a, b) => b.dueDate.getTime() - a.dueDate.getTime())
     .map((p) => {
-      const derived = deriveRentStatus(p, account.graceDays);
+      const derived = deriveRentStatus(p, account.graceDays, tz);
       return {
         id: p.id,
         period: p.period,
         dueDate: iso(p.dueDate),
         amountCents: p.amountCents,
         paidCents: p.paidCents,
+        lateFeeCents: p.lateFeeCents,
         status: derived.status,
         ...(derived.daysLate !== undefined ? { daysLate: derived.daysLate } : {}),
         method: p.method as 'online' | 'manual' | 'bank' | null,

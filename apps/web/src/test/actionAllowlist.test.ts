@@ -13,6 +13,12 @@ describe('isAllowedApiCall', () => {
     expect(isAllowedApiCall('POST', '/transactions/clx0f2q9d0001abcdWXYZ123/confirm')).toBe(true);
     expect(isAllowedApiCall('POST', '/reports/generate')).toBe(true);
     expect(isAllowedApiCall('POST', '/insights/cm4ktz8yq000108l5f1a2b3c4/dismiss')).toBe(true);
+    expect(isAllowedApiCall('POST', '/rent/payments/cm4ktz8yq000108l5f1a2b3c4/late-fee')).toBe(true);
+  });
+
+  it('allows applying a late fee but never waiving it (DELETE stays excluded)', () => {
+    expect(isAllowedApiCall('DELETE', '/rent/payments/rp1/late-fee')).toBe(false);
+    expect(isAllowedApiCall('POST', '/rent/payments/rp1/late-fee/extra')).toBe(false);
   });
 
   it('allows adding and editing properties, tenants, contractors and transactions', () => {

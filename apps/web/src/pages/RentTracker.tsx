@@ -9,6 +9,7 @@ import { formatUsd } from '@hearth/shared';
 import type { RentPaymentMethod, RentTrackerRow, SendRemindersResponse } from '@hearth/shared';
 import { useSearchParams } from 'react-router-dom';
 import {
+  useApplyLateFee,
   useConfirmTransaction,
   useInsights,
   useRecordPayment,
@@ -16,6 +17,7 @@ import {
   useSendReminders,
   useUnlinkDeposit,
   useUnlinkedRentDeposits,
+  useWaiveLateFee,
 } from '../api/queries';
 import { AiSurface } from '../components/ai/AiSurface';
 import { InsightCard } from '../components/ai/InsightCard';
@@ -26,6 +28,7 @@ import {
 import { PageHeader } from '../components/shell/PageHeader';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorNotice } from '../components/ui/ErrorNotice';
 import { LiveRegion } from '../components/ui/LiveRegion';
@@ -38,7 +41,7 @@ import { StatusBadge, type BadgeTone } from '../components/ui/StatusBadge';
 import { RowActions } from '../components/ui/RowActions';
 import { Table, Td, Th, Tr } from '../components/ui/Table';
 import { useToast } from '../components/ui/Toast';
-import { IconBell, IconCalendarCheck, IconCheck } from '../components/ui/icons';
+import { IconBell, IconCalendarCheck, IconCheck, IconDollar } from '../components/ui/icons';
 import { currentPeriod, formatDate, formatMonthLong, recentPeriods } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
 import { usePermissions } from '../lib/usePermissions';
@@ -48,11 +51,14 @@ function statusInfo(row: RentTrackerRow): { tone: BadgeTone; label: string; cloc
     case 'paid':
       return { tone: 'positive', label: 'Paid' };
     case 'partial':
-      // A partial past the grace window is still late — say both.
+      // A partial past the grace window is still late — say both. A late fee
+      // (WS7) is called out separately from the base "$X of $Y" so it never
+      // reads as a change to the rent amount itself.
       return {
         tone: 'warning',
         label:
           `Partial — ${formatUsd(row.paidCents)} of ${formatUsd(row.amountCents)}` +
+          (row.lateFeeCents > 0 ? ` (+${formatUsd(row.lateFeeCents)} late fee)` : '') +
           (row.daysLate != null
             ? ` · ${row.daysLate} ${row.daysLate === 1 ? 'day' : 'days'} late`
             : ''),
@@ -94,6 +100,8 @@ export function RentTracker() {
   const linkDeposit = useConfirmTransaction();
   const remind = useSendReminders();
   const record = useRecordPayment();
+  const applyFee = useApplyLateFee();
+  const waiveFee = useWaiveLateFee();
   const { can } = usePermissions();
   const canRent = can('rent');
   const canMoney = can('money'); // linking a deposit confirms a transaction
@@ -111,6 +119,11 @@ export function RentTracker() {
   const [depositsRow, setDepositsRow] = useState<RentTrackerRow | null>(null);
   const [composedReminders, setComposedReminders] = useState<ComposedReminder[]>([]);
   const unlink = useUnlinkDeposit();
+  // Apply/waive confirm dialogs (WS7) — separate top-level dialogs rather
+  // than nesting inside the deposits modal, matching the rest of the page's
+  // one-dialog-at-a-time pattern.
+  const [feeRow, setFeeRow] = useState<RentTrackerRow | null>(null);
+  const [waiveRow, setWaiveRow] = useState<RentTrackerRow | null>(null);
 
   // Exactly one contextual AI card (newest late_rent) — this page is where
   // that insight points, so it surfaces here instead of a separate AI page.
@@ -174,7 +187,9 @@ export function RentTracker() {
 
   const recordPayment = () => {
     if (!payRow) return;
-    const remainingCents = payRow.amountCents - payRow.paidCents;
+    // Remaining balance is against the total the charge owes, not just base
+    // rent (WS7: totalDue = amountCents + lateFeeCents).
+    const remainingCents = payRow.amountCents + payRow.lateFeeCents - payRow.paidCents;
     const amountNumber = Number(payAmount);
     const amountCents = Math.round(amountNumber * 100);
     if (!payAmount || Number.isNaN(amountNumber) || amountCents <= 0) {
@@ -220,6 +235,42 @@ export function RentTracker() {
         onError: () => toast('Could not unlink the deposit. Try again.', 'danger'),
       },
     );
+  };
+
+  // Server resolves the effective policy (lease override or account
+  // default) — the tracker doesn't know the amount up front, so feeCents is
+  // omitted and the confirm copy stays amount-free until the response lands.
+  const confirmApplyFee = () => {
+    if (!feeRow) return;
+    applyFee.mutate(
+      { id: feeRow.rentPaymentId },
+      {
+        onSuccess: (updated) => {
+          toast(`Late fee of ${formatUsd(updated.lateFeeCents)} applied.`, 'positive');
+          setFeeRow(null);
+        },
+        onError: (err) =>
+          toast(
+            err instanceof Error ? err.message : 'Could not apply the late fee. Try again.',
+            'danger',
+          ),
+      },
+    );
+  };
+
+  const confirmWaiveFee = () => {
+    if (!waiveRow) return;
+    waiveFee.mutate(waiveRow.rentPaymentId, {
+      onSuccess: () => {
+        toast(`Late fee waived for ${waiveRow.tenantName}.`, 'positive');
+        setWaiveRow(null);
+      },
+      onError: (err) =>
+        toast(
+          err instanceof Error ? err.message : 'Could not waive the late fee. Try again.',
+          'danger',
+        ),
+    });
   };
 
   return (
@@ -403,6 +454,10 @@ export function RentTracker() {
                       row.status === 'late' ||
                       row.status === 'failed' ||
                       row.status === 'partial';
+                    // Past its grace period (late outright, or a partial that's
+                    // still late) — the condition Remind and Apply late fee share.
+                    const pastGrace =
+                      row.status === 'late' || (row.status === 'partial' && row.daysLate != null);
                     return (
                       <Tr key={row.rentPaymentId}>
                         <Td className="font-medium">
@@ -437,7 +492,14 @@ export function RentTracker() {
                           {row.unitLabel}
                           <span className="text-ink-muted"> · {row.propertyLabel}</span>
                         </Td>
-                        <Td align="right">{formatUsd(row.amountCents)}</Td>
+                        <Td align="right">
+                          {formatUsd(row.amountCents)}
+                          {row.lateFeeCents > 0 && (
+                            <div className="text-xs font-normal text-ink-muted">
+                              +{formatUsd(row.lateFeeCents)} late fee
+                            </div>
+                          )}
+                        </Td>
                         <Td className="whitespace-nowrap">{formatDate(row.dueDate)}</Td>
                         <Td>
                           <StatusBadge tone={info.tone} icon={info.clock ? 'clock' : undefined}>
@@ -461,8 +523,7 @@ export function RentTracker() {
                           <RowActions
                             context={row.tenantName}
                             actions={[
-                              ...(row.status === 'late' ||
-                              (row.status === 'partial' && row.daysLate != null)
+                              ...(pastGrace
                                 ? [
                                     {
                                       label: 'Remind',
@@ -481,7 +542,10 @@ export function RentTracker() {
                                       onClick: () => {
                                         setPayMethod('manual');
                                         setPayAmount(
-                                          ((row.amountCents - row.paidCents) / 100).toFixed(2),
+                                          (
+                                            (row.amountCents + row.lateFeeCents - row.paidCents) /
+                                            100
+                                          ).toFixed(2),
                                         );
                                         setPayError(null);
                                         setPayTenantId('');
@@ -490,7 +554,22 @@ export function RentTracker() {
                                     },
                                   ]
                                 : []),
-                              ...(row.deposits.length > 0
+                              // Late-fee amount isn't knowable client-side (the
+                              // row doesn't carry the lease's effective policy),
+                              // so the label stays amount-free until the confirm
+                              // succeeds and the toast reports the real figure.
+                              ...(pastGrace && row.lateFeeCents === 0
+                                ? [
+                                    {
+                                      label: 'Apply late fee',
+                                      icon: <IconDollar size={12} />,
+                                      variant: 'secondary' as const,
+                                      busy: applyFee.isPending,
+                                      onClick: () => setFeeRow(row),
+                                    },
+                                  ]
+                                : []),
+                              ...(row.deposits.length > 0 || row.lateFeeCents > 0
                                 ? [
                                     {
                                       label: 'Deposits',
@@ -551,8 +630,9 @@ export function RentTracker() {
           <div className="flex flex-col gap-4">
             <p className="text-sm text-ink-muted">
               {payRow.paidCents > 0
-                ? `${formatUsd(payRow.amountCents - payRow.paidCents)} remaining of ${formatUsd(payRow.amountCents)}`
-                : formatUsd(payRow.amountCents)}{' '}
+                ? `${formatUsd(payRow.amountCents + payRow.lateFeeCents - payRow.paidCents)} remaining of ${formatUsd(payRow.amountCents + payRow.lateFeeCents)}`
+                : formatUsd(payRow.amountCents + payRow.lateFeeCents)}
+              {payRow.lateFeeCents > 0 && ` (includes ${formatUsd(payRow.lateFeeCents)} late fee)`}{' '}
               for {formatMonthLong(period)} · {payRow.unitLabel} · {payRow.propertyLabel}
             </p>
             <FormField
@@ -624,10 +704,34 @@ export function RentTracker() {
         {depositsRow && (
           <div className="flex flex-col gap-4">
             <p className="text-sm text-ink-muted">
-              {formatUsd(depositsRow.paidCents)} of {formatUsd(depositsRow.amountCents)} received for{' '}
-              {formatMonthLong(period)}. Unlinking a deposit recomputes the charge; the ledger
-              transaction itself is kept.
+              {formatUsd(depositsRow.paidCents)} of{' '}
+              {formatUsd(depositsRow.amountCents + depositsRow.lateFeeCents)} received for{' '}
+              {formatMonthLong(period)}
+              {depositsRow.lateFeeCents > 0 &&
+                ` (includes ${formatUsd(depositsRow.lateFeeCents)} late fee)`}
+              . Unlinking a deposit recomputes the charge; the ledger transaction itself is kept.
             </p>
+            {depositsRow.lateFeeCents > 0 && (
+              <div className="flex items-center justify-between gap-3 rounded-md border border-border-strong px-3 py-2 text-sm">
+                <span>
+                  <span className="tabular-nums font-medium text-ink">
+                    {formatUsd(depositsRow.lateFeeCents)}
+                  </span>
+                  <span className="text-ink-muted"> late fee applied</span>
+                </span>
+                {canRent && (
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      setDepositsRow(null);
+                      setWaiveRow(depositsRow);
+                    }}
+                  >
+                    Waive
+                  </Button>
+                )}
+              </div>
+            )}
             <ul className="flex flex-col gap-2">
               {depositsRow.deposits.map((d) => (
                 <li
@@ -661,6 +765,39 @@ export function RentTracker() {
           </div>
         )}
       </Modal>
+
+      <ConfirmDialog
+        open={feeRow !== null}
+        onClose={() => setFeeRow(null)}
+        onConfirm={confirmApplyFee}
+        title="Apply late fee?"
+        confirmLabel="Apply late fee"
+        confirmVariant="primary"
+        busy={applyFee.isPending}
+        body={
+          <>
+            Applies {feeRow?.tenantName}&rsquo;s lease late-fee policy (or your account default) to
+            this charge. The fee is added to what&rsquo;s owed for this period — it only shows up in
+            your income once collected.
+          </>
+        }
+      />
+
+      <ConfirmDialog
+        open={waiveRow !== null}
+        onClose={() => setWaiveRow(null)}
+        onConfirm={confirmWaiveFee}
+        title="Waive late fee?"
+        confirmLabel="Waive fee"
+        confirmVariant="secondary"
+        busy={waiveFee.isPending}
+        body={
+          <>
+            Removes the {waiveRow ? formatUsd(waiveRow.lateFeeCents) : ''} late fee from what&rsquo;s
+            owed for this period. You can apply a new fee later if it&rsquo;s still warranted.
+          </>
+        }
+      />
     </div>
   );
 }

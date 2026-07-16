@@ -4,7 +4,7 @@
 // (dedupeKeys carry the period) fire without reseeding. Called by the
 // in-process scheduler (server.ts) and the cron-triggered internal endpoint
 // (routes/internal.ts). One account's failure never blocks the others.
-import { addMonthsToPeriod, currentPeriod, monthStart } from '../lib/dates';
+import { addMonthsToPeriod, currentPeriodInTz, monthStartInTz } from '../lib/dates';
 import { ImportRateLimitedError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { processScheduledDeletions } from './account.service';
@@ -22,11 +22,12 @@ export interface DailyJobsResult {
 }
 
 export async function runDailyJobs(): Promise<DailyJobsResult> {
-  const period = addMonthsToPeriod(currentPeriod(), -1);
   // Deletions first: an account past its grace period shouldn't get a fresh
   // monthly review/insight refresh moments before being hard-deleted.
   const deletions = await processScheduledDeletions();
-  const accounts = await prisma.account.findMany({ select: { id: true } });
+  // Timezone loaded per account so each review's target month is computed on
+  // that landlord's local calendar (WS4).
+  const accounts = await prisma.account.findMany({ select: { id: true, timezone: true } });
   const result: DailyJobsResult = {
     accountsProcessed: accounts.length,
     monthlyReviewsCreated: 0,
@@ -35,7 +36,9 @@ export async function runDailyJobs(): Promise<DailyJobsResult> {
     accountsDeleted: deletions.deleted,
     errors: [...deletions.errors],
   };
-  for (const { id: accountId } of accounts) {
+  for (const { id: accountId, timezone } of accounts) {
+    // "Last month" per this account's local calendar (WS4).
+    const period = addMonthsToPeriod(currentPeriodInTz(timezone), -1);
     // Nightly bank-feed sync, before the insight refresh below so rows that
     // land tonight surface in tonight's review-queue insight. Gated on a
     // connected Integration row: mock Plaid needs no row to import, and
@@ -53,15 +56,26 @@ export async function runDailyJobs(): Promise<DailyJobsResult> {
       }
     } catch (err) {
       if (!(err instanceof ImportRateLimitedError)) {
-        result.errors.push({
-          accountId,
-          message: `bank sync: ${err instanceof Error ? err.message : String(err)}`,
+        const message = err instanceof Error ? err.message : String(err);
+        result.errors.push({ accountId, message: `bank sync: ${message}` });
+        // Sync-health telemetry (WS5): bump the failure count + stamp the last
+        // error on this account's connected bank feeds. A later successful sync
+        // resets all three (transaction.service per-provider stamp). Surfaces
+        // the bank_sync_failing insight (>= 3) + the Settings "last sync failed"
+        // line. A cooldown skip is not a failure and is excluded above.
+        await prisma.integration.updateMany({
+          where: { accountId, type: { in: ['plaid', 'stripe_fc'] }, status: 'connected' },
+          data: {
+            syncFailureCount: { increment: 1 },
+            lastSyncError: message,
+            lastSyncErrorAt: new Date(),
+          },
         });
       }
     }
     try {
       const existing = await prisma.report.findFirst({
-        where: { accountId, type: 'monthly_review', periodStart: monthStart(period) },
+        where: { accountId, type: 'monthly_review', periodStart: monthStartInTz(period, timezone) },
       });
       if (!existing) {
         await insightService.generateMonthlyReview(accountId, period);

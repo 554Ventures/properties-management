@@ -8,11 +8,14 @@ import { createStorageAdapter } from '../src/integrations/factory';
 import {
   addDays,
   addMonthsToPeriod,
-  currentPeriod,
+  currentPeriodInTz,
+  localMidnightUtc,
   monthStart,
+  monthStartInTz,
   periodOf,
-  startOfUtcDay,
+  startOfDayInTz,
   trailingPeriods,
+  wallClockParts,
 } from '../src/lib/dates';
 import { renderTextPdf } from '../src/lib/pdf';
 import { prisma } from '../src/lib/prisma';
@@ -66,8 +69,15 @@ function minDate(a: Date, b: Date): Date {
 
 async function main(): Promise<void> {
   const now = new Date();
-  const period = currentPeriod(now);
-  const currentMonthStart = monthStart(period);
+  // WS4: the demo account lives in DEMO_TIMEZONE (America/New_York), and every
+  // service now buckets periods/KPIs/rent on that local calendar. The seed
+  // pins its month-boundary + days-late math to the same tz so seeded dates
+  // land in-month under the tz interpretation and all pinned constants survive
+  // (NY local midnight of the 1st = 04/05:00 UTC on the 1st — still the 1st in
+  // UTC too, so nothing straddles a boundary either way).
+  const period = currentPeriodInTz(DEMO_TIMEZONE, now);
+  const currentMonthStart = monthStartInTz(period, DEMO_TIMEZONE);
+  const nowParts = wallClockParts(DEMO_TIMEZONE, now);
 
   // ── wipe (idempotent: cascade delete of the demo account + system categories)
   const existing = await prisma.account.findUnique({ where: { email: DEMO_EMAIL } });
@@ -136,14 +146,14 @@ async function main(): Promise<void> {
       const tenant = await prisma.tenant.create({
         data: { accountId: account.id, fullName: u.tenantName, email: u.tenantEmail },
       });
-      const startDate = monthStart(addMonthsToPeriod(period, -u.leaseStartMonthsAgo));
+      const startDate = monthStartInTz(addMonthsToPeriod(period, -u.leaseStartMonthsAgo), DEMO_TIMEZONE);
       const lease = await prisma.lease.create({
         data: {
           unitId: unit.id,
           rentCents: u.rentCents,
           dueDay: 1,
           startDate,
-          endDate: addDays(startOfUtcDay(now), u.leaseEndDaysFromToday),
+          endDate: addDays(startOfDayInTz(now, DEMO_TIMEZONE), u.leaseEndDaysFromToday),
           status: 'active',
           ...(u.esignSigned
             ? { esignEnvelopeId: 'env_mock_seed_okafor', esignStatus: 'signed' }
@@ -290,7 +300,7 @@ async function main(): Promise<void> {
   const trailing = trailingPeriods(period, 7).slice(0, 6); // M−6 … M−1
   for (let i = 0; i < trailing.length; i++) {
     const p = trailing[i] as string;
-    const mStart = monthStart(p);
+    const mStart = monthStartInTz(p, DEMO_TIMEZONE);
     for (let j = 0; j < leases.length; j++) {
       const lease = leases[j] as SeededLease;
       const method = lease.payment === 'manual' ? 'manual' : 'online';
@@ -318,13 +328,21 @@ async function main(): Promise<void> {
   let paidIndex = 0;
   for (const lease of leases) {
     if (typeof lease.payment === 'number') {
-      // Late rows get their dueDate pinned to today − N days so "days late" is
-      // exact regardless of run date (§10).
+      // Late rows get their dueDate pinned to N local days before today so
+      // "days late" is exact under the tz-aware tracker regardless of run date
+      // (§10, WS4): local midnight of (today − N) in DEMO_TIMEZONE. Building it
+      // from the local calendar date (not `now − N×24h`) keeps it robust across
+      // DST — calendarDaysBetweenInTz(dueDate, today) then reads exactly N.
       await prisma.rentPayment.create({
         data: {
           leaseId: lease.leaseId,
           period,
-          dueDate: addDays(startOfUtcDay(now), -lease.payment),
+          dueDate: localMidnightUtc(
+            nowParts.year,
+            nowParts.month,
+            nowParts.day - lease.payment,
+            DEMO_TIMEZONE,
+          ),
           amountCents: lease.rentCents,
           status: 'due',
         },
@@ -431,7 +449,10 @@ async function main(): Promise<void> {
   let trailingNet = 0;
   for (let i = 0; i < trailing.length; i++) {
     const p = trailing[i] as string;
-    const m = await sums(monthStart(p), monthStart(addMonthsToPeriod(p, 1)));
+    const m = await sums(
+      monthStartInTz(p, DEMO_TIMEZONE),
+      monthStartInTz(addMonthsToPeriod(p, 1), DEMO_TIMEZONE),
+    );
     assertEq(m.expense, TRAILING_EXPENSE_TOTALS_CENTS[i] as number, `expenses ${p}`);
     assertEq(m.income, RENT_ROLL_CENTS, `income ${p}`);
     trailingNet += m.income - m.expense;

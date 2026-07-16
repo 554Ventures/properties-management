@@ -2,6 +2,7 @@
 // produce zero axe violations (merge-blocking check per ARCHITECTURE §8).
 import type {
   ActivityItem,
+  BankDiscrepancyListResponse,
   DashboardKpisResponse,
   IncomeExpenseSeriesResponse,
   Insight,
@@ -76,6 +77,8 @@ const noiByProperty = {
     { propertyId: 'p2', label: '88 Oak Ave', incomeCents: 265000, expenseCents: 48000, noiCents: 217000 },
     { propertyId: 'p1', label: '12 Maple St', incomeCents: 125000, expenseCents: 31000, noiCents: 94000 },
   ],
+  // Nonzero so the axe smoke run also covers the "Unassigned" bar + footnote.
+  unassigned: { incomeCents: 12000, expenseCents: 4000, noiCents: 8000 },
 };
 
 const activity: ActivityItem[] = [
@@ -261,6 +264,7 @@ const leaseDetailFixture: LeaseDetailResponse = {
     unitId: 'u1',
     rentCents: 125000,
     dueDay: 1,
+    lateFeeCents: null,
     startDate: '2025-08-01T12:00:00.000Z',
     endDate: '2026-07-31T12:00:00.000Z',
     status: 'active',
@@ -426,6 +430,53 @@ describe('CRUD modal accessibility', () => {
     await expectNoModalViolations();
   });
 
+  it('TransactionEditModal disables amount/date/category/treatment for a rent-linked row (property/unit stay editable), with a visible hint and no axe violations', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const path = String(input).replace(/^https?:\/\/[^/]+/, '').split('?')[0] ?? '';
+        if (path === '/api/v1/properties') return fixtureFetch(input);
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }),
+    );
+    render(
+      <Providers>
+        <TransactionEditModal open onClose={() => {}} transaction={rentLinkedTransaction} />
+      </Providers>,
+    );
+    const dialog = await screen.findByRole('dialog');
+
+    // The hint isn't color-only — it's visible text, repeated here because
+    // it's associated (via aria-describedby) with each disabled control plus
+    // a standalone banner at the top of the modal.
+    expect(
+      within(dialog).getAllByText(/unlink the deposit on the Rent page to edit these/i).length,
+    ).toBeGreaterThan(0);
+
+    expect(within(dialog).getByLabelText(/^Amount/)).toBeDisabled();
+    expect(within(dialog).getByLabelText(/^Date/)).toBeDisabled();
+    expect(within(dialog).getByLabelText(/^Category/)).toBeDisabled();
+    expect(within(dialog).getByLabelText(/^Treatment/)).toBeDisabled();
+    // Property/unit stay editable — reattribution is a legitimate fix.
+    expect(within(dialog).getByLabelText(/^Property/)).not.toBeDisabled();
+
+    // Each disabled control is described by the visible hint (not just a
+    // sighted-only banner).
+    const amountField = within(dialog).getByLabelText(/^Amount/);
+    const describedBy = amountField.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy!.split(' ')[0]!)?.textContent).toMatch(
+      /unlink the deposit on the Rent page/i,
+    );
+
+    await expectNoModalViolations();
+  });
+
   it('MultiSelect (open dropdown) has no axe violations', async () => {
     render(
       <Providers>
@@ -476,6 +527,15 @@ const importedTransaction: Transaction = {
   updatedAt: '2026-07-04T00:00:00.000Z',
 };
 
+// A confirmed deposit that backs a recorded rent payment — amount/date/
+// category/treatment lock in the edit modal until it's unlinked on Rent.
+const rentLinkedTransaction: Transaction = {
+  ...importedTransaction,
+  id: 'tx-rent-linked',
+  status: 'confirmed',
+  rentLinked: true,
+};
+
 const reviewQueue: ReviewQueueResponse = {
   items: [
     {
@@ -511,6 +571,59 @@ const reviewQueue: ReviewQueueResponse = {
   ],
   nextCursor: null,
   total: 2,
+};
+
+// Bank-correction rows (WS5) — a plain-modified row plus a rent-linked
+// removed row, so the axe smoke run covers the diff line, the "Removed by
+// your bank" line, and the guided-unlink note + button together.
+const bankDiscrepancies: BankDiscrepancyListResponse = {
+  items: [
+    {
+      id: 'bd-1',
+      provider: 'plaid',
+      kind: 'modified',
+      externalId: 'ext-1',
+      bankData: {
+        date: '2026-07-05T00:00:00.000Z',
+        amountCents: 13250,
+        type: 'expense',
+        description: 'Water bill',
+        vendor: 'City Utilities',
+      },
+      createdAt: '2026-07-06T00:00:00.000Z',
+      transaction: {
+        id: 'tx-water',
+        description: 'Water bill',
+        vendor: 'City Utilities',
+        amountCents: 12800,
+        date: '2026-07-03T00:00:00.000Z',
+        type: 'expense',
+        status: 'confirmed',
+        categoryName: 'Utilities',
+      },
+    },
+    {
+      id: 'bd-2',
+      provider: 'stripe_fc',
+      kind: 'removed',
+      externalId: 'ext-2',
+      bankData: null,
+      createdAt: '2026-07-06T00:00:00.000Z',
+      transaction: {
+        id: 'tx-rent-deposit',
+        description: 'ACH CREDIT — RENT T OKAFOR',
+        vendor: 'ACH transfer',
+        amountCents: 115000,
+        date: '2026-07-01T00:00:00.000Z',
+        type: 'income',
+        status: 'confirmed',
+        categoryName: 'Rent',
+      },
+      rentPaymentId: 'rp2',
+      depositId: 'dep2',
+      rentPeriod: '2026-07',
+    },
+  ],
 };
 
 describe('onboarding accessibility', () => {
@@ -554,9 +667,10 @@ describe('onboarding accessibility', () => {
 });
 
 describe('review queue accessibility', () => {
-  it('MoneyReview with a rent match and attribution selects has no axe violations', async () => {
+  it('MoneyReview with a rent match, attribution selects, and the bank-correction section has no axe violations', async () => {
     const reviewFixtures: Record<string, unknown> = {
       '/api/v1/transactions/review': reviewQueue,
+      '/api/v1/transactions/bank-discrepancies': bankDiscrepancies,
       '/api/v1/categories': [
         { id: 'c-rent', name: 'Rent', type: 'income' },
         { id: 'c-supplies', name: 'Supplies', type: 'expense' },
@@ -593,6 +707,11 @@ describe('review queue accessibility', () => {
     // Rent-match chip + both items' selects rendered before auditing.
     await screen.findByText(/T\. Okafor's Jul 2026 rent/);
     await screen.findByText('LOWES #00907');
+    // Bank-correction section: modified-row diff, removed-row line, and the
+    // rent-linked guided unlink button all settled before auditing.
+    await screen.findByText('Bank changed these after you confirmed');
+    await screen.findByText('Removed by your bank');
+    await screen.findByRole('button', { name: 'Unlink deposit' });
 
     const results = await axe.run(container, {
       rules: { 'color-contrast': { enabled: false } },
