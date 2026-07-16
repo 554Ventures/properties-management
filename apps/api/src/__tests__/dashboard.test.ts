@@ -97,6 +97,34 @@ describe('dashboardService.getNoiByProperty (seed constants)', () => {
     const nois = result.properties.map((p) => p.noiCents);
     expect([...nois].sort((a, b) => b - a)).toEqual(nois);
   });
+
+  it('surfaces portfolio-level lines as the Unassigned bucket (derived from seed constants)', async () => {
+    const accountId = await getDemoAccountId();
+    const result = await dashboardService.getNoiByProperty(accountId);
+
+    // The only property-less current-month lines in the seed are expenses
+    // (Insurance) — derive the figure from the constants, never a fresh pin.
+    const unassignedExpense = CURRENT_MONTH_EXPENSES.filter((e) => e.propertyKey === null).reduce(
+      (s, e) => s + e.amountCents,
+      0,
+    );
+    expect(unassignedExpense).toBeGreaterThan(0); // fixture sanity
+
+    expect(result.unassigned).toBeDefined();
+    expect(result.unassigned!.incomeCents).toBe(0);
+    expect(result.unassigned!.expenseCents).toBe(unassignedExpense);
+    expect(result.unassigned!.noiCents).toBe(-unassignedExpense);
+  });
+
+  it('per-property NOI plus the Unassigned bucket reconciles with the net-cash-flow KPI', async () => {
+    const accountId = await getDemoAccountId();
+    const noi = await dashboardService.getNoiByProperty(accountId);
+    const kpis = await dashboardService.getKpis(accountId);
+
+    // The hard invariant: the two surfaces can no longer disagree.
+    const sumPropertyNoi = noi.properties.reduce((s, p) => s + p.noiCents, 0);
+    expect(sumPropertyNoi + (noi.unassigned?.noiCents ?? 0)).toBe(kpis.netCashFlowMtdCents);
+  });
 });
 
 describe('tax set-aside for a young account', () => {

@@ -37,6 +37,8 @@ describe('rentService.getMonthStatus (seed derivations)', () => {
     expect(tracker.totalUnits).toBe(TOTAL_UNITS);
     expect(tracker.collectedCents).toBe(COLLECTED_MTD_CENTS);
     expect(tracker.outstandingCents).toBe(OUTSTANDING_MTD_CENTS);
+    // WS7: the seed stays fee-free, so every tracker row carries lateFeeCents 0.
+    expect(tracker.rows.every((r) => r.lateFeeCents === 0)).toBe(true);
 
     const okafor = tracker.rows.find((r) => r.tenantName === OKAFOR_NAME);
     expect(okafor?.status).toBe('late');

@@ -12,12 +12,13 @@ import type {
 import type { Property as DbProperty } from '@prisma/client';
 import {
   addDays,
-  currentPeriod,
+  currentPeriodInTz,
   iso,
   isoOrNull,
-  monthEndExclusive,
-  monthStart,
-  startOfUtcDay,
+  monthEndExclusiveInTz,
+  monthStartInTz,
+  startOfDayInTz,
+  yearRangeInTz,
 } from '../lib/dates';
 import { ConflictError, NotFoundError } from '../lib/errors';
 import { pnlBucket, pnlSums } from '../lib/pnl';
@@ -50,8 +51,8 @@ export function propertyLabel(p: { nickname: string | null; addressLine1: string
 }
 
 /** unitIds with an unpaid, past-due rent payment for the current period. */
-async function lateUnitIds(accountId: string, graceDays: number): Promise<Set<string>> {
-  const period = currentPeriod();
+async function lateUnitIds(accountId: string, graceDays: number, tz: string): Promise<Set<string>> {
+  const period = currentPeriodInTz(tz);
   const payments = await prisma.rentPayment.findMany({
     where: {
       period,
@@ -70,7 +71,7 @@ async function lateUnitIds(accountId: string, graceDays: number): Promise<Set<st
   for (const p of payments) {
     // daysLate presence covers both fully-unpaid `late` and partial-but-past-
     // grace rows — a half-paid tenant past the grace window is still late.
-    if (deriveRentStatus(p, graceDays).daysLate !== undefined) late.add(p.lease.unitId);
+    if (deriveRentStatus(p, graceDays, tz).daysLate !== undefined) late.add(p.lease.unitId);
   }
   return late;
 }
@@ -87,7 +88,7 @@ export async function list(accountId: string): Promise<PropertyListResponse> {
     },
     orderBy: { createdAt: 'asc' },
   });
-  const late = await lateUnitIds(accountId, account.graceDays);
+  const late = await lateUnitIds(accountId, account.graceDays, account.timezone);
 
   return properties.map((p) => {
     const unitCount = p.units.length;
@@ -149,13 +150,14 @@ export async function pnlTotals(
 function synthesizeExpectedCharge(
   lease: { rentCents: number; dueDay: number; startDate: Date; endDate: Date },
   period: string,
+  tz: string,
 ): { status: string; dueDate: Date; amountCents: number; paidCents: number } {
-  const nominalDue = addDays(monthStart(period), lease.dueDay - 1);
-  const startDay = startOfUtcDay(lease.startDate);
+  const nominalDue = addDays(monthStartInTz(period, tz), lease.dueDay - 1);
+  const startDay = startOfDayInTz(lease.startDate, tz);
   return {
     status: 'due',
     dueDate: nominalDue < startDay ? startDay : nominalDue,
-    amountCents: expectedChargeCents(lease, period),
+    amountCents: expectedChargeCents(lease, period, tz),
     paidCents: 0,
   };
 }
@@ -176,7 +178,8 @@ export async function getDetail(accountId: string, id: string): Promise<Property
   });
 
   const now = new Date();
-  const period = currentPeriod(now);
+  const tz = account.timezone;
+  const period = currentPeriodInTz(tz, now);
 
   // This month's charge per unit, read-only. Keyed by unitId (not leaseId):
   // one charge per unit per month, and a renewal switchover leaves the
@@ -188,12 +191,12 @@ export async function getDetail(accountId: string, id: string): Promise<Property
   const paymentByUnit = new Map(payments.map((p) => [p.lease.unitId, p]));
   const mtd = await pnlTotals(
     accountId,
-    { from: monthStart(period), to: monthEndExclusive(period) },
+    { from: monthStartInTz(period, tz), to: monthEndExclusiveInTz(period, tz) },
     { propertyId: id },
   );
   const ytd = await pnlTotals(
     accountId,
-    { from: new Date(Date.UTC(now.getUTCFullYear(), 0, 1)), to: monthEndExclusive(period) },
+    { from: yearRangeInTz(Number(period.slice(0, 4)), tz).from, to: monthEndExclusiveInTz(period, tz) },
     { propertyId: id },
   );
 
@@ -219,11 +222,12 @@ export async function getDetail(accountId: string, id: string): Promise<Property
         // in memory. A lease that doesn't touch this month has no charge.
         const row =
           paymentByUnit.get(u.id) ??
-          (lease.startDate < monthEndExclusive(period) && lease.endDate >= monthStart(period)
-            ? synthesizeExpectedCharge(lease, period)
+          (lease.startDate < monthEndExclusiveInTz(period, tz) &&
+          lease.endDate >= monthStartInTz(period, tz)
+            ? synthesizeExpectedCharge(lease, period, tz)
             : undefined);
         if (row) {
-          const derived = deriveRentStatus(row, account.graceDays, now);
+          const derived = deriveRentStatus(row, account.graceDays, tz, now);
           rent = {
             period,
             status: derived.status,

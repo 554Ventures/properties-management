@@ -81,6 +81,10 @@ export const TransactionListQuerySchema = z.object({
   status: TransactionStatusSchema.optional(),
   categoryId: z.string().optional(),
   q: z.string().optional(), // case-insensitive match on description or vendor
+  // Property-less (portfolio-level) rows only, when true — the Unassigned NOI
+  // bucket's deep link. A plain boolean: the REST route pre-coerces the query
+  // string (coerceBooleans), the MCP tool passes a real boolean natively.
+  unassigned: z.boolean().optional(),
   sort: TransactionSortFieldSchema.optional(), // default: date desc
   dir: SortDirectionSchema.optional(),
   cursor: z.string().optional(),
@@ -199,4 +203,9 @@ export const ImportTransactionsResponseSchema = z.object({
   skipped: z.number().int(), // redelivered ids already present (incl. insert races)
   updated: z.number().int(), // Plaid `modified` applied to still-pending rows
   removed: z.number().int(), // Plaid `removed` deleted from still-pending rows
+  // Bank `modified`/`removed` changes that targeted an already confirmed or
+  // dismissed row: not applied silently — recorded as pending bank-sync
+  // discrepancies for the user to accept or dismiss. Omitted when zero (keeps
+  // the common no-discrepancy response unchanged).
+  flaggedForReview: z.number().int().optional(),
 });

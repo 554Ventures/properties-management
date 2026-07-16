@@ -168,7 +168,16 @@ describe('importFromBank never rewrites user-vouched rows', () => {
     });
 
     const second = await importFromBank(account.id);
-    expect(second).toEqual({ imported: 0, skipped: 0, updated: 0, removed: 0 });
+    // The confirmed rows are still never rewritten or deleted — but the bank's
+    // modified/removed changes are now recorded as pending discrepancies for
+    // the user to accept or dismiss, not silently dropped (WS5).
+    expect(second).toEqual({
+      imported: 0,
+      skipped: 0,
+      updated: 0,
+      removed: 0,
+      flaggedForReview: 2,
+    });
 
     const sherwin = await prisma.transaction.findFirstOrThrow({
       where: { accountId: account.id, externalId: 'plaid_mock_1' },
@@ -182,6 +191,13 @@ describe('importFromBank never rewrites user-vouched rows', () => {
       where: { accountId: account.id, externalId: 'plaid_mock_3' },
     });
     expect(lowes.status).toBe('confirmed'); // not deleted
+
+    // Both bank-side changes landed as pending discrepancies (modified Sherwin,
+    // removed Lowe's), each pointing at its still-intact confirmed ledger row.
+    const discrepancies = await prisma.bankSyncDiscrepancy.findMany({
+      where: { accountId: account.id, status: 'pending' },
+    });
+    expect(discrepancies.map((d) => d.kind).sort()).toEqual(['modified', 'removed']);
   });
 });
 

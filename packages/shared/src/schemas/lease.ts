@@ -6,6 +6,9 @@ export const LeaseSchema = z.object({
   unitId: z.string(),
   rentCents: z.number().int(),
   dueDay: z.number().int().min(1).max(31),
+  // Per-lease late-fee override (WS7). null = use the account default;
+  // 0 = explicitly no late fee for this lease.
+  lateFeeCents: z.number().int().nonnegative().nullable(),
   startDate: z.string().datetime(),
   endDate: z.string().datetime(),
   status: LeaseStatusSchema,
@@ -23,6 +26,9 @@ export const CreateLeaseInputSchema = z.object({
   tenantIds: z.array(z.string()).min(1),
   rentCents: z.number().int().positive(),
   dueDay: z.number().int().min(1).max(31).default(1),
+  // Optional per-lease late-fee override (WS7): omitted → account default;
+  // 0 → explicitly none for this lease; positive → this fee overrides the default.
+  lateFeeCents: z.number().int().nonnegative().nullable().optional(),
   startDate: z.string().datetime(),
   endDate: z.string().datetime(),
 });
@@ -31,6 +37,8 @@ export const CreateLeaseInputSchema = z.object({
 export const UpdateLeaseInputSchema = z.object({
   rentCents: z.number().int().positive().optional(),
   dueDay: z.number().int().min(1).max(31).optional(),
+  // omitted → unchanged; null → clear back to the account default; positive/0 → set.
+  lateFeeCents: z.number().int().nonnegative().nullable().optional(),
   startDate: z.string().datetime().optional(),
   endDate: z.string().datetime().optional(),
   status: LeaseStatusSchema.optional(),

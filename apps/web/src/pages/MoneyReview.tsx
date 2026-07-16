@@ -8,6 +8,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { formatUsd } from '@hearth/shared';
 import type {
+  BankDiscrepancyRow,
   Category,
   ReviewQueueFilter,
   ReviewQueueItem,
@@ -15,14 +16,18 @@ import type {
 } from '@hearth/shared';
 import { ApiClientError } from '../api/client';
 import {
+  useAcceptBankDiscrepancy,
+  useBankDiscrepancies,
   useCategories,
   useConfirmAllReview,
   useConfirmTransaction,
   useDismissAllReview,
+  useDismissBankDiscrepancy,
   useDismissTransaction,
   useProperties,
   usePropertyDetail,
   useReviewQueue,
+  useUnlinkDeposit,
 } from '../api/queries';
 import { AiChip } from '../components/ai/AiChip';
 import { PageHeader } from '../components/shell/PageHeader';
@@ -36,8 +41,8 @@ import { Select } from '../components/ui/Select';
 import { Skeleton } from '../components/ui/Skeleton';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { useToast } from '../components/ui/Toast';
-import { IconCheck } from '../components/ui/icons';
-import { formatDate, formatMonth } from '../lib/format';
+import { IconAlertTriangle, IconCheck } from '../components/ui/icons';
+import { formatDate, formatMonth, formatShortDate } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
 
 const SEARCH_DEBOUNCE_MS = 300;
@@ -72,6 +77,7 @@ export function MoneyReview() {
   const properties = useProperties();
   const confirmAll = useConfirmAllReview();
   const dismissAll = useDismissAllReview();
+  const discrepancies = useBankDiscrepancies();
   const { toast } = useToast();
 
   const categoriesByType = useMemo(() => {
@@ -147,6 +153,10 @@ export function MoneyReview() {
           </>
         }
       />
+
+      {(discrepancies.data?.items.length ?? 0) > 0 && (
+        <BankDiscrepancySection items={discrepancies.data!.items} />
+      )}
 
       <Card className="p-4">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -326,24 +336,38 @@ function ReviewItemCard({
   const rentMatch = item.rentMatch;
 
   const confirmItem = () => {
-    const payload =
-      rentAccepted && rentMatch
-        ? { id: item.id, rentPaymentId: rentMatch.rentPaymentId }
-        : {
-            id: item.id,
-            categoryId: categoryId || undefined,
-            propertyId: propertyId || undefined,
-            unitId: unitId || undefined,
-            classification: classification || undefined,
-          };
+    const rentLink = rentAccepted && rentMatch;
+    const payload = rentLink
+      ? { id: item.id, rentPaymentId: rentMatch.rentPaymentId }
+      : {
+          id: item.id,
+          categoryId: categoryId || undefined,
+          propertyId: propertyId || undefined,
+          unitId: unitId || undefined,
+          classification: classification || undefined,
+        };
+    // A rent-linked confirm always attributes to the lease's property; only
+    // the plain-confirm path can leave the row unassigned.
+    const staysUnassigned = !rentLink && !propertyId;
     confirm.mutate(payload, {
-      onSuccess: () =>
+      onSuccess: () => {
         toast(
-          rentAccepted && rentMatch
+          rentLink
             ? `Confirmed and marked ${rentMatch.tenantName}'s ${formatMonth(rentMatch.period)} rent paid.`
             : `Confirmed “${item.description}”.`,
           'positive',
-        ),
+        );
+        // Portfolio-level bank rows are common (e.g. a shared insurance
+        // policy) and legitimate, but a nudge here is cheap insurance against
+        // an unintentional skip — manual/receipt entries already went through
+        // a form where "no property" was a deliberate choice.
+        if (staysUnassigned && item.source === 'bank') {
+          toast(
+            "Confirmed without a property — assign one from the ledger's Edit action to keep per-property reports complete.",
+            'neutral',
+          );
+        }
+      },
       onError: (err) =>
         toast(
           err instanceof ApiClientError ? err.message : 'Could not confirm the transaction. Try again.',
@@ -536,5 +560,171 @@ function ReviewItemCard({
         </div>
       </div>
     </Card>
+  );
+}
+
+// ── bank corrections (WS5) ────────────────────────────────────────────────
+// Rows the bank restated or voided after the landlord already confirmed or
+// dismissed them. This is bank data, not an AI suggestion — plain warning-
+// tone Card (matches ReportBody's "Worth your attention" pattern), never
+// AiSurface.
+
+const TYPE_LABEL: Record<'income' | 'expense', string> = { income: 'Income', expense: 'Expense' };
+
+/** Only the fields that actually changed, each as a "before → after" string. */
+function buildDiff(
+  txn: NonNullable<BankDiscrepancyRow['transaction']>,
+  bankData: NonNullable<BankDiscrepancyRow['bankData']>,
+): string[] {
+  const parts: string[] = [];
+  if (txn.amountCents !== bankData.amountCents) {
+    parts.push(`${formatUsd(txn.amountCents)} → ${formatUsd(bankData.amountCents)}`);
+  }
+  if (txn.date.slice(0, 10) !== bankData.date.slice(0, 10)) {
+    parts.push(`${formatShortDate(txn.date)} → ${formatShortDate(bankData.date)}`);
+  }
+  if (txn.type !== bankData.type) {
+    parts.push(`${TYPE_LABEL[txn.type]} → ${TYPE_LABEL[bankData.type]}`);
+  }
+  if ((txn.vendor ?? '') !== (bankData.vendor ?? '')) {
+    parts.push(`${txn.vendor ?? 'No vendor'} → ${bankData.vendor ?? 'No vendor'}`);
+  }
+  if (txn.description !== bankData.description) {
+    parts.push(`“${txn.description}” → “${bankData.description}”`);
+  }
+  return parts;
+}
+
+function BankDiscrepancySection({ items }: { items: BankDiscrepancyRow[] }) {
+  return (
+    <Card className="bg-warning-soft">
+      <div className="flex items-start gap-2.5">
+        <span className="mt-0.5 text-warning">
+          <IconAlertTriangle size={16} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-sm font-semibold text-ink">Bank changed these after you confirmed</h2>
+          <p className="mt-1 text-sm text-ink">
+            Your bank restated or removed these transactions after you already reviewed them.
+            Accept the bank's version, or keep yours.
+          </p>
+          <ul className="mt-3 flex flex-col gap-3">
+            {items.map((item) => (
+              <li key={item.id}>
+                <BankDiscrepancyItem item={item} />
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function BankDiscrepancyItem({ item }: { item: BankDiscrepancyRow }) {
+  const accept = useAcceptBankDiscrepancy();
+  const dismiss = useDismissBankDiscrepancy();
+  const unlink = useUnlinkDeposit();
+  const { toast } = useToast();
+  const txn = item.transaction;
+
+  const acceptItem = () => {
+    accept.mutate(item.id, {
+      onSuccess: () => toast("Accepted the bank's version.", 'positive'),
+      onError: (err) =>
+        toast(
+          err instanceof ApiClientError
+            ? err.message
+            : "Could not accept the bank's version. Try again.",
+          'danger',
+        ),
+    });
+  };
+
+  const dismissItem = () => {
+    dismiss.mutate(item.id, {
+      onSuccess: () => toast('Kept your version — the bank change is dismissed.', 'positive'),
+      onError: (err) =>
+        toast(
+          err instanceof ApiClientError ? err.message : 'Could not dismiss the bank change. Try again.',
+          'danger',
+        ),
+    });
+  };
+
+  const unlinkItem = () => {
+    if (!item.rentPaymentId || !item.depositId) return;
+    unlink.mutate(
+      { rentPaymentId: item.rentPaymentId, depositId: item.depositId },
+      {
+        onSuccess: () =>
+          toast("Deposit unlinked — you can now accept the bank's version.", 'positive'),
+        onError: () => toast('Could not unlink the deposit. Try again.', 'danger'),
+      },
+    );
+  };
+
+  const diffParts =
+    item.kind === 'modified' && txn && item.bankData ? buildDiff(txn, item.bankData) : [];
+  const statusText = !txn
+    ? 'This transaction is no longer in your ledger.'
+    : item.kind === 'removed'
+      ? 'Removed by your bank'
+      : diffParts.length > 0
+        ? diffParts.join(' · ')
+        : "Your bank re-sent this transaction with the same details.";
+
+  return (
+    <div className="rounded-md border border-border-strong bg-surface p-4">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div className="min-w-0">
+          {txn && (
+            <>
+              <p className="font-medium text-ink">{txn.description}</p>
+              <p className="mt-0.5 text-sm text-ink-muted">
+                {txn.vendor ? `${txn.vendor} · ` : ''}
+                {formatDate(txn.date)} ·{' '}
+                <span className="font-medium tabular-nums text-ink">
+                  {txn.type === 'income' ? '+' : '−'}
+                  {formatUsd(txn.amountCents)}
+                </span>
+                {txn.categoryName ? ` · ${txn.categoryName}` : ''}
+              </p>
+            </>
+          )}
+          <p className="mt-2 flex items-center gap-1.5 text-sm font-medium text-warning">
+            <IconAlertTriangle size={14} />
+            {statusText}
+          </p>
+          {item.rentPaymentId && (
+            <p className="mt-2 text-sm text-ink-muted">
+              This transaction backs{' '}
+              <span className="font-medium text-ink">
+                {item.rentPeriod ? formatMonth(item.rentPeriod) : 'a'}
+              </span>{' '}
+              rent.
+            </p>
+          )}
+        </div>
+        <div className="flex w-full flex-col gap-2 md:w-56">
+          {item.rentPaymentId && item.depositId && (
+            <Button variant="secondary" busy={unlink.isPending} onClick={unlinkItem}>
+              Unlink deposit
+            </Button>
+          )}
+          <Button
+            busy={accept.isPending}
+            disabled={!txn}
+            title={!txn ? 'This transaction is no longer in your ledger — dismiss instead.' : undefined}
+            onClick={acceptItem}
+          >
+            Accept bank version
+          </Button>
+          <Button variant="ghost" busy={dismiss.isPending} onClick={dismissItem}>
+            Keep my version
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }

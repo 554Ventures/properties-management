@@ -10,6 +10,12 @@ export function formatDate(iso: string): string {
   });
 }
 
+/** ISO datetime → "Jul 3" (no year — for compact before/after pairs like a
+ *  bank-correction diff, where a year would be redundant clutter). */
+export function formatShortDate(iso: string): string {
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
 /** ISO datetime → "Jul 3, 2:14 PM" (year included when not the current one). */
 export function formatDateTime(iso: string): string {
   const date = new Date(iso);

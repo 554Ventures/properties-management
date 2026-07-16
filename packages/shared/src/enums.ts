@@ -58,7 +58,9 @@ export type ReportType = z.infer<typeof ReportTypeSchema>;
 export const InsightScopeSchema = z.enum(['portfolio', 'property', 'tenant']);
 export type InsightScope = z.infer<typeof InsightScopeSchema>;
 
-export const InsightStatusSchema = z.enum(['active', 'dismissed', 'actioned']);
+// 'resolved' = the condition that triggered the insight is no longer true
+// (currently only late_rent auto-resolves this way — see insight.service.ts).
+export const InsightStatusSchema = z.enum(['active', 'dismissed', 'actioned', 'resolved']);
 export type InsightStatus = z.infer<typeof InsightStatusSchema>;
 
 export const InsightSeveritySchema = z.enum(['info', 'warning', 'positive']);

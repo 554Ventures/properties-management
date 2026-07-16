@@ -191,6 +191,61 @@ describe('permission enforcement', () => {
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe('forbidden');
   });
+
+  it('403s a member on account settings and deletion (owner-only), even with every area granted', async () => {
+    const ownerToken = await provision('team-owner-90', 'owner90@teamtest.example');
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/team/invites',
+      headers: auth(ownerToken),
+      payload: {
+        email: 'member90@teamtest.example',
+        permissions: ['properties', 'tenants', 'money', 'rent', 'reports', 'ai'],
+      },
+    });
+    const memberToken = await provision('team-member-90', 'member90@teamtest.example');
+
+    // Settings steer account-wide money math (timezone, graceDays, taxRatePct,
+    // defaultLateFeeCents) — owner-only regardless of granted areas.
+    const patch = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/settings/account',
+      headers: auth(memberToken),
+      payload: { graceDays: 10 },
+    });
+    expect(patch.statusCode).toBe(403);
+    expect(patch.json().error.code).toBe('forbidden');
+
+    const requestDeletion = await app.inject({
+      method: 'POST',
+      url: '/api/v1/settings/account/deletion',
+      headers: auth(memberToken),
+    });
+    expect(requestDeletion.statusCode).toBe(403);
+
+    const cancelDeletion = await app.inject({
+      method: 'DELETE',
+      url: '/api/v1/settings/account/deletion',
+      headers: auth(memberToken),
+    });
+    expect(cancelDeletion.statusCode).toBe(403);
+
+    // Reads stay open to members; the owner's write still works.
+    const read = await app.inject({
+      method: 'GET',
+      url: '/api/v1/settings/account',
+      headers: auth(memberToken),
+    });
+    expect(read.statusCode).toBe(200);
+
+    const ownerPatch = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/settings/account',
+      headers: auth(ownerToken),
+      payload: { graceDays: read.json().graceDays },
+    });
+    expect(ownerPatch.statusCode).toBe(200);
+  });
 });
 
 describe('remove & revoke are audited', () => {

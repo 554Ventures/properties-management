@@ -15,10 +15,12 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ApiClientError } from '../api/client';
 import {
   useCategories,
+  useDeleteTransaction,
   useImportTransactions,
   useInsights,
   useIntegrations,
   useProperties,
+  useRestoreTransaction,
   useReviewQueue,
   useTransactions,
 } from '../api/queries';
@@ -27,6 +29,7 @@ import { TransactionEditModal } from '../components/forms/TransactionEditModal';
 import { PageHeader } from '../components/shell/PageHeader';
 import { Button, buttonClasses } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import {
   DataTable,
   emptyDataTableState,
@@ -37,11 +40,18 @@ import {
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorNotice } from '../components/ui/ErrorNotice';
 import { LiveRegion } from '../components/ui/LiveRegion';
-import { RowActions } from '../components/ui/RowActions';
+import { RowActions, type RowAction } from '../components/ui/RowActions';
 import { Skeleton } from '../components/ui/Skeleton';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { useToast } from '../components/ui/Toast';
-import { IconDollar, IconDownload, IconPencil, IconPlus } from '../components/ui/icons';
+import {
+  IconDollar,
+  IconDownload,
+  IconPencil,
+  IconPlus,
+  IconTrash,
+  IconX,
+} from '../components/ui/icons';
 import { cx } from '../lib/cx';
 import { formatDate, formatDateTime } from '../lib/format';
 import { importToastMessage } from '../lib/importToastMessage';
@@ -88,7 +98,18 @@ export function moneyStateFromParams(params: URLSearchParams): DataTableState {
   return { ...emptyDataTableState, filters };
 }
 
-function hasCriteria(state: DataTableState): boolean {
+/** ?unassigned=true deep link (the `unassigned_transactions` insight card) —
+ *  kept separate from `moneyStateFromParams`'s DataTableState, not folded
+ *  into `filters`: it isn't a per-column table filter, and DataTable's own
+ *  `onStateChange` round-trips a plain DataTableState on every sort/search/
+ *  page interaction, which would silently drop an extra field riding along
+ *  inside it. Pure and exported for tests. */
+export function unassignedFromParams(params: URLSearchParams): boolean {
+  return params.get('unassigned') === 'true';
+}
+
+function hasCriteria(state: DataTableState, unassignedOnly: boolean): boolean {
+  if (unassignedOnly) return true;
   if (state.search.trim() !== '') return true;
   return Object.values(state.filters).some((f) =>
     f.kind === 'text'
@@ -103,30 +124,41 @@ export function Money() {
   usePageTitle('Money');
   const [searchParams] = useSearchParams();
   const [state, setState] = useState<DataTableState>(() => moneyStateFromParams(searchParams));
+  const [unassignedOnly, setUnassignedOnly] = useState(() => unassignedFromParams(searchParams));
   // The expense-spike insight card renders on this page and deep-links back to
   // it — a same-route navigation never remounts, so re-apply on param change.
   const paramsKey = searchParams.toString();
   useEffect(() => {
     const next = moneyStateFromParams(searchParams);
     if (Object.keys(next.filters).length > 0) setState(next);
+    if (unassignedFromParams(searchParams)) setUnassignedOnly(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paramsKey]);
   const [editing, setEditing] = useState<Transaction | null>(null);
+  const [deleting, setDeleting] = useState<Transaction | null>(null);
 
-  const query: TransactionListQuery = useMemo(() => {
+  const clearUnassigned = () => {
+    setUnassignedOnly(false);
+    setState((s) => ({ ...s, page: 0 }));
+  };
+
+  const query: TransactionListQuery & { unassigned?: boolean } = useMemo(() => {
     const sortField = state.sort ? SORT_FIELD[state.sort.columnId] : undefined;
     return {
       q: state.search.trim() || undefined,
-      propertyId: selected(state.filters, 'property'),
+      // Unassigned implies "no property" — it wins over any property column
+      // filter rather than combining into a contradictory query.
+      propertyId: unassignedOnly ? undefined : selected(state.filters, 'property'),
       categoryId: selected(state.filters, 'category'),
       type: selected(state.filters, 'amount') as TransactionType | undefined,
       status: selected(state.filters, 'status') as TransactionStatus | undefined,
+      unassigned: unassignedOnly ? true : undefined,
       sort: sortField,
       dir: sortField ? state.sort?.dir : undefined,
       limit: PAGE_SIZE,
       offset: state.page * PAGE_SIZE,
     };
-  }, [state]);
+  }, [state, unassignedOnly]);
 
   const transactions = useTransactions(query);
   const review = useReviewQueue();
@@ -134,6 +166,8 @@ export function Money() {
   const properties = useProperties();
   const integrations = useIntegrations();
   const importBank = useImportTransactions();
+  const deleteTransaction = useDeleteTransaction();
+  const restoreTransaction = useRestoreTransaction();
   const { toast } = useToast();
   const navigate = useNavigate();
 
@@ -178,6 +212,26 @@ export function Money() {
   const [nextImportAt, setNextImportAt] = useState<string | null>(null);
   const importCoolingDown =
     nextImportAt !== null && new Date(nextImportAt).getTime() > Date.now();
+
+  const confirmDelete = () => {
+    if (!deleting) return;
+    deleteTransaction.mutate(deleting.id, {
+      onSuccess: () => {
+        toast('Transaction deleted.', 'positive');
+        setDeleting(null);
+      },
+      onError: (err) =>
+        toast(err instanceof Error ? err.message : 'Could not delete the transaction.', 'danger'),
+    });
+  };
+
+  const restore = (txn: Transaction) => {
+    restoreTransaction.mutate(txn.id, {
+      onSuccess: () => toast('Transaction restored to review.', 'positive'),
+      onError: (err) =>
+        toast(err instanceof Error ? err.message : 'Could not restore the transaction.', 'danger'),
+    });
+  };
 
   const columns: DataTableColumn<Transaction>[] = [
     {
@@ -276,14 +330,28 @@ export function Money() {
       id: 'actions',
       header: <span className="sr-only">Actions</span>,
       stickyRight: true,
-      cell: (txn) => (
-        <RowActions
-          context={txn.description}
-          actions={[
-            { label: 'Edit', icon: <IconPencil size={14} />, onClick: () => setEditing(txn) },
-          ]}
-        />
-      ),
+      cell: (txn) => {
+        const actions: RowAction[] = [
+          { label: 'Edit', icon: <IconPencil size={14} />, onClick: () => setEditing(txn) },
+        ];
+        // Rent-linked rows drop Delete entirely — same guard the modal shows;
+        // unlinking the deposit on the Rent page is the only way to remove it.
+        if (txn.status === 'confirmed' && !txn.rentLinked) {
+          actions.push({
+            label: 'Delete',
+            icon: <IconTrash size={14} />,
+            onClick: () => setDeleting(txn),
+          });
+        }
+        if (txn.status === 'dismissed') {
+          actions.push({
+            label: 'Restore to review',
+            busy: restoreTransaction.isPending && restoreTransaction.variables === txn.id,
+            onClick: () => restore(txn),
+          });
+        }
+        return <RowActions context={txn.description} actions={actions} />;
+      },
     },
   ];
 
@@ -357,13 +425,31 @@ export function Money() {
         {spikeInsight && <InsightCard insight={spikeInsight} headingLevel={2} />}
       </LiveRegion>
 
+      {/* Visible, clearable active-filter state for the ?unassigned=true deep
+          link (the unassigned_transactions insight) — same "Filtered" +
+          ghost-button-with-IconX Clear convention DataTable's own column
+          filters use, surfaced here because "unassigned" isn't a per-column
+          table filter. */}
+      {unassignedOnly && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-surface-sunken px-4 py-2.5 text-sm text-ink">
+          <span>
+            <span className="font-medium">Filtered:</span> showing only unassigned transactions —
+            not tied to a property.
+          </span>
+          <Button variant="ghost" size="sm" onClick={clearUnassigned}>
+            <IconX size={14} />
+            Clear
+          </Button>
+        </div>
+      )}
+
       {transactions.isPending ? (
         <Card flush className="p-4">
           <Skeleton className="h-64 w-full" />
         </Card>
       ) : transactions.isError ? (
         <ErrorNotice error={transactions.error} onRetry={() => void transactions.refetch()} />
-      ) : transactions.data.total === 0 && !hasCriteria(state) ? (
+      ) : transactions.data.total === 0 && !hasCriteria(state, unassignedOnly) ? (
         <Card flush>
           <EmptyState
             icon={<IconDollar size={28} />}
@@ -402,6 +488,20 @@ export function Money() {
         open={editing !== null}
         onClose={() => setEditing(null)}
         transaction={editing}
+      />
+      <ConfirmDialog
+        open={deleting !== null}
+        onClose={() => setDeleting(null)}
+        onConfirm={confirmDelete}
+        title="Delete transaction"
+        confirmLabel="Delete"
+        busy={deleteTransaction.isPending}
+        body={
+          <>
+            This permanently deletes <strong>{deleting?.description}</strong> and removes it from
+            every report. It can&rsquo;t be restored.
+          </>
+        }
       />
     </div>
   );

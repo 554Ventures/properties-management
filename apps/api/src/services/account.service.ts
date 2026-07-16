@@ -18,6 +18,18 @@ import { writeAudit } from './audit.service';
 
 const DEFAULT_GRACE_DAYS = 7;
 
+/** Select-only fetch of an account's IANA timezone (WS4). Callers that already
+ *  load the full account row reuse `account.timezone` directly instead. Used to
+ *  bucket every period/KPI/report/rent computation by the landlord's local
+ *  wall clock rather than UTC. */
+export async function accountTimezone(accountId: string): Promise<string> {
+  const { timezone } = await prisma.account.findUniqueOrThrow({
+    where: { id: accountId },
+    select: { timezone: true },
+  });
+  return timezone;
+}
+
 export function deletionGraceDays(): number {
   const raw = Number(process.env.ACCOUNT_DELETION_GRACE_DAYS);
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_GRACE_DAYS;

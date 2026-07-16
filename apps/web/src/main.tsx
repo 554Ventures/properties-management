@@ -15,7 +15,11 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       retry: 1,
-      refetchOnWindowFocus: false,
+      // Financial surfaces must refresh when the user returns to the tab
+      // (e.g. a payment recorded elsewhere shouldn't sit stale on the
+      // dashboard); the 30s staleTime below bounds how often a refocus can
+      // actually trigger a refetch.
+      refetchOnWindowFocus: true,
       staleTime: 30_000,
     },
   },

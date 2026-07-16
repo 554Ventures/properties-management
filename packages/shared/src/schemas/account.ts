@@ -8,6 +8,9 @@ export const AccountSchema = z.object({
   taxRatePct: z.number().int().min(0).max(100),
   taxYearStartMonth: z.number().int().min(1).max(12),
   graceDays: z.number().int().min(0),
+  // Account-wide default late fee in cents (WS7); 0 = late fees disabled. A
+  // lease may override this. Applying a fee is always an explicit human action.
+  defaultLateFeeCents: z.number().int().nonnegative(),
   createdAt: z.string().datetime(),
   // Data erasure (docs/SECURITY_PRIVACY_AUDIT.md §B2): set while the account
   // is in its post-request grace window, awaiting hard deletion.
@@ -25,6 +28,7 @@ export const UpdateAccountSettingsInputSchema = z.object({
   taxRatePct: z.number().int().min(0).max(100).optional(),
   taxYearStartMonth: z.number().int().min(1).max(12).optional(),
   graceDays: z.number().int().min(0).optional(),
+  defaultLateFeeCents: z.number().int().nonnegative().optional(),
 });
 
 // POST /settings/account/deletion — request account deletion; the account

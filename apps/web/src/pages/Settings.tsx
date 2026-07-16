@@ -38,6 +38,7 @@ import { Select } from '../components/ui/Select';
 import { Skeleton } from '../components/ui/Skeleton';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { useToast } from '../components/ui/Toast';
+import { IconAlertCircle, IconAlertTriangle } from '../components/ui/icons';
 import { formatDateTime } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
 import { useStripeFcConnect } from '../lib/useStripeFcConnect';
@@ -529,13 +530,25 @@ function SessionSection() {
   );
 }
 
+/** PATCH /settings/account is requireOwner()-gated server-side (it steers
+ *  account-wide money math: timezone, taxRatePct, defaultLateFeeCents) — a
+ *  non-owner member would only 403 on save. Mirrors TeamSection's
+ *  enabled + role check: demo mode (no login) has a single operator who is
+ *  always the owner, so the form stays fully editable there. */
 function AccountForm({ account }: { account: AccountSettings }) {
   const update = useUpdateSettings();
   const { toast } = useToast();
+  const { enabled } = useAuth();
+  const me = useCurrentUser();
   const [name, setName] = useState(account.name);
   const [email, setEmail] = useState(account.email);
   const [taxRatePct, setTaxRatePct] = useState(String(account.taxRatePct));
   const [timezone, setTimezone] = useState(account.timezone);
+  // Dollar string; $0 disables late fees account-wide (WS7). A lease's own
+  // override (set on the lease form) takes precedence over this default.
+  const [defaultLateFee, setDefaultLateFee] = useState(
+    (account.defaultLateFeeCents / 100).toString(),
+  );
 
   const timezones = TIMEZONES.includes(account.timezone)
     ? TIMEZONES
@@ -549,20 +562,44 @@ function AccountForm({ account }: { account: AccountSettings }) {
         email: email.trim() || undefined,
         taxRatePct: Math.min(100, Math.max(0, Math.round(Number(taxRatePct) || 0))),
         timezone,
+        defaultLateFeeCents: Math.max(0, Math.round(Number(defaultLateFee) * 100) || 0),
       },
       {
         onSuccess: () => toast('Settings saved.', 'positive'),
-        onError: () => toast('Could not save settings. Try again.', 'danger'),
+        onError: (err) =>
+          toast(err instanceof Error ? err.message : 'Could not save settings. Try again.', 'danger'),
       },
     );
   };
 
+  // While the role is unresolved (auth mode only), default to read-only
+  // rather than briefly flashing an editable form that would 403 on save.
+  if (enabled && me.isPending) {
+    return (
+      <Card>
+        <Skeleton className="h-64 w-full" />
+      </Card>
+    );
+  }
+  const readOnly = enabled && me.data?.role !== 'owner';
+
   return (
     <Card>
       <h2 className="mb-3 text-sm font-semibold text-ink">Account</h2>
+      {readOnly && (
+        <p className="mb-3 flex items-start gap-1.5 text-xs text-ink-muted">
+          <IconAlertCircle size={12} className="mt-0.5 shrink-0" />
+          Only the account owner can change these settings.
+        </p>
+      )}
       <form onSubmit={submit} className="flex flex-col gap-4">
         <FormField label="Name" htmlFor="settings-name" required>
-          <Input value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" />
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            autoComplete="name"
+            disabled={readOnly}
+          />
         </FormField>
         <FormField label="Email" htmlFor="settings-email" required>
           <Input
@@ -570,6 +607,7 @@ function AccountForm({ account }: { account: AccountSettings }) {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             autoComplete="email"
+            disabled={readOnly}
           />
         </FormField>
         <FormField
@@ -583,10 +621,26 @@ function AccountForm({ account }: { account: AccountSettings }) {
             max={100}
             value={taxRatePct}
             onChange={(e) => setTaxRatePct(e.target.value)}
+            disabled={readOnly}
+          />
+        </FormField>
+        <FormField
+          label="Default late fee (USD)"
+          htmlFor="settings-late-fee"
+          hint="Applied when a lease doesn't set its own late fee. $0 disables late fees for those leases — applying one is always a manual action on the Rent Collection page, never automatic."
+        >
+          <Input
+            type="number"
+            inputMode="decimal"
+            min="0"
+            step="0.01"
+            value={defaultLateFee}
+            onChange={(e) => setDefaultLateFee(e.target.value)}
+            disabled={readOnly}
           />
         </FormField>
         <FormField label="Timezone" htmlFor="settings-timezone">
-          <Select value={timezone} onChange={(e) => setTimezone(e.target.value)}>
+          <Select value={timezone} onChange={(e) => setTimezone(e.target.value)} disabled={readOnly}>
             {timezones.map((tz) => (
               <option key={tz} value={tz}>
                 {tz.replace(/_/g, ' ')}
@@ -594,11 +648,13 @@ function AccountForm({ account }: { account: AccountSettings }) {
             ))}
           </Select>
         </FormField>
-        <div className="flex justify-end">
-          <Button type="submit" busy={update.isPending}>
-            Save changes
-          </Button>
-        </div>
+        {!readOnly && (
+          <div className="flex justify-end">
+            <Button type="submit" busy={update.isPending}>
+              Save changes
+            </Button>
+          </div>
+        )}
       </form>
     </Card>
   );
@@ -638,6 +694,21 @@ type IntegrationRowInput = Integration | { type: IntegrationType; name: string }
 
 function isConnectedIntegration(row: IntegrationRowInput): row is Integration {
   return 'id' in row && row.status !== 'disconnected';
+}
+
+/** Shown under a bank feed row once its nightly sync starts failing
+ * (WS5 — jobs.service stamps lastSyncError/At and bumps syncFailureCount;
+ * three failures also raise a bank_sync_failing insight). Icon + text, not
+ * color alone, matching the row's existing secondary-text convention. */
+function LastSyncErrorNote({ row }: { row: IntegrationRowInput }) {
+  if (!('id' in row) || !row.lastSyncErrorAt) return null;
+  return (
+    <p className="mt-1 flex items-start gap-1 text-xs text-warning">
+      <IconAlertTriangle size={12} className="mt-0.5 shrink-0" />
+      Last sync failed {formatDateTime(row.lastSyncErrorAt)}
+      {row.lastSyncError ? `: ${row.lastSyncError}` : ''}
+    </p>
+  );
 }
 
 // The mock adapter asserts this exact literal (integrations/mock/mock-plaid.ts)
@@ -697,6 +768,7 @@ function PlaidIntegrationRow({ row }: { row: IntegrationRowInput }) {
             Last imported {formatDateTime(row.lastSyncedAt)}
           </p>
         )}
+        <LastSyncErrorNote row={row} />
       </div>
       {isConnectedIntegration(row) ? (
         <Button
@@ -747,6 +819,7 @@ function StripeFcIntegrationRow({ row }: { row: IntegrationRowInput }) {
             Last imported {formatDateTime(row.lastSyncedAt)}
           </p>
         )}
+        <LastSyncErrorNote row={row} />
       </div>
       {isConnectedIntegration(row) ? (
         <Button

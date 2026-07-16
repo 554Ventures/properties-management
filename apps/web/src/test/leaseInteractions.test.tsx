@@ -50,6 +50,7 @@ const baseLease: Lease = {
   unitId: 'u1',
   rentCents: 125000,
   dueDay: 1,
+  lateFeeCents: null,
   startDate: '2025-08-01T12:00:00.000Z',
   endDate: '2026-07-31T12:00:00.000Z',
   status: 'active',

@@ -45,6 +45,9 @@ export * from './contractor';
 // Transactions (incl. review queue, receipt scan, bank import)
 export * from './transaction';
 
+// Bank-sync discrepancies (post-confirm bank corrections surface + sync health)
+export * from './bank-discrepancy';
+
 // Categories
 export * from './category';
 

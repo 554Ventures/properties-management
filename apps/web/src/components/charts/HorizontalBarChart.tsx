@@ -28,6 +28,12 @@ import {
 export interface HorizontalBarDatum {
   label: string;
   value: number;
+  /** Force the neutral chart token instead of the sign-based positive/warning
+   * color — for a bucket that isn't itself a performance figure (e.g. the
+   * "Unassigned" portfolio-level bucket on the NOI-by-property chart), same
+   * convention as DonutChart's folded "Other" slice. Never the only signal:
+   * the bar still carries its own `label`. */
+  neutral?: boolean;
 }
 
 export interface HorizontalBarChartProps {
@@ -92,7 +98,7 @@ function BarShape({ x = 0, y = 0, width = 0, height = 0, payload }: BarShapeProp
     bw = -bw;
   }
   const value = payload?.value ?? 0;
-  const fill = chartColor(value >= 0 ? 'positive' : 'warning');
+  const fill = payload?.neutral ? chartColor('neutral') : chartColor(value >= 0 ? 'positive' : 'warning');
   const tip = value >= 0 ? 'right' : 'left';
   return <path d={roundedTipPath(bx, y, bw, height, tip)} fill={fill} />;
 }

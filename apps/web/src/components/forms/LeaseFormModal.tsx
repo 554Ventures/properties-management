@@ -21,21 +21,36 @@ type Mode = 'create' | 'edit';
 interface FormState {
   rent: string;
   dueDay: string;
+  // Dollar string; '' = use the account default (WS7 tri-state override).
+  lateFee: string;
   startDate: string;
   endDate: string;
 }
 
 function emptyForm(): FormState {
-  return { rent: '', dueDay: '1', startDate: '', endDate: '' };
+  return { rent: '', dueDay: '1', lateFee: '', startDate: '', endDate: '' };
 }
 
 function fromLease(lease: Lease): FormState {
   return {
     rent: (lease.rentCents / 100).toString(),
     dueDay: String(lease.dueDay),
+    lateFee: lease.lateFeeCents == null ? '' : (lease.lateFeeCents / 100).toString(),
     startDate: toDateInputValue(lease.startDate),
     endDate: toDateInputValue(lease.endDate),
   };
+}
+
+/**
+ * Tri-state late-fee override (WS7): empty field → account default (omitted
+ * on create, explicitly cleared with `null` on edit — there's nothing to
+ * "leave unchanged" once the field is visible and editable); 0 → no late fee
+ * for this lease; positive → this fee overrides the default.
+ */
+function resolveLateFeeCents(raw: string, mode: Mode): number | null | undefined {
+  const trimmed = raw.trim();
+  if (trimmed === '') return mode === 'edit' ? null : undefined;
+  return Math.round(Number(trimmed) * 100);
 }
 
 /** Re-lease starting point taken from a unit's most recent ended lease. */
@@ -83,6 +98,7 @@ export function LeaseFormModal({
   const [agreement, setAgreement] = useState<File | null>(null);
   const [errors, setErrors] = useState<{
     rent?: string;
+    lateFee?: string;
     dates?: string;
     tenants?: string;
     agreement?: string;
@@ -131,9 +147,14 @@ export function LeaseFormModal({
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const rentNumber = Number(form.rent);
+    const lateFeeTrimmed = form.lateFee.trim();
+    const lateFeeNumber = Number(lateFeeTrimmed);
     const next: typeof errors = {};
     if (!form.rent || Number.isNaN(rentNumber) || rentNumber <= 0) {
       next.rent = 'Enter a monthly rent greater than zero.';
+    }
+    if (lateFeeTrimmed !== '' && (Number.isNaN(lateFeeNumber) || lateFeeNumber < 0)) {
+      next.lateFee = 'Enter a late fee of $0 or more, or leave it blank for the account default.';
     }
     if (!form.startDate || !form.endDate) {
       next.dates = 'Enter both a start and end date.';
@@ -148,6 +169,7 @@ export function LeaseFormModal({
 
     const rentCents = Math.round(rentNumber * 100);
     const dueDay = Math.min(31, Math.max(1, Number(form.dueDay) || 1));
+    const lateFeeCents = resolveLateFeeCents(form.lateFee, mode);
     const onError = (err: unknown) =>
       toast(err instanceof Error ? err.message : 'Could not save the lease.', 'danger');
 
@@ -157,6 +179,7 @@ export function LeaseFormModal({
           id: lease.id,
           rentCents,
           dueDay,
+          lateFeeCents,
           startDate: fromDateInputValue(form.startDate),
           endDate: fromDateInputValue(form.endDate),
         },
@@ -178,6 +201,7 @@ export function LeaseFormModal({
         tenantIds,
         rentCents,
         dueDay,
+        ...(lateFeeCents !== undefined ? { lateFeeCents } : {}),
         startDate: fromDateInputValue(form.startDate),
         endDate: fromDateInputValue(form.endDate),
       },
@@ -289,6 +313,23 @@ export function LeaseFormModal({
             <Input type="number" min={1} max={31} value={form.dueDay} onInput={set('dueDay')} />
           </FormField>
         </div>
+
+        <FormField
+          label="Late fee for this lease (USD)"
+          htmlFor="lease-late-fee"
+          error={errors.lateFee}
+          hint="Leave blank to use your account default. Enter 0 to disable late fees for this lease."
+        >
+          <Input
+            type="number"
+            inputMode="decimal"
+            step="0.01"
+            min="0"
+            placeholder="Account default"
+            value={form.lateFee}
+            onInput={set('lateFee')}
+          />
+        </FormField>
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField label="Start date" htmlFor="lease-start" error={errors.dates} required>

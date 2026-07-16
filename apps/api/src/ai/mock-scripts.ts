@@ -112,6 +112,9 @@ interface ScheduleEData {
 }
 
 function chosenTaxYear(answer: MockAnswer | null): number {
+  // Deliberately UTC (WS4): a deterministic year label for the offline demo
+  // script, not account-scoped period bucketing (mock scripts have no account
+  // context; the report service still buckets the chosen year on account tz).
   const currentYear = new Date().getUTCFullYear();
   const picked = answer?.selected[0] ?? '';
   if (/year to date/i.test(picked)) return currentYear;
@@ -124,6 +127,7 @@ const taxScript: MockScript = {
   pattern: /tax(es)?|schedule e/i,
   steps: [
     () => {
+      // Deliberately UTC (WS4): demo prompt label only — see chosenTaxYear.
       const year = new Date().getUTCFullYear();
       return [
         toolUse('toolu_mock_ask_year', 'ask_user_question', {

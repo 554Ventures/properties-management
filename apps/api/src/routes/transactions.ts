@@ -11,7 +11,7 @@ import { isReceiptImageMimetype, RECEIPT_IMAGE_MIMETYPES, type ReceiptImageMimet
 import { requirePermission } from '../lib/authz';
 import { BadRequestError } from '../lib/errors';
 import { UnverifiableFileTypeError, verifyFileContentType } from '../lib/file-sniff';
-import { coerceNumbers, parseBody, parseQuery } from '../plugins/zod-validation';
+import { coerceBooleans, coerceNumbers, parseBody, parseQuery } from '../plugins/zod-validation';
 import * as transactionService from '../services/transaction.service';
 
 // Anthropic rejects images over ~5 MB; the global multipart cap is 10 MB.
@@ -33,7 +33,10 @@ export async function transactionsRoutes(app: FastifyInstance): Promise<void> {
   app.get('/transactions', async (req) => {
     const q = parseQuery(
       TransactionListQuerySchema,
-      coerceNumbers(req.query as Record<string, unknown>, ['limit', 'offset']),
+      coerceBooleans(
+        coerceNumbers(req.query as Record<string, unknown>, ['limit', 'offset']),
+        ['unassigned'],
+      ),
     );
     return transactionService.list(req.accountId, q);
   });
@@ -98,6 +101,24 @@ export async function transactionsRoutes(app: FastifyInstance): Promise<void> {
     transactionService.importFromBank(req.accountId),
   );
 
+  // Bank-sync discrepancies (post-confirm bank corrections). Static segment,
+  // so registered before the parameterized /transactions/:id routes.
+  app.get('/transactions/bank-discrepancies', async (req) =>
+    transactionService.listBankDiscrepancies(req.accountId),
+  );
+
+  app.post<{ Params: { id: string } }>(
+    '/transactions/bank-discrepancies/:id/accept',
+    needsMoney,
+    async (req) => transactionService.acceptBankDiscrepancy(req.accountId, req.params.id),
+  );
+
+  app.post<{ Params: { id: string } }>(
+    '/transactions/bank-discrepancies/:id/dismiss',
+    needsMoney,
+    async (req) => transactionService.dismissBankDiscrepancy(req.accountId, req.params.id),
+  );
+
   app.patch<{ Params: { id: string } }>('/transactions/:id', needsMoney, async (req) => {
     const input = parseBody(UpdateTransactionInputSchema, req.body);
     return transactionService.update(req.accountId, req.params.id, input);
@@ -115,5 +136,9 @@ export async function transactionsRoutes(app: FastifyInstance): Promise<void> {
 
   app.post<{ Params: { id: string } }>('/transactions/:id/dismiss', needsMoney, async (req) =>
     transactionService.dismiss(req.accountId, req.params.id),
+  );
+
+  app.post<{ Params: { id: string } }>('/transactions/:id/restore', needsMoney, async (req) =>
+    transactionService.restore(req.accountId, req.params.id),
   );
 }

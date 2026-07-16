@@ -1,4 +1,5 @@
 import type {
+  ApplyLateFeeInput,
   PaymentLinkResponse,
   RecordRentPaymentInput,
   RentPayment,
@@ -15,11 +16,13 @@ import type { RentPayment as DbRentPayment } from '@prisma/client';
 import {
   addDays,
   calendarDaysBetween,
+  calendarDaysBetweenInTz,
+  currentPeriodInTz,
   iso,
   isoOrNull,
-  monthEndExclusive,
-  monthStart,
-  startOfUtcDay,
+  monthEndExclusiveInTz,
+  monthStartInTz,
+  startOfDayInTz,
 } from '../lib/dates';
 import { NotFoundError, BadRequestError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
@@ -28,6 +31,7 @@ import { formatUsd } from '@hearth/shared';
 import { createReminderEmailComposer } from '../ai/reminder-email';
 import type { UsageLog } from '../ai/agent-loop';
 import { mockStripe } from '../integrations/mock/mock-stripe';
+import { accountTimezone } from './account.service';
 import { writeAudit, type AuditActor } from './audit.service';
 import { notifyAccount } from './push.service';
 
@@ -39,6 +43,7 @@ export function toApiRentPayment(p: DbRentPayment): RentPayment {
     dueDate: iso(p.dueDate),
     amountCents: p.amountCents,
     paidCents: p.paidCents,
+    lateFeeCents: p.lateFeeCents,
     method: p.method as RentPaymentMethod | null,
     status: p.status as RentPaymentStatus,
     paidAt: isoOrNull(p.paidAt),
@@ -51,24 +56,40 @@ export function toApiRentPayment(p: DbRentPayment): RentPayment {
 /**
  * Derivation rule (ARCHITECTURE §4, binding): paid/processing/failed pass
  * through; a row whose deposits cover the charge derives `paid` even if the
- * stored status lagged; 0 < paidCents < amountCents derives `partial` (with
+ * stored status lagged; 0 < paidCents < totalDue derives `partial` (with
  * daysLate once past dueDate + graceDays — partially paid rent can still be
  * late); else `due` while today ≤ dueDate + graceDays, otherwise `late` with
  * daysLate = whole days past dueDate.
+ *
+ * Coverage compares against totalDueCents = amountCents + lateFeeCents (WS7):
+ * once a late fee is applied, a charge whose base rent is covered but whose fee
+ * is still owed derives `partial`, not `paid`. `lateFeeCents` is optional and
+ * defaults to 0 so the pure-helper stays callable with a bare charge shape.
  */
 export function deriveRentStatus(
-  payment: { status: string; dueDate: Date; amountCents: number; paidCents: number },
+  payment: {
+    status: string;
+    dueDate: Date;
+    amountCents: number;
+    paidCents: number;
+    lateFeeCents?: number;
+  },
   graceDays: number,
+  tz: string,
   today: Date = new Date(),
 ): { status: RentStatus; daysLate?: number } {
   const stored = payment.status as RentPaymentStatus;
   if (stored === 'paid' || stored === 'processing' || stored === 'failed') {
     return { status: stored };
   }
-  if (payment.paidCents >= payment.amountCents && payment.amountCents > 0) {
+  const totalDueCents = payment.amountCents + (payment.lateFeeCents ?? 0);
+  if (payment.paidCents >= totalDueCents && totalDueCents > 0) {
     return { status: 'paid' };
   }
-  const daysPastDue = calendarDaysBetween(payment.dueDate, today);
+  // Days late is a local-calendar count in the account's tz (WS4): a payment
+  // due "on the 1st" is late by whole days measured against the landlord's wall
+  // clock, not UTC's — a 6-day-late charge must read 6 anywhere on earth.
+  const daysPastDue = calendarDaysBetweenInTz(payment.dueDate, today, tz);
   const pastGrace = daysPastDue > graceDays;
   if (payment.paidCents > 0) {
     return pastGrace ? { status: 'partial', daysLate: daysPastDue } : { status: 'partial' };
@@ -79,10 +100,20 @@ export function deriveRentStatus(
 
 const DAY_MS = 86_400_000;
 
-/** Whole days of [start, endExclusive) that fall inside `period`. */
-export function coveredDaysInPeriod(period: string, start: Date, endExclusive: Date): number {
-  const from = Math.max(monthStart(period).getTime(), startOfUtcDay(start).getTime());
-  const to = Math.min(monthEndExclusive(period).getTime(), startOfUtcDay(endExclusive).getTime());
+/** Whole days of [start, endExclusive) that fall inside `period`, measured on
+ *  the account's local calendar (WS4) so proration boundaries match the month
+ *  boundaries every other rent/KPI surface now uses. */
+export function coveredDaysInPeriod(
+  period: string,
+  start: Date,
+  endExclusive: Date,
+  tz: string,
+): number {
+  const from = Math.max(monthStartInTz(period, tz).getTime(), startOfDayInTz(start, tz).getTime());
+  const to = Math.min(
+    monthEndExclusiveInTz(period, tz).getTime(),
+    startOfDayInTz(endExclusive, tz).getTime(),
+  );
   return Math.max(0, Math.round((to - from) / DAY_MS));
 }
 
@@ -97,11 +128,12 @@ export function proratedRentShare(
   period: string,
   start: Date,
   endExclusive: Date,
+  tz: string,
 ): number {
   const daysInPeriod = Math.round(
-    (monthEndExclusive(period).getTime() - monthStart(period).getTime()) / DAY_MS,
+    (monthEndExclusiveInTz(period, tz).getTime() - monthStartInTz(period, tz).getTime()) / DAY_MS,
   );
-  const covered = coveredDaysInPeriod(period, start, endExclusive);
+  const covered = coveredDaysInPeriod(period, start, endExclusive, tz);
   return covered >= daysInPeriod ? rentCents : (rentCents * covered) / daysInPeriod;
 }
 
@@ -113,24 +145,30 @@ export function proratedRentShare(
 export function expectedChargeCents(
   lease: { rentCents: number; startDate: Date; endDate: Date },
   period: string,
+  tz: string,
 ): number {
   return Math.round(
     proratedRentShare(
       lease.rentCents,
       period,
       lease.startDate,
-      addDays(startOfUtcDay(lease.endDate), 1),
+      addDays(startOfDayInTz(lease.endDate, tz), 1),
+      tz,
     ),
   );
 }
 
-/** Insert any missing expected RentPayment rows for `period`'s active leases. */
+/** Insert any missing expected RentPayment rows for `period`'s active leases.
+ *  `tz` is the account's timezone (WS4); callers that already loaded the
+ *  account pass it to avoid a re-read, otherwise it's fetched here. */
 export async function materializeExpectedPayments(
   accountId: string,
   period: string,
+  tz?: string,
 ): Promise<void> {
-  const periodStart = monthStart(period);
-  const periodEnd = monthEndExclusive(period);
+  const timezone = tz ?? (await accountTimezone(accountId));
+  const periodStart = monthStartInTz(period, timezone);
+  const periodEnd = monthEndExclusiveInTz(period, timezone);
 
   const activeLeases = await prisma.lease.findMany({
     where: {
@@ -154,14 +192,16 @@ export async function materializeExpectedPayments(
   const missing = activeLeases.filter((l) => !haveRows.has(l.id) && !chargedUnits.has(l.unitId));
   if (missing.length > 0) {
     const data = missing.map((l) => {
-      // A lease starting mid-month can't be due before it begins.
+      // A lease starting mid-month can't be due before it begins. The due date
+      // is local midnight of (1st + dueDay − 1) in the account tz, clamped to
+      // the lease's local start day (WS4).
       const nominalDue = addDays(periodStart, l.dueDay - 1);
-      const startDay = startOfUtcDay(l.startDate);
+      const startDay = startOfDayInTz(l.startDate, timezone);
       return {
         leaseId: l.id,
         period,
         dueDate: nominalDue < startDay ? startDay : nominalDue,
-        amountCents: expectedChargeCents(l, period),
+        amountCents: expectedChargeCents(l, period, timezone),
         status: 'due',
       };
     });
@@ -186,17 +226,20 @@ export async function materializeExpectedPayments(
   }
 }
 
-/** Materialize missing expected RentPayment rows for `period`, then derive. */
+/** Materialize missing expected RentPayment rows for `period`, then derive.
+ *  `period` defaults to the account's current local month (WS4 — route/tool
+ *  defaults resolved in the service so they respect the landlord's timezone). */
 export async function getMonthStatus(
   accountId: string,
-  period: string,
+  period?: string,
 ): Promise<RentTrackerResponse> {
   const account = await prisma.account.findUniqueOrThrow({ where: { id: accountId } });
-  await materializeExpectedPayments(accountId, period);
+  const resolvedPeriod = period ?? currentPeriodInTz(account.timezone);
+  await materializeExpectedPayments(accountId, resolvedPeriod, account.timezone);
 
   const payments = await prisma.rentPayment.findMany({
     where: {
-      period,
+      period: resolvedPeriod,
       lease: { unit: { archivedAt: null, property: { accountId, archivedAt: null } } },
     },
     include: {
@@ -212,7 +255,7 @@ export async function getMonthStatus(
   });
 
   const rows: RentTrackerRow[] = payments.map((p) => {
-    const derived = deriveRentStatus(p, account.graceDays);
+    const derived = deriveRentStatus(p, account.graceDays, account.timezone);
     const primaryTenant = p.lease.leaseTenants[0]?.tenant;
     const property = p.lease.unit.property;
 
@@ -254,6 +297,7 @@ export async function getMonthStatus(
       propertyLabel: property.nickname ?? property.addressLine1,
       amountCents: p.amountCents,
       paidCents: p.paidCents,
+      lateFeeCents: p.lateFeeCents,
       dueDate: iso(p.dueDate),
       status: derived.status,
       ...(derived.daysLate !== undefined ? { daysLate: derived.daysLate } : {}),
@@ -274,10 +318,12 @@ export async function getMonthStatus(
 
   // Partials count toward collected and shrink (not zero) outstanding — the
   // received/receivable split stays exact whatever mix of full and partial.
+  // Both sides are against totalDue = amountCents + lateFeeCents (WS7), so an
+  // applied fee grows outstanding and fee money received grows collected.
   return {
-    period,
-    collectedCents: rows.reduce((sum, r) => sum + Math.min(r.paidCents, r.amountCents), 0),
-    outstandingCents: rows.reduce((sum, r) => sum + Math.max(0, r.amountCents - r.paidCents), 0),
+    period: resolvedPeriod,
+    collectedCents: rows.reduce((sum, r) => sum + Math.min(r.paidCents, r.amountCents + r.lateFeeCents), 0),
+    outstandingCents: rows.reduce((sum, r) => sum + Math.max(0, r.amountCents + r.lateFeeCents - r.paidCents), 0),
     paidUnits: rows.filter((r) => r.status === 'paid').length,
     partialUnits: rows.filter((r) => r.status === 'partial').length,
     totalUnits: rows.length,
@@ -301,7 +347,8 @@ export interface RentMatchCandidate {
   period: string;
   dueDate: Date;
   amountCents: number;
-  paidCents: number; // remaining = amountCents − paidCents is what deposits match against
+  paidCents: number; // remaining = (amountCents + lateFeeCents) − paidCents is what deposits match against
+  lateFeeCents: number; // applied late fee (WS7); part of the total the deposit must clear
 }
 
 /** Open (due/processing) expected rents with a dueDate inside `range`, account-scoped. */
@@ -338,18 +385,25 @@ export async function findRentMatchCandidates(
       dueDate: p.dueDate,
       amountCents: p.amountCents,
       paidCents: p.paidCents,
+      lateFeeCents: p.lateFeeCents,
     };
   });
 }
 
 /**
  * Pick the expected rent a bank deposit looks like: exactly the charge's
- * *remaining* balance (full amount for untouched charges, the shortfall for
+ * *remaining* balance (full total for untouched charges, the shortfall for
  * partials — so the second roommate check matches, and a completed charge
  * never does), dated within RENT_MATCH_WINDOW_DAYS of the due date. Two
  * same-remaining candidates in window is ambiguous — suppress the suggestion
  * rather than guess. Below-remaining partials are deliberately not suggested
  * here (that's the Rent-page nudge's broader tier, plan §C5).
+ *
+ * Remaining is against totalDue = amountCents + lateFeeCents (WS7). Documented
+ * consequence: once a fee is applied, a deposit for exactly the base rent no
+ * longer clears the high-confidence exact-match chip (remaining now includes
+ * the fee) and falls to the ≤-remaining Rent-page nudge instead — acceptable,
+ * and it never wrong-links.
  */
 export function pickRentMatch(
   txn: { amountCents: number; date: Date },
@@ -357,8 +411,12 @@ export function pickRentMatch(
 ): RentMatchCandidate | null {
   const matches = candidates.filter(
     (c) =>
-      c.amountCents - c.paidCents === txn.amountCents &&
-      c.amountCents - c.paidCents > 0 &&
+      c.amountCents + c.lateFeeCents - c.paidCents === txn.amountCents &&
+      c.amountCents + c.lateFeeCents - c.paidCents > 0 &&
+      // Deliberately UTC (WS4): the ±14-day window is a pure day-distance
+      // heuristic for "does this deposit look like that rent", not a
+      // period/late boundary. A ±1-day tz wobble is immaterial against a
+      // 14-day tolerance, so this stays timezone-agnostic.
       Math.abs(calendarDaysBetween(c.dueDate, txn.date)) <= RENT_MATCH_WINDOW_DAYS,
   );
   return matches.length === 1 ? (matches[0] ?? null) : null;
@@ -388,16 +446,18 @@ export async function recordPayment(
   });
   if (!payment) {
     // Same derivation as materializeExpectedPayments: prorated charge for
-    // partial-coverage months, due date never before the lease starts.
-    const nominalDue = addDays(monthStart(input.period), lease.dueDay - 1);
-    const startDay = startOfUtcDay(lease.startDate);
+    // partial-coverage months, due date never before the lease starts — on the
+    // account's local calendar (WS4).
+    const tz = await accountTimezone(accountId);
+    const nominalDue = addDays(monthStartInTz(input.period, tz), lease.dueDay - 1);
+    const startDay = startOfDayInTz(lease.startDate, tz);
     try {
       payment = await prisma.rentPayment.create({
         data: {
           leaseId: input.leaseId,
           period: input.period,
           dueDate: nominalDue < startDay ? startDay : nominalDue,
-          amountCents: expectedChargeCents(lease, input.period),
+          amountCents: expectedChargeCents(lease, input.period, tz),
           status: 'due',
         },
       });
@@ -410,15 +470,18 @@ export async function recordPayment(
       });
     }
   }
-  if (payment.status === 'paid' || payment.paidCents >= payment.amountCents) {
+  // totalDue = charge + any applied late fee (WS7); coverage/remaining are
+  // always against this, so an applied fee reopens an otherwise-covered charge.
+  const totalDueCents = payment.amountCents + payment.lateFeeCents;
+  if (payment.status === 'paid' || payment.paidCents >= totalDueCents) {
     throw new BadRequestError(`rent for ${input.period} is already recorded as paid`);
   }
   // Deposits may undershoot the remaining balance (partial payment) but never
   // overshoot it — an overpayment would silently inflate collectedCents past
   // the charge and hide a real bookkeeping problem (wrong unit, wrong month).
-  if (input.amountCents > payment.amountCents - payment.paidCents) {
+  if (input.amountCents > totalDueCents - payment.paidCents) {
     throw new BadRequestError(
-      `payment of ${formatUsd(input.amountCents)} exceeds the ${formatUsd(payment.amountCents - payment.paidCents)} remaining for ${input.period} — ` +
+      `payment of ${formatUsd(input.amountCents)} exceeds the ${formatUsd(totalDueCents - payment.paidCents)} remaining for ${input.period} — ` +
         `record the rent portion here and log any excess as a separate income transaction`,
     );
   }
@@ -442,6 +505,14 @@ export async function recordPayment(
     where: { name: 'Rent', type: 'income', OR: [{ isSystem: true }, { accountId }] },
     orderBy: { isSystem: 'desc' },
   });
+  // Cash-basis late-fee income (WS7): a deposit recorded when the base rent is
+  // already covered is pure fee money → categorize it 'Late Fees' (Schedule E
+  // Line 3, same tax output as Rent). A blended single payment covering base +
+  // fee together stays 'Rent'. Looked up the same account-scoped way as Rent.
+  const lateFeeCategory = await prisma.category.findFirst({
+    where: { name: 'Late Fees', type: 'income', OR: [{ isSystem: true }, { accountId }] },
+    orderBy: { isSystem: 'desc' },
+  });
 
   // Ledger transaction + deposit + RentPayment update commit or roll back
   // together; the re-read inside the transaction makes the double-pay and
@@ -450,20 +521,23 @@ export async function recordPayment(
   const paymentId = payment.id;
   const { ledgerTxn, updated } = await prisma.$transaction(async (tx) => {
     const fresh = await tx.rentPayment.findUniqueOrThrow({ where: { id: paymentId } });
-    if (fresh.status === 'paid' || fresh.paidCents >= fresh.amountCents) {
+    const freshTotalDue = fresh.amountCents + fresh.lateFeeCents;
+    if (fresh.status === 'paid' || fresh.paidCents >= freshTotalDue) {
       throw new BadRequestError(`rent for ${input.period} is already recorded as paid`);
     }
-    if (input.amountCents > fresh.amountCents - fresh.paidCents) {
+    if (input.amountCents > freshTotalDue - fresh.paidCents) {
       throw new BadRequestError(
-        `payment of ${formatUsd(input.amountCents)} exceeds the ${formatUsd(fresh.amountCents - fresh.paidCents)} remaining for ${input.period}`,
+        `payment of ${formatUsd(input.amountCents)} exceeds the ${formatUsd(freshTotalDue - fresh.paidCents)} remaining for ${input.period}`,
       );
     }
+    // Base rent already covered before this deposit → this is fee money (WS7).
+    const feeOnly = fresh.paidCents >= fresh.amountCents;
     const createdTxn = await tx.transaction.create({
       data: {
         accountId,
         propertyId: lease.unit.propertyId,
         unitId: lease.unitId,
-        categoryId: rentCategory?.id ?? null,
+        categoryId: (feeOnly ? lateFeeCategory : rentCategory)?.id ?? null,
         date: paidAt,
         amountCents: input.amountCents,
         type: 'income',
@@ -488,7 +562,7 @@ export async function recordPayment(
     // is set only for the single-full-payment case; deposits are the source
     // of truth either way.
     const newPaidCents = fresh.paidCents + input.amountCents;
-    const covered = newPaidCents >= fresh.amountCents;
+    const covered = newPaidCents >= freshTotalDue;
     const updatedPayment = await tx.rentPayment.update({
       where: { id: paymentId },
       data: {
@@ -524,16 +598,16 @@ export async function recordPayment(
       amountCents: input.amountCents,
       method: input.method,
       paidCents: updated.paidCents,
-      outstandingCents: Math.max(0, updated.amountCents - updated.paidCents),
+      outstandingCents: Math.max(0, updated.amountCents + updated.lateFeeCents - updated.paidCents),
     },
   });
   // Landlord push notification — never throws, must not fail the payment.
-  const paidInFull = updated.paidCents >= updated.amountCents;
+  const paidInFull = updated.paidCents >= updated.amountCents + updated.lateFeeCents;
   await notifyAccount(accountId, {
     title: 'Rent received',
     body: paidInFull
       ? `${tenantName} paid ${formatUsd(input.amountCents)} for ${input.period}`
-      : `${tenantName} paid ${formatUsd(input.amountCents)} of ${formatUsd(updated.amountCents)} for ${input.period}`,
+      : `${tenantName} paid ${formatUsd(input.amountCents)} of ${formatUsd(updated.amountCents + updated.lateFeeCents)} for ${input.period}`,
     deepLink: '/rent',
   });
   return toApiRentPayment(updated);
@@ -570,7 +644,9 @@ export async function unlinkDeposit(
     });
     const paidCents = remaining._sum.amountCents ?? 0;
     const fresh = await tx.rentPayment.findUniqueOrThrow({ where: { id: rentPaymentId } });
-    const covered = paidCents >= fresh.amountCents && paidCents > 0;
+    // Coverage is against totalDue = charge + applied fee (WS7); unlinking below
+    // that reopens the charge (reverts stored status), fee left intact.
+    const covered = paidCents >= fresh.amountCents + fresh.lateFeeCents && paidCents > 0;
     return tx.rentPayment.update({
       where: { id: rentPaymentId },
       data: {
@@ -602,6 +678,117 @@ export async function unlinkDeposit(
 }
 
 /**
+ * Resolve the effective late-fee policy for a charge (WS7): an explicit
+ * lease override (Lease.lateFeeCents, where 0 means "explicitly none for this
+ * lease" and beats the account default) falls back to the account default only
+ * when it is null. Returns 0 when no fee is configured.
+ */
+export function effectiveLateFeeCents(
+  lease: { lateFeeCents: number | null },
+  account: { defaultLateFeeCents: number },
+): number {
+  return lease.lateFeeCents ?? account.defaultLateFeeCents;
+}
+
+/**
+ * Apply a late fee to a charge (WS7). Policy is configured; applying is always
+ * an explicit human action (tracker button or a user-invoked chat tool), never
+ * auto-applied by the scheduler or insight generation. Guards: the charge must
+ * be account-scoped; its tz-aware derived status must be `late` or
+ * `partial`-past-grace; no fee already applied (one fee per charge in v1); and
+ * the resolved fee (explicit `feeCents`, else the effective policy) must be
+ * positive. No ledger Transaction is created — cash basis, nothing has been
+ * received yet; the fee lands in P&L only when a deposit collects it.
+ */
+export async function applyLateFee(
+  accountId: string,
+  rentPaymentId: string,
+  input: ApplyLateFeeInput,
+  actor: AuditActor = 'user',
+): Promise<RentPayment> {
+  const payment = await prisma.rentPayment.findFirst({
+    where: { id: rentPaymentId, lease: { unit: { property: { accountId } } } },
+    include: { lease: true },
+  });
+  if (!payment) throw new NotFoundError('rent payment', rentPaymentId);
+
+  const account = await prisma.account.findUniqueOrThrow({ where: { id: accountId } });
+  const derived = deriveRentStatus(payment, account.graceDays, account.timezone);
+  // Eligible = past grace and not fully paid: stored/derived 'late', or a
+  // 'partial' that carries daysLate (partial charges past grace). A charge
+  // still inside its grace window, or paid, cannot be charged a late fee.
+  const eligible =
+    derived.status === 'late' || (derived.status === 'partial' && derived.daysLate !== undefined);
+  if (!eligible) {
+    throw new BadRequestError('a late fee can only be applied to rent that is past its grace period');
+  }
+  if (payment.lateFeeCents !== 0) {
+    throw new BadRequestError('a late fee has already been applied to this charge');
+  }
+  const feeCents = input.feeCents ?? effectiveLateFeeCents(payment.lease, account);
+  if (feeCents <= 0) {
+    throw new BadRequestError('no late-fee policy configured');
+  }
+
+  const updated = await prisma.rentPayment.update({
+    where: { id: rentPaymentId },
+    data: { lateFeeCents: feeCents },
+  });
+  await writeAudit(accountId, {
+    actor,
+    action: 'rent_payment.late_fee_applied',
+    entityType: 'rent_payment',
+    entityId: rentPaymentId,
+    detail: { period: payment.period, feeCents },
+  });
+  return toApiRentPayment(updated);
+}
+
+/**
+ * Waive (remove) a charge's applied late fee (WS7): resets lateFeeCents to 0.
+ * Guards: a fee must be present, and the charge must not already be fully
+ * collected against its total (paidCents < amountCents + lateFeeCents) —
+ * waiving after full collection would strand the fee money as an overpayment.
+ * No ledger effect; any already-collected fee-money deposits stay as-is.
+ * Waiving is a user action only — no chat tool exposes it.
+ */
+export async function waiveLateFee(
+  accountId: string,
+  rentPaymentId: string,
+  actor: AuditActor = 'user',
+): Promise<RentPayment> {
+  const payment = await prisma.rentPayment.findFirst({
+    where: { id: rentPaymentId, lease: { unit: { property: { accountId } } } },
+  });
+  if (!payment) throw new NotFoundError('rent payment', rentPaymentId);
+  if (payment.lateFeeCents === 0) {
+    throw new BadRequestError('there is no late fee to waive on this charge');
+  }
+  // Block once ANY fee money has been collected (paid beyond the base rent),
+  // not just at full collection — waiving after a partial fee-only deposit
+  // would leave paidCents > totalDue, a stranded overpayment the tracker's
+  // min/max clamping then hides.
+  if (payment.paidCents > payment.amountCents) {
+    throw new BadRequestError(
+      'part of this late fee has already been collected — waiving it now would leave an overpayment',
+    );
+  }
+  const waivedCents = payment.lateFeeCents;
+  const updated = await prisma.rentPayment.update({
+    where: { id: rentPaymentId },
+    data: { lateFeeCents: 0 },
+  });
+  await writeAudit(accountId, {
+    actor,
+    action: 'rent_payment.late_fee_waived',
+    entityType: 'rent_payment',
+    entityId: rentPaymentId,
+    detail: { period: payment.period, feeCents: waivedCents },
+  });
+  return toApiRentPayment(updated);
+}
+
+/**
  * The "silently still late" fix (plan §C5): Rent-categorized, confirmed
  * income transactions that aren't linked as deposits but could apply to a
  * still-open charge of `period` — dated within the match window of the due
@@ -613,12 +800,14 @@ export async function unlinkDeposit(
  */
 export async function findUnlinkedRentDeposits(
   accountId: string,
-  period: string,
+  period?: string,
 ): Promise<{ items: UnlinkedRentDeposit[] }> {
-  await materializeExpectedPayments(accountId, period);
+  const tz = await accountTimezone(accountId);
+  const resolvedPeriod = period ?? currentPeriodInTz(tz);
+  await materializeExpectedPayments(accountId, resolvedPeriod, tz);
   const charges = await prisma.rentPayment.findMany({
     where: {
-      period,
+      period: resolvedPeriod,
       status: { in: ['due', 'processing'] },
       lease: { unit: { archivedAt: null, property: { accountId, archivedAt: null } } },
     },
@@ -631,7 +820,7 @@ export async function findUnlinkedRentDeposits(
       },
     },
   });
-  const open = charges.filter((c) => c.paidCents < c.amountCents);
+  const open = charges.filter((c) => c.paidCents < c.amountCents + c.lateFeeCents);
   if (open.length === 0) return { items: [] };
 
   const rentCategories = await prisma.category.findMany({
@@ -661,8 +850,10 @@ export async function findUnlinkedRentDeposits(
   const items: UnlinkedRentDeposit[] = [];
   for (const txn of candidates) {
     const fits = open.filter((c) => {
-      const remaining = c.amountCents - c.paidCents;
+      const remaining = c.amountCents + c.lateFeeCents - c.paidCents;
       if (txn.amountCents > remaining) return false;
+      // Deliberately UTC (WS4): same ±14-day day-distance heuristic as
+      // pickRentMatch — a tolerance window, not a period/late boundary.
       if (Math.abs(calendarDaysBetween(c.dueDate, txn.date)) > RENT_MATCH_WINDOW_DAYS) return false;
       if (txn.unitId) return txn.unitId === c.lease.unitId;
       if (txn.propertyId) return txn.propertyId === c.lease.unit.propertyId;
@@ -682,7 +873,7 @@ export async function findUnlinkedRentDeposits(
       unitLabel: charge.lease.unit.label,
       propertyLabel: property.nickname ?? property.addressLine1,
       period: charge.period,
-      remainingCents: charge.amountCents - charge.paidCents,
+      remainingCents: charge.amountCents + charge.lateFeeCents - charge.paidCents,
     });
   }
   return { items };
@@ -749,7 +940,9 @@ export async function sendReminders(
       results.push({ rentPaymentId, status: 'skipped', reason: 'not_found' });
       continue;
     }
-    if (payment.status === 'paid' || payment.paidCents >= payment.amountCents) {
+    // Coverage is against totalDue = charge + applied fee (WS7): a charge whose
+    // base rent is paid but whose late fee is still owed still gets a reminder.
+    if (payment.status === 'paid' || payment.paidCents >= payment.amountCents + payment.lateFeeCents) {
       results.push({ rentPaymentId, status: 'skipped', reason: 'already_paid' });
       continue;
     }
@@ -761,8 +954,9 @@ export async function sendReminders(
       tenantName: tenant?.fullName ?? 'there',
       propertyLabel: property.nickname ?? property.addressLine1,
       unitLabel: payment.lease.unit.label,
-      // A partially paid charge reminds for what's still owed, not the full rent.
-      amountCents: payment.amountCents - payment.paidCents,
+      // A partially paid charge reminds for what's still owed — base rent plus
+      // any applied late fee (WS7), minus what's been received — not the full rent.
+      amountCents: payment.amountCents + payment.lateFeeCents - payment.paidCents,
       dueDate: payment.dueDate.toISOString(),
       period: payment.period,
       log,

@@ -8,16 +8,19 @@ import {
 } from '@hearth/shared';
 import {
   addMonthsToPeriod,
-  currentPeriod,
+  currentPeriodInTz,
+  dayOfMonthInTz,
   iso,
-  monthEndExclusive,
-  monthStart,
-  periodOf,
-  startOfUtcDay,
+  localMidnightUtc,
+  monthEndExclusiveInTz,
+  monthStartInTz,
+  periodOfInTz,
+  startOfDayInTz,
   trailingPeriods,
 } from '../lib/dates';
 import { ordinaryExpense, pnlSums } from '../lib/pnl';
 import { prisma } from '../lib/prisma';
+import { accountTimezone } from './account.service';
 import { generateInsights } from './insight.service';
 import * as rentService from './rent.service';
 
@@ -49,25 +52,29 @@ function trendPct(current: number, prior: number): number {
 
 /**
  * Prior-month window ending on the same day-of-month as `now` (clamped to the
- * prior month's length), per ARCHITECTURE §4 trend rule.
+ * prior month's length), per ARCHITECTURE §4 trend rule — bucketed on the
+ * account's local calendar (WS4).
  */
-function priorWindow(now: Date): { from: Date; to: Date } {
-  const period = currentPeriod(now);
+function priorWindow(now: Date, tz: string): { from: Date; to: Date } {
+  const period = currentPeriodInTz(tz, now);
   const prevPeriod = addMonthsToPeriod(period, -1);
-  const from = monthStart(prevPeriod);
-  const prevEnd = monthEndExclusive(prevPeriod);
-  const sameDayEndExclusive = new Date(
-    Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), now.getUTCDate() + 1),
-  );
+  const from = monthStartInTz(prevPeriod, tz);
+  const prevEnd = monthEndExclusiveInTz(prevPeriod, tz);
+  const [py, pm] = prevPeriod.split('-').map(Number);
+  // Local midnight of the day after `now`'s day-of-month, in the prior month
+  // (day may overflow the month — localMidnightUtc normalizes, and the min()
+  // below clamps back to the prior month's end).
+  const sameDayEndExclusive = localMidnightUtc(py!, pm!, dayOfMonthInTz(now, tz) + 1, tz);
   return { from, to: sameDayEndExclusive < prevEnd ? sameDayEndExclusive : prevEnd };
 }
 
 export async function getKpis(accountId: string): Promise<DashboardKpisResponse> {
   const account = await prisma.account.findUniqueOrThrow({ where: { id: accountId } });
+  const tz = account.timezone;
   const now = new Date();
-  const period = currentPeriod(now);
-  const mtdRange = { from: monthStart(period), to: monthEndExclusive(period) };
-  const prior = priorWindow(now);
+  const period = currentPeriodInTz(tz, now);
+  const mtdRange = { from: monthStartInTz(period, tz), to: monthEndExclusiveInTz(period, tz) };
+  const prior = priorWindow(now, tz);
 
   const mtd = await sumByType(accountId, mtdRange);
   const prev = await sumByType(accountId, prior);
@@ -96,7 +103,7 @@ export async function getKpis(accountId: string): Promise<DashboardKpisResponse>
   // full months × 3 × rate. The average divides by months that actually have
   // ledger activity (≥ 1), not a flat 6 — a two-month-old account would
   // otherwise see its target understated 3×.
-  const sixMonthsAgo = monthStart(addMonthsToPeriod(period, -6));
+  const sixMonthsAgo = monthStartInTz(addMonthsToPeriod(period, -6), tz);
   const trailing = await sumByType(accountId, { from: sixMonthsAgo, to: mtdRange.from });
   const trailingDates = await prisma.transaction.findMany({
     where: {
@@ -107,7 +114,7 @@ export async function getKpis(accountId: string): Promise<DashboardKpisResponse>
     },
     select: { date: true },
   });
-  const monthsWithActivity = new Set(trailingDates.map((t) => periodOf(t.date))).size;
+  const monthsWithActivity = new Set(trailingDates.map((t) => periodOfInTz(t.date, tz))).size;
   const avgMonthlyNet = trailing.netCents / Math.max(1, monthsWithActivity);
   const rate = account.taxRatePct / 100;
 
@@ -132,10 +139,14 @@ export async function getIncomeExpenseSeries(
   accountId: string,
   months: number,
 ): Promise<IncomeExpenseSeriesResponse> {
-  const periods = trailingPeriods(currentPeriod(), months);
+  const tz = await accountTimezone(accountId);
+  const periods = trailingPeriods(currentPeriodInTz(tz), months);
   const out: IncomeExpenseSeriesResponse = [];
   for (const p of periods) {
-    const sums = await sumByType(accountId, { from: monthStart(p), to: monthEndExclusive(p) });
+    const sums = await sumByType(accountId, {
+      from: monthStartInTz(p, tz),
+      to: monthEndExclusiveInTz(p, tz),
+    });
     out.push({ month: p, incomeCents: sums.incomeCents, expenseCents: sums.expenseCents });
   }
   return out;
@@ -148,8 +159,9 @@ const EXPENSE_BREAKDOWN_TOP = 7;
 /** This month's confirmed expenses grouped by category (decomposes the MTD
  * expense KPI). Mirrors the KPI's active-portfolio filter. */
 export async function getExpenseBreakdown(accountId: string): Promise<ExpenseBreakdownResponse> {
-  const period = currentPeriod();
-  const range = { from: monthStart(period), to: monthEndExclusive(period) };
+  const tz = await accountTimezone(accountId);
+  const period = currentPeriodInTz(tz);
+  const range = { from: monthStartInTz(period, tz), to: monthEndExclusiveInTz(period, tz) };
   const portfolioFilter = { OR: [{ propertyId: null }, { property: { archivedAt: null } }] };
   const grouped = await prisma.transaction.groupBy({
     by: ['categoryId'],
@@ -212,11 +224,16 @@ export async function getExpenseBreakdown(accountId: string): Promise<ExpenseBre
 }
 
 /** This month's operating income per active property (directly-attributed
- * income − expense). Portfolio-level lines can't be attributed to one property
- * and are excluded. Sorted descending by NOI. */
+ * income − expense), plus a separate Unassigned bucket for portfolio-level
+ * (property-less) lines. Uses the same active-portfolio filter as getKpis, so
+ * sum(properties.noiCents) + unassigned.noiCents reconciles exactly with the
+ * dashboard net-cash-flow KPI (which has always counted the unassigned rows).
+ * The bucket is omitted when all three of its figures are zero. Properties
+ * sorted descending by NOI. */
 export async function getNoiByProperty(accountId: string): Promise<PropertyNoiResponse> {
-  const period = currentPeriod();
-  const range = { from: monthStart(period), to: monthEndExclusive(period) };
+  const tz = await accountTimezone(accountId);
+  const period = currentPeriodInTz(tz);
+  const range = { from: monthStartInTz(period, tz), to: monthEndExclusiveInTz(period, tz) };
 
   const properties = await prisma.property.findMany({
     where: { accountId, archivedAt: null },
@@ -229,8 +246,9 @@ export async function getNoiByProperty(accountId: string): Promise<PropertyNoiRe
       accountId,
       status: 'confirmed',
       date: { gte: range.from, lt: range.to },
-      propertyId: { not: null },
-      property: { archivedAt: null },
+      // Same filter getKpis uses: active portfolio + account-level (unassigned)
+      // lines. Partitioned below so the two surfaces reconcile row-for-row.
+      OR: [{ propertyId: null }, { property: { archivedAt: null } }],
     },
     _sum: { amountCents: true },
   });
@@ -250,7 +268,16 @@ export async function getNoiByProperty(accountId: string): Promise<PropertyNoiRe
     })
     .sort((a, b) => b.noiCents - a.noiCents);
 
-  return { month: period, properties: rows };
+  const unassignedSums = pnlSums(grouped.filter((g) => g.propertyId === null));
+  const unassigned = {
+    incomeCents: unassignedSums.incomeCents,
+    expenseCents: unassignedSums.expenseCents,
+    noiCents: unassignedSums.netCents,
+  };
+  const hasUnassigned =
+    unassigned.incomeCents !== 0 || unassigned.expenseCents !== 0 || unassigned.noiCents !== 0;
+
+  return { month: period, properties: rows, ...(hasUnassigned ? { unassigned } : {}) };
 }
 
 export async function getActivity(accountId: string, limit: number): Promise<ActivityItem[]> {
@@ -372,7 +399,8 @@ export async function getPortfolioSummary(
   const kpis = await getKpis(accountId);
   // Match kpis.totalUnits, which excludes archived properties/units.
   const propertyCount = await prisma.property.count({ where: { accountId, archivedAt: null } });
-  const today = startOfUtcDay(new Date()).toISOString().slice(0, 10);
+  const tz = await accountTimezone(accountId);
+  const today = startOfDayInTz(new Date(), tz).toISOString().slice(0, 10);
   const summary =
     `As of ${today}: ${propertyCount} properties, ${kpis.totalUnits} units. ` +
     `Net cash flow this month is ${formatUsdWhole(kpis.netCashFlowMtdCents)} with ` +

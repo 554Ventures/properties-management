@@ -213,6 +213,9 @@ class AnthropicReceiptExtractor implements ReceiptExtractor {
 /** Deterministic fixture — the pre-existing demo parse, kept byte-compatible. */
 export const mockReceiptExtractor: ReceiptExtractor = {
   async extract(input: ReceiptExtractionInput): Promise<ReceiptExtraction> {
+    // Deliberately UTC (WS4): a fixed demo receipt date. It becomes a
+    // Transaction.date instant like any other and buckets per account tz at
+    // read time — the extraction layer has no account context to tz-anchor to.
     const today = new Date();
     const utcMidnight = new Date(
       Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()),

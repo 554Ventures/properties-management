@@ -4,6 +4,7 @@
 // their input and are handled by the loop itself (never executed here).
 import {
   ActionCardBlockSchema,
+  ApplyLateFeeInputSchema,
   AskUserQuestionBlockSchema,
   ChartBlockSchema,
   ConfirmTransactionInputSchema,
@@ -31,7 +32,8 @@ import type {
 import type { Tool } from '@anthropic-ai/sdk/resources/messages/messages';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { currentPeriod, yearRange } from '../lib/dates';
+import { currentPeriodInTz, yearRangeInTz } from '../lib/dates';
+import { accountTimezone } from '../services/account.service';
 import * as categoryService from '../services/category.service';
 import * as contractorService from '../services/contractor.service';
 import * as dashboardService from '../services/dashboard.service';
@@ -125,9 +127,11 @@ export const serviceTools: ServiceToolDef[] = [
       'Income and expenses by category plus net (cents) for one property over a date range. Defaults to the current calendar year when from/to are omitted.',
     inputSchema: PropertyPnlInputSchema,
     write: false,
-    execute: (accountId, input) => {
+    execute: async (accountId, input) => {
       const { propertyId, from, to } = input as z.infer<typeof PropertyPnlInputSchema>;
-      const fallback = yearRange(new Date().getUTCFullYear());
+      // Default calendar-year range on the account's timezone (WS4).
+      const tz = await accountTimezone(accountId);
+      const fallback = yearRangeInTz(Number(currentPeriodInTz(tz).slice(0, 4)), tz);
       return propertyService.getPnl(accountId, propertyId, {
         from: from ? new Date(from) : fallback.from,
         to: to ? new Date(to) : fallback.to,
@@ -215,7 +219,7 @@ export const serviceTools: ServiceToolDef[] = [
     inputSchema: z.object({ period: PeriodSchema.optional() }),
     write: false,
     execute: (accountId, input) =>
-      rentService.getMonthStatus(accountId, (input as { period?: string }).period ?? currentPeriod()),
+      rentService.getMonthStatus(accountId, (input as { period?: string }).period),
   },
   {
     name: 'list_insights',
@@ -325,6 +329,19 @@ export const serviceTools: ServiceToolDef[] = [
       ),
   },
   {
+    name: 'apply_late_fee',
+    description:
+      'WRITES: applies a late fee to a rent charge that is past its grace period, stamping the fee on the charge so it is added to what the tenant owes (total due = rent + late fee). No money is recorded — nothing has been received yet; the fee shows up in the ledger only when the tenant pays it. Only for a charge that is currently late (or a partial payment past grace) and has no fee applied yet — one fee per charge. Omit feeCents to use the configured policy (the lease override, else the account default); a charge with no policy configured is rejected. Waiving a fee is a Rent-page action, not available here.',
+    inputSchema: ApplyLateFeeInputSchema.extend({ rentPaymentId: z.string() }),
+    write: true,
+    execute: (accountId, input, actor) => {
+      const { rentPaymentId, ...feeInput } = input as z.infer<typeof ApplyLateFeeInputSchema> & {
+        rentPaymentId: string;
+      };
+      return rentService.applyLateFee(accountId, rentPaymentId, feeInput, actor);
+    },
+  },
+  {
     name: 'send_rent_reminders',
     description:
       'WRITES: composes a rent reminder email for the tenant behind each given rentPaymentId and marks it reminded — returns a mailto: link for the landlord to review and send from their own mail client (no email is sent server-side). Already-paid rows are skipped.',
@@ -421,6 +438,7 @@ export const WRITE_TOOL_PERMISSIONS: Partial<Record<string, MemberPermission>> =
   confirm_transaction: 'money',
   create_contractor: 'properties',
   record_rent_payment: 'rent',
+  apply_late_fee: 'rent',
   send_rent_reminders: 'rent',
   generate_report: 'reports',
   email_report: 'reports',
