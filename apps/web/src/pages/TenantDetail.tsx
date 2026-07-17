@@ -293,7 +293,18 @@ export function TenantDetail() {
                         )}
                       </Td>
                       <Td className="capitalize">{row.method ?? '—'}</Td>
-                      <Td>{row.paidAt ? formatDate(row.paidAt) : '—'}</Td>
+                      <Td>
+                        {row.paidAt ? (
+                          formatDate(row.paidAt)
+                        ) : row.lastDepositAt ? (
+                          <>
+                            {formatDate(row.lastDepositAt)}
+                            <span className="text-xs text-ink-muted"> (partial)</span>
+                          </>
+                        ) : (
+                          '—'
+                        )}
+                      </Td>
                     </Tr>
                   );
                 })}

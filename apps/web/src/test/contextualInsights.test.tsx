@@ -114,6 +114,7 @@ const tracker: RentTrackerResponse = {
       daysLate: 6,
       method: null,
       paidAt: null,
+      lastDepositAt: null,
       deposits: [],
       tenants: [
         {

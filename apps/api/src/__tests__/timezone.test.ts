@@ -6,6 +6,7 @@
 //       the period math reads Account.timezone end-to-end.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  businessDaysBetweenInTz,
   calendarDaysBetweenInTz,
   currentPeriodInTz,
   dayOfMonthInTz,
@@ -74,6 +75,36 @@ describe('lib/dates tz helpers — New York (DST)', () => {
         NY,
       ),
     ).toBe(2);
+  });
+
+  it('businessDaysBetweenInTz counts only Mon–Fri in (from, to], DST-safe', () => {
+    // Thu Mar 5 → Fri Mar 6: just Friday (1). → Sat Mar 7: still 1 (Sat excluded).
+    // → Sun Mar 8 (the spring-forward day itself): still 1 — no DST skew.
+    // → Mon Mar 9: 2 (Friday + Monday).
+    const thu = new Date('2026-03-05T17:00:00Z'); // NY Mar 5 12:00 EST
+    const fri = new Date('2026-03-06T17:00:00Z'); // NY Mar 6 12:00 EST
+    const sat = new Date('2026-03-07T17:00:00Z'); // NY Mar 7 12:00 EST
+    const sun = new Date('2026-03-08T16:00:00Z'); // NY Mar 8 12:00 EDT (post-jump)
+    const mon = new Date('2026-03-09T16:00:00Z'); // NY Mar 9 12:00 EDT
+    expect(businessDaysBetweenInTz(thu, fri, NY)).toBe(1);
+    expect(businessDaysBetweenInTz(thu, sat, NY)).toBe(1);
+    expect(businessDaysBetweenInTz(thu, sun, NY)).toBe(1);
+    expect(businessDaysBetweenInTz(thu, mon, NY)).toBe(2);
+  });
+
+  it('businessDaysBetweenInTz: due Friday, 5 business days elapsed by the following Friday, 6 by the following Monday', () => {
+    const dueFri = new Date('2026-07-03T16:00:00Z'); // NY Jul 3 12:00 EDT (Friday)
+    const nextFri = new Date('2026-07-10T16:00:00Z'); // NY Jul 10 12:00 EDT (Friday)
+    const nextMon = new Date('2026-07-13T16:00:00Z'); // NY Jul 13 12:00 EDT (Monday)
+    expect(businessDaysBetweenInTz(dueFri, nextFri, NY)).toBe(5);
+    expect(businessDaysBetweenInTz(dueFri, nextMon, NY)).toBe(6);
+  });
+
+  it('businessDaysBetweenInTz negates symmetrically when to < from, and is 0 for the same local day', () => {
+    const fri = new Date('2026-07-03T16:00:00Z');
+    const nextFri = new Date('2026-07-10T16:00:00Z');
+    expect(businessDaysBetweenInTz(nextFri, fri, NY)).toBe(-5);
+    expect(businessDaysBetweenInTz(fri, fri, NY)).toBe(0);
   });
 
   it('yearRangeInTz brackets the local calendar year (EST boundaries)', () => {

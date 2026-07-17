@@ -60,6 +60,7 @@ const account: AccountSettings = {
   taxRatePct: 20,
   taxYearStartMonth: 1,
   graceDays: 0,
+  graceDaysBasis: 'calendar',
   defaultLateFeeCents: 0,
   createdAt: '2025-01-01T00:00:00.000Z',
   deletionRequestedAt: null,
@@ -672,6 +673,8 @@ describe('Settings account form — default late fee (WS7)', () => {
     expect(screen.getByLabelText('Name', { exact: false })).toBeDisabled();
     expect(screen.getByLabelText('Email', { exact: false })).toBeDisabled();
     expect(screen.getByLabelText('Tax set-aside rate (%)')).toBeDisabled();
+    expect(screen.getByLabelText('Grace period (days)')).toBeDisabled();
+    expect(screen.getByLabelText('Grace period basis')).toBeDisabled();
     expect(screen.getByLabelText('Default late fee (USD)')).toBeDisabled();
     expect(screen.getByLabelText('Timezone')).toBeDisabled();
     expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument();
@@ -682,6 +685,57 @@ describe('Settings account form — default late fee (WS7)', () => {
     expect(
       results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`),
     ).toEqual([]);
+  });
+});
+
+describe('Settings account form — grace period', () => {
+  it('prefills days + basis from the account and PATCHes both on save', async () => {
+    const fetchMock = makeFetch([
+      {
+        method: 'GET',
+        path: '/api/v1/settings/account',
+        body: { ...account, graceDays: 3, graceDaysBasis: 'business' },
+      },
+      { method: 'GET', path: '/api/v1/integrations', body: [] },
+      {
+        method: 'PATCH',
+        path: '/api/v1/settings/account',
+        body: { ...account, graceDays: 5, graceDaysBasis: 'calendar' },
+      },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithProviders(<Settings />);
+
+    const daysInput = await screen.findByLabelText('Grace period (days)');
+    expect(daysInput).toHaveValue(3);
+    const basisSelect = screen.getByLabelText('Grace period basis');
+    expect(basisSelect).toHaveValue('business');
+    expect(
+      screen.getByText(
+        "Rent isn't marked late until this many days after the due date. Late fees can only be applied once a charge is past grace.",
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.change(daysInput, { target: { value: '5' } });
+    fireEvent.change(basisSelect, { target: { value: 'calendar' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url) === '/api/v1/settings/account' &&
+          (init as RequestInit | undefined)?.method === 'PATCH',
+      );
+      expect(call).toBeDefined();
+      const body = JSON.parse((call![1] as RequestInit).body as string) as Record<
+        string,
+        unknown
+      >;
+      expect(body.graceDays).toBe(5);
+      expect(body.graceDaysBasis).toBe('calendar');
+    });
+    expect(await screen.findByText('Settings saved.')).toBeInTheDocument();
   });
 });
 

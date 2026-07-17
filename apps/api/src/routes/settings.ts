@@ -26,6 +26,7 @@ function toApiAccount(a: DbAccount): AccountSettings {
     taxRatePct: a.taxRatePct,
     taxYearStartMonth: a.taxYearStartMonth,
     graceDays: a.graceDays,
+    graceDaysBasis: a.graceDaysBasis as AccountSettings['graceDaysBasis'],
     defaultLateFeeCents: a.defaultLateFeeCents,
     createdAt: iso(a.createdAt),
     deletionRequestedAt: isoOrNull(a.deletionRequestedAt),

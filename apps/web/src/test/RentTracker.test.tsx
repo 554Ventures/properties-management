@@ -53,6 +53,7 @@ function makeRow(overrides: Partial<RentTrackerRow>): RentTrackerRow {
     daysLate: 6,
     method: null,
     paidAt: null,
+    lastDepositAt: null,
     deposits: [],
     tenants: [
       {
@@ -351,5 +352,88 @@ describe('RentTracker late fees (WS7)', () => {
         'part of this late fee has already been collected — waiving it now would leave an overpayment',
       ),
     ).toBeInTheDocument();
+  });
+});
+
+// lastDepositAt (finance-correctness-hardening): the Paid column shows the
+// newest deposit's date with a text "(partial)" qualifier when the charge
+// isn't fully covered yet (paidAt stays null until it is).
+describe('RentTracker Paid column — partial deposits', () => {
+  it('renders the deposit date with a "(partial)" qualifier for a partial row, and paidAt unchanged for a paid row', async () => {
+    stubDesktopViewport();
+    const partialRow = makeRow({
+      rentPaymentId: 'rp-partial-deposit',
+      tenantId: 't5',
+      tenantName: 'A. Nguyen',
+      status: 'partial',
+      paidCents: 50000,
+      daysLate: 3,
+      paidAt: null,
+      lastDepositAt: '2026-07-03T00:00:00.000Z',
+      tenants: [
+        {
+          tenantId: 't5',
+          tenantName: 'A. Nguyen',
+          isPrimary: true,
+          shareCents: 115000,
+          shareSpecified: false,
+          paidCents: 50000,
+          settled: false,
+        },
+      ],
+    });
+    const paidRow = makeRow({
+      rentPaymentId: 'rp-paid',
+      tenantId: 't6',
+      tenantName: 'B. Ibrahim',
+      status: 'paid',
+      paidCents: 115000,
+      daysLate: undefined,
+      method: 'bank',
+      // Distinct from dueDate ('2026-07-01') so the Paid-column assertion
+      // below can't collide with the Due-column cell.
+      paidAt: '2026-07-02T00:00:00.000Z',
+      lastDepositAt: '2026-07-02T00:00:00.000Z',
+      tenants: [
+        {
+          tenantId: 't6',
+          tenantName: 'B. Ibrahim',
+          isPrimary: true,
+          shareCents: 115000,
+          shareSpecified: false,
+          paidCents: 115000,
+          settled: true,
+        },
+      ],
+    });
+    const localTracker: RentTrackerResponse = {
+      period,
+      collectedCents: 165000,
+      outstandingCents: 65000,
+      paidUnits: 1,
+      partialUnits: 1,
+      totalUnits: 2,
+      rows: [partialRow, paidRow],
+    };
+    vi.stubGlobal(
+      'fetch',
+      makeFetch([
+        { method: 'GET', path: '/api/v1/rent/tracker', body: localTracker },
+        { method: 'GET', path: '/api/v1/rent/unlinked-deposits', body: { items: [] } },
+        { method: 'GET', path: '/api/v1/insights', body: [] },
+      ]),
+    );
+    const { container } = renderRentTracker();
+
+    const partialTr = (await screen.findByText('A. Nguyen')).closest('tr') as HTMLElement;
+    expect(within(partialTr).getByText('Jul 3, 2026')).toBeInTheDocument();
+    expect(within(partialTr).getByText('(partial)')).toBeInTheDocument();
+
+    const paidTr = screen.getByText('B. Ibrahim').closest('tr') as HTMLElement;
+    expect(within(paidTr).getByText('Jul 2, 2026')).toBeInTheDocument();
+    expect(within(paidTr).queryByText(/partial/)).not.toBeInTheDocument();
+
+    const results = await axe.run(container, { rules: { 'color-contrast': { enabled: false } } });
+    expect(results.violations.map((v) => v.id)).toEqual([]);
   });
 });

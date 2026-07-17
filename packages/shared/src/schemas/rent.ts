@@ -53,7 +53,11 @@ export const RentPaymentRowSchema = z.object({
   status: RentStatusSchema,
   daysLate: z.number().int().min(1).optional(), // present when past grace (late or partial-but-late)
   method: RentPaymentMethodSchema.nullable(),
-  paidAt: z.string().datetime().nullable(),
+  paidAt: z.string().datetime().nullable(), // set only once the charge is FULLY covered
+  // Most recent deposit's date, regardless of whether the charge is fully
+  // covered — the display date for a partial payment, since paidAt stays null
+  // until the charge is fully paid. Null when no deposits exist yet.
+  lastDepositAt: z.string().datetime().nullable(),
 });
 
 // Per-co-tenant slice of a tracker row (plan §C): expected share (stored, or
@@ -86,7 +90,9 @@ export const RentTrackerRowSchema = z.object({
   status: RentStatusSchema,
   daysLate: z.number().int().min(1).optional(), // present when past grace (late or partial-but-late)
   method: RentPaymentMethodSchema.nullable(),
-  paidAt: z.string().datetime().nullable(),
+  paidAt: z.string().datetime().nullable(), // set only once the charge is FULLY covered
+  // Most recent deposit's date (null when no deposits) — see RentPaymentRowSchema.
+  lastDepositAt: z.string().datetime().nullable(),
   deposits: z.array(RentDepositSchema),
   tenants: z.array(RentTenantShareSchema),
   // Soft data-quality signal: specified shares don't sum to the charge.

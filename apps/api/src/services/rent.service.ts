@@ -1,5 +1,6 @@
 import type {
   ApplyLateFeeInput,
+  GraceDaysBasis,
   PaymentLinkResponse,
   RecordRentPaymentInput,
   RentPayment,
@@ -15,6 +16,7 @@ import type {
 import type { RentPayment as DbRentPayment } from '@prisma/client';
 import {
   addDays,
+  businessDaysBetweenInTz,
   calendarDaysBetween,
   calendarDaysBetweenInTz,
   currentPeriodInTz,
@@ -57,14 +59,21 @@ export function toApiRentPayment(p: DbRentPayment): RentPayment {
  * Derivation rule (ARCHITECTURE §4, binding): paid/processing/failed pass
  * through; a row whose deposits cover the charge derives `paid` even if the
  * stored status lagged; 0 < paidCents < totalDue derives `partial` (with
- * daysLate once past dueDate + graceDays — partially paid rent can still be
- * late); else `due` while today ≤ dueDate + graceDays, otherwise `late` with
- * daysLate = whole days past dueDate.
+ * daysLate once past grace — partially paid rent can still be late); else
+ * `due` while today is within the grace window, otherwise `late` with
+ * daysLate = whole calendar days past dueDate.
  *
  * Coverage compares against totalDueCents = amountCents + lateFeeCents (WS7):
  * once a late fee is applied, a charge whose base rent is covered but whose fee
  * is still owed derives `partial`, not `paid`. `lateFeeCents` is optional and
  * defaults to 0 so the pure-helper stays callable with a bare charge shape.
+ *
+ * Grace-period eligibility is basis-aware (`graceDaysBasis`): 'calendar' (the
+ * long-standing default) counts every day past dueDate; 'business' counts
+ * only Mon–Fri days elapsed. Either way `daysLate` — the number displayed on
+ * every tracker/report row and asserted by pinned seed figures — stays a pure
+ * CALENDAR count; only whether that count trips "past grace" changes with the
+ * basis.
  */
 export function deriveRentStatus(
   payment: {
@@ -75,6 +84,7 @@ export function deriveRentStatus(
     lateFeeCents?: number;
   },
   graceDays: number,
+  graceDaysBasis: GraceDaysBasis,
   tz: string,
   today: Date = new Date(),
 ): { status: RentStatus; daysLate?: number } {
@@ -88,9 +98,17 @@ export function deriveRentStatus(
   }
   // Days late is a local-calendar count in the account's tz (WS4): a payment
   // due "on the 1st" is late by whole days measured against the landlord's wall
-  // clock, not UTC's — a 6-day-late charge must read 6 anywhere on earth.
+  // clock, not UTC's — a 6-day-late charge must read 6 anywhere on earth. This
+  // is always CALENDAR days, regardless of graceDaysBasis (display semantics
+  // are pinned — see the doc comment above).
   const daysPastDue = calendarDaysBetweenInTz(payment.dueDate, today, tz);
-  const pastGrace = daysPastDue > graceDays;
+  // Grace elapsed is measured on whichever basis the account configured; the
+  // business-day count is only ever computed when it's actually needed.
+  const graceElapsed =
+    graceDaysBasis === 'business'
+      ? businessDaysBetweenInTz(payment.dueDate, today, tz)
+      : daysPastDue;
+  const pastGrace = graceElapsed > graceDays;
   if (payment.paidCents > 0) {
     return pastGrace ? { status: 'partial', daysLate: daysPastDue } : { status: 'partial' };
   }
@@ -158,7 +176,7 @@ export function expectedChargeCents(
   );
 }
 
-/** Insert any missing expected RentPayment rows for `period`'s active leases.
+/** Insert any missing expected RentPayment rows for `period`.
  *  `tz` is the account's timezone (WS4); callers that already loaded the
  *  account pass it to avoid a re-read, otherwise it's fetched here. */
 export async function materializeExpectedPayments(
@@ -170,59 +188,125 @@ export async function materializeExpectedPayments(
   const periodStart = monthStartInTz(period, timezone);
   const periodEnd = monthEndExclusiveInTz(period, timezone);
 
-  const activeLeases = await prisma.lease.findMany({
+  // Bill by DATE RANGE regardless of active/ended status. A lease that a
+  // renewal flipped to 'ended' still carries an endDate covering this period —
+  // either because its successor starts later (a future-dated renewal not yet
+  // in effect, or a mid-month switchover), or because this is the switchover
+  // month itself. The old `status: 'active'` filter dropped every such lease
+  // and silently skipped the charge. 'pending_signature' (an unsigned draft
+  // lease) never bills. A *terminated* lease already carries its shortened
+  // endDate (lease.service `terminate` sets endDate → the last occupied day), so
+  // the `endDate >= periodStart` range filter naturally excludes months after
+  // it ended — no explicit status carve-out needed.
+  const leases = await prisma.lease.findMany({
     where: {
-      status: 'active',
+      status: { in: ['active', 'ended'] },
       unit: { archivedAt: null, property: { accountId, archivedAt: null } },
       startDate: { lt: periodEnd },
       endDate: { gte: periodStart },
     },
     select: { id: true, unitId: true, rentCents: true, dueDay: true, startDate: true, endDate: true },
   });
-  // One charge per unit per month: rows from *any* lease on the unit count,
-  // so a renewal's successor lease never adds a second charge to a month the
-  // outgoing lease already materialized (the switchover reconciliation in
-  // lease.service adjusts that row instead).
+  if (leases.length === 0) return;
+
+  // One charge per unit per month: rows from *any* lease on the unit count, so
+  // a renewal's successor never adds a second charge to a month the outgoing
+  // lease already materialized (the switchover reconciliation in lease.service
+  // adjusts that row instead).
   const existing = await prisma.rentPayment.findMany({
-    where: { period, lease: { unitId: { in: activeLeases.map((l) => l.unitId) } } },
-    select: { leaseId: true, lease: { select: { unitId: true } } },
+    where: { period, lease: { unitId: { in: leases.map((l) => l.unitId) } } },
+    select: { lease: { select: { unitId: true } } },
   });
-  const haveRows = new Set(existing.map((e) => e.leaseId));
   const chargedUnits = new Set(existing.map((e) => e.lease.unitId));
-  const missing = activeLeases.filter((l) => !haveRows.has(l.id) && !chargedUnits.has(l.unitId));
-  if (missing.length > 0) {
-    const data = missing.map((l) => {
-      // A lease starting mid-month can't be due before it begins. The due date
-      // is local midnight of (1st + dueDay − 1) in the account tz, clamped to
-      // the lease's local start day (WS4).
-      const nominalDue = addDays(periodStart, l.dueDay - 1);
-      const startDay = startOfDayInTz(l.startDate, timezone);
-      return {
-        leaseId: l.id,
-        period,
-        dueDate: nominalDue < startDay ? startDay : nominalDue,
-        amountCents: expectedChargeCents(l, period, timezone),
-        status: 'due',
-      };
+
+  const byUnit = new Map<string, typeof leases>();
+  for (const l of leases) {
+    const list = byUnit.get(l.unitId) ?? [];
+    list.push(l);
+    byUnit.set(l.unitId, list);
+  }
+
+  const data: Array<{
+    leaseId: string;
+    period: string;
+    dueDate: Date;
+    amountCents: number;
+    status: string;
+  }> = [];
+  for (const [unitId, unitLeases] of byUnit) {
+    if (chargedUnits.has(unitId)) continue; // unit already has this month's charge
+
+    // Day attribution mirrors reconcileShortenedLeaseCharges: a lease's endDate
+    // is its inclusive last day (→ endExclusive = endDate + 1 day), EXCEPT when
+    // a successor lease starts exactly on that day (a renewal switchover). Then
+    // the switchover day belongs to the successor, so the outgoing lease ends
+    // exclusive *at* its endDate — exactly the boundary reconcile uses when it
+    // prorates the outgoing lease up to (not including) the successor's start.
+    const covering = unitLeases
+      .map((l) => {
+        const endDay = startOfDayInTz(l.endDate, timezone);
+        const abutsSuccessor = unitLeases.some(
+          (m) =>
+            m.id !== l.id && startOfDayInTz(m.startDate, timezone).getTime() === endDay.getTime(),
+        );
+        const endExclusive = abutsSuccessor ? endDay : addDays(endDay, 1);
+        return {
+          lease: l,
+          endExclusive,
+          covered: coveredDaysInPeriod(period, l.startDate, endExclusive, timezone),
+        };
+      })
+      .filter((c) => c.covered > 0)
+      .sort((a, b) => a.lease.startDate.getTime() - b.lease.startDate.getTime());
+    if (covering.length === 0) continue;
+
+    // When two (or more) sequential leases cover parts of this month, the charge
+    // is the SUM of each lease's prorated share, rounded ONCE on the sum — the
+    // exact figure reconcileShortenedLeaseCharges produces for a month already
+    // materialized before the renewal (unrounded shares, one Math.round on the
+    // blend), so the materialize-after-renewal path and the reconcile path
+    // converge on an identical row.
+    const shareSum = covering.reduce(
+      (sum, c) =>
+        sum + proratedRentShare(c.lease.rentCents, period, c.lease.startDate, c.endExclusive, timezone),
+      0,
+    );
+    // The row belongs to the earliest lease that actually covers days — the same
+    // row reconcile keeps (it adjusts the outgoing lease's existing charge and
+    // lets the unit-level guard suppress the successor's row). leaseId + dueDate
+    // come from that lease; only the amount blends. A lease starting mid-month
+    // can't be due before it begins: the due date is local midnight of
+    // (1st + dueDay − 1), clamped up to the lease's local start day (WS4).
+    const owner = covering[0]!.lease;
+    const nominalDue = addDays(periodStart, owner.dueDay - 1);
+    const startDay = startOfDayInTz(owner.startDate, timezone);
+    data.push({
+      leaseId: owner.id,
+      period,
+      dueDate: nominalDue < startDay ? startDay : nominalDue,
+      amountCents: Math.round(shareSum),
+      status: 'due',
     });
-    try {
-      await prisma.rentPayment.createMany({ data });
-    } catch (err) {
-      // Concurrent materialization of the same period trips @@unique([leaseId,
-      // period]) — SQLite has no skipDuplicates, so re-read once and insert
-      // only the rows that are still missing.
-      if (!isUniqueConstraintError(err)) throw err;
-      const nowHave = new Set(
-        (
-          await prisma.rentPayment.findMany({
-            where: { period, leaseId: { in: missing.map((l) => l.id) } },
-            select: { leaseId: true },
-          })
-        ).map((e) => e.leaseId),
-      );
-      const stillMissing = data.filter((d) => !nowHave.has(d.leaseId));
-      if (stillMissing.length > 0) await prisma.rentPayment.createMany({ data: stillMissing });
-    }
+  }
+  if (data.length === 0) return;
+
+  try {
+    await prisma.rentPayment.createMany({ data });
+  } catch (err) {
+    // Concurrent materialization of the same period trips @@unique([leaseId,
+    // period]) — SQLite has no skipDuplicates, so re-read once and insert
+    // only the rows that are still missing.
+    if (!isUniqueConstraintError(err)) throw err;
+    const nowHave = new Set(
+      (
+        await prisma.rentPayment.findMany({
+          where: { period, leaseId: { in: data.map((d) => d.leaseId) } },
+          select: { leaseId: true },
+        })
+      ).map((e) => e.leaseId),
+    );
+    const stillMissing = data.filter((d) => !nowHave.has(d.leaseId));
+    if (stillMissing.length > 0) await prisma.rentPayment.createMany({ data: stillMissing });
   }
 }
 
@@ -255,7 +339,12 @@ export async function getMonthStatus(
   });
 
   const rows: RentTrackerRow[] = payments.map((p) => {
-    const derived = deriveRentStatus(p, account.graceDays, account.timezone);
+    const derived = deriveRentStatus(
+      p,
+      account.graceDays,
+      account.graceDaysBasis as GraceDaysBasis,
+      account.timezone,
+    );
     const primaryTenant = p.lease.leaseTenants[0]?.tenant;
     const property = p.lease.unit.property;
 
@@ -303,6 +392,9 @@ export async function getMonthStatus(
       ...(derived.daysLate !== undefined ? { daysLate: derived.daysLate } : {}),
       method: p.method as RentPaymentMethod | null,
       paidAt: isoOrNull(p.paidAt),
+      // p.deposits is already loaded ascending by paidAt (for the `deposits`
+      // field below) — the last element is the newest, so no extra query.
+      lastDepositAt: p.deposits.length > 0 ? iso(p.deposits[p.deposits.length - 1]!.paidAt) : null,
       deposits: p.deposits.map((d) => ({
         id: d.id,
         transactionId: d.transactionId,
@@ -713,7 +805,12 @@ export async function applyLateFee(
   if (!payment) throw new NotFoundError('rent payment', rentPaymentId);
 
   const account = await prisma.account.findUniqueOrThrow({ where: { id: accountId } });
-  const derived = deriveRentStatus(payment, account.graceDays, account.timezone);
+  const derived = deriveRentStatus(
+    payment,
+    account.graceDays,
+    account.graceDaysBasis as GraceDaysBasis,
+    account.timezone,
+  );
   // Eligible = past grace and not fully paid: stored/derived 'late', or a
   // 'partial' that carries daysLate (partial charges past grace). A charge
   // still inside its grace window, or paid, cannot be charged a late fee.

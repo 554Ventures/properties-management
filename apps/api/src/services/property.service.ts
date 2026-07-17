@@ -1,5 +1,6 @@
 import type {
   CreatePropertyInput,
+  GraceDaysBasis,
   PnlTotals,
   Property,
   PropertyDetailResponse,
@@ -51,7 +52,12 @@ export function propertyLabel(p: { nickname: string | null; addressLine1: string
 }
 
 /** unitIds with an unpaid, past-due rent payment for the current period. */
-async function lateUnitIds(accountId: string, graceDays: number, tz: string): Promise<Set<string>> {
+async function lateUnitIds(
+  accountId: string,
+  graceDays: number,
+  graceDaysBasis: GraceDaysBasis,
+  tz: string,
+): Promise<Set<string>> {
   const period = currentPeriodInTz(tz);
   const payments = await prisma.rentPayment.findMany({
     where: {
@@ -71,7 +77,9 @@ async function lateUnitIds(accountId: string, graceDays: number, tz: string): Pr
   for (const p of payments) {
     // daysLate presence covers both fully-unpaid `late` and partial-but-past-
     // grace rows — a half-paid tenant past the grace window is still late.
-    if (deriveRentStatus(p, graceDays, tz).daysLate !== undefined) late.add(p.lease.unitId);
+    if (deriveRentStatus(p, graceDays, graceDaysBasis, tz).daysLate !== undefined) {
+      late.add(p.lease.unitId);
+    }
   }
   return late;
 }
@@ -88,7 +96,12 @@ export async function list(accountId: string): Promise<PropertyListResponse> {
     },
     orderBy: { createdAt: 'asc' },
   });
-  const late = await lateUnitIds(accountId, account.graceDays, account.timezone);
+  const late = await lateUnitIds(
+    accountId,
+    account.graceDays,
+    account.graceDaysBasis as GraceDaysBasis,
+    account.timezone,
+  );
 
   return properties.map((p) => {
     const unitCount = p.units.length;
@@ -227,7 +240,13 @@ export async function getDetail(accountId: string, id: string): Promise<Property
             ? synthesizeExpectedCharge(lease, period, tz)
             : undefined);
         if (row) {
-          const derived = deriveRentStatus(row, account.graceDays, tz, now);
+          const derived = deriveRentStatus(
+            row,
+            account.graceDays,
+            account.graceDaysBasis as GraceDaysBasis,
+            tz,
+            now,
+          );
           rent = {
             period,
             status: derived.status,

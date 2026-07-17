@@ -597,7 +597,7 @@ describe('POST /transactions — manual income rent match and linked-row guard',
     expect(partial.transactionId).toBeNull(); // legacy link is single-full-payment only
     expect(partial.deposits).toHaveLength(1);
     expect(partial.deposits[0]!.transactionId).toBe(short.id);
-    expect(deriveRentStatus(partial, 0, 'America/New_York').status).toBe('partial');
+    expect(deriveRentStatus(partial, 0, 'calendar', 'America/New_York').status).toBe('partial');
 
     // The deposit-backed row is guarded like a legacy-linked one.
     const patchRes = await app.inject({

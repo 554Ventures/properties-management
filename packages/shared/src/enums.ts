@@ -31,6 +31,14 @@ export type RentPaymentStatus = z.infer<typeof RentPaymentStatusSchema>;
 export const RentPaymentMethodSchema = z.enum(['online', 'manual', 'bank']);
 export type RentPaymentMethod = z.infer<typeof RentPaymentMethodSchema>;
 
+// How Account.graceDays is measured: 'calendar' counts every day (default);
+// 'business' counts only Mon–Fri (holidays out of scope — see dates.ts
+// businessDaysBetweenInTz). Grace-period eligibility (late/partial-past-grace,
+// and therefore late-fee eligibility) is basis-aware; the *displayed*
+// days-late figure always stays a calendar-day count regardless of basis.
+export const GraceDaysBasisSchema = z.enum(['calendar', 'business']);
+export type GraceDaysBasis = z.infer<typeof GraceDaysBasisSchema>;
+
 export const LeaseStatusSchema = z.enum(['active', 'ended', 'pending_signature']);
 export type LeaseStatus = z.infer<typeof LeaseStatusSchema>;
 

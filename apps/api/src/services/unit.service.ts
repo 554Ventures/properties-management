@@ -1,4 +1,10 @@
-import type { CreateUnitInput, Unit, UnitDetailResponse, UpdateUnitInput } from '@hearth/shared';
+import type {
+  CreateUnitInput,
+  GraceDaysBasis,
+  Unit,
+  UnitDetailResponse,
+  UpdateUnitInput,
+} from '@hearth/shared';
 import type { Unit as DbUnit } from '@prisma/client';
 import {
   currentPeriodInTz,
@@ -73,7 +79,11 @@ export async function getDetail(accountId: string, id: string): Promise<UnitDeta
         orderBy: { startDate: 'desc' },
         include: {
           leaseTenants: { include: { tenant: true }, orderBy: { isPrimary: 'desc' } },
-          rentPayments: { orderBy: { dueDate: 'desc' } },
+          rentPayments: {
+            orderBy: { dueDate: 'desc' },
+            // Only the newest deposit is needed for lastDepositAt.
+            include: { deposits: { orderBy: { paidAt: 'desc' }, take: 1 } },
+          },
         },
       },
     },
@@ -104,7 +114,7 @@ export async function getDetail(accountId: string, id: string): Promise<UnitDeta
     .flatMap((l) => l.rentPayments)
     .sort((a, b) => b.dueDate.getTime() - a.dueDate.getTime())
     .map((p) => {
-      const derived = deriveRentStatus(p, account.graceDays, tz);
+      const derived = deriveRentStatus(p, account.graceDays, account.graceDaysBasis as GraceDaysBasis, tz);
       return {
         id: p.id,
         period: p.period,
@@ -116,6 +126,7 @@ export async function getDetail(accountId: string, id: string): Promise<UnitDeta
         ...(derived.daysLate !== undefined ? { daysLate: derived.daysLate } : {}),
         method: p.method as 'online' | 'manual' | 'bank' | null,
         paidAt: isoOrNull(p.paidAt),
+        lastDepositAt: p.deposits[0] ? iso(p.deposits[0].paidAt) : null,
       };
     });
 

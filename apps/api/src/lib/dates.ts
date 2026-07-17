@@ -198,6 +198,48 @@ export function calendarDaysBetweenInTz(from: Date, to: Date, tz: string): numbe
   return Math.round((tOrd - fOrd) / DAY_MS);
 }
 
+/**
+ * Whole business days (Mon–Fri) in the local-day interval (from, to] in
+ * `tz` — i.e. business days strictly after `from`'s local day up to and
+ * including `to`'s local day. That's the framing the grace check needs:
+ * "how many business days have elapsed since the due date", so the due date
+ * itself never counts but the day something is checked on does.
+ *
+ * Directionality mirrors calendarDaysBetweenInTz: positive when to > from.
+ * When to < from the interval is computed on the swapped (to, from] range and
+ * negated, so the result stays the negative mirror of the forward count —
+ * callers comparing `businessDaysBetweenInTz(due, today, tz) > graceDays`
+ * (graceDays ≥ 0) get `false` for any not-yet-due charge without a special
+ * case, exactly like the calendar-day version.
+ *
+ * Holidays are explicitly out of scope for v1 — every Mon–Fri counts as a
+ * business day, federal/state holidays included.
+ */
+export function businessDaysBetweenInTz(from: Date, to: Date, tz: string): number {
+  const f = wallClockParts(tz, from);
+  const t = wallClockParts(tz, to);
+  // Local calendar-day ordinals (WS4): same Date.UTC(y, m-1, d) construction
+  // calendarDaysBetweenInTz uses, so the weekday derived from them below can't
+  // be skewed by DST — it comes from the local y/m/d, never from `at` itself.
+  const fOrd = Date.UTC(f.year, f.month - 1, f.day);
+  const tOrd = Date.UTC(t.year, t.month - 1, t.day);
+  if (fOrd === tOrd) return 0;
+  const negate = tOrd < fOrd;
+  const startOrd = negate ? tOrd : fOrd;
+  const endOrd = negate ? fOrd : tOrd;
+  const startDay = startOrd / DAY_MS; // integer day number since the Unix epoch
+  const endDay = endOrd / DAY_MS;
+  let count = 0;
+  // Epoch day 0 (1970-01-01) was a Thursday, so weekday(dayNumber) = (dayNumber
+  // + 4) % 7 with 0=Sun..6=Sat — derived from the integer ordinal, not a fresh
+  // Date object, so there's no re-interpretation through any timezone.
+  for (let d = startDay + 1; d <= endDay; d++) {
+    const weekday = (d + 4) % 7;
+    if (weekday !== 0 && weekday !== 6) count++;
+  }
+  return negate ? -count : count;
+}
+
 /** Day-of-month (1-31) of instant `d` in `tz`. */
 export function dayOfMonthInTz(d: Date, tz: string): number {
   return wallClockParts(tz, d).day;

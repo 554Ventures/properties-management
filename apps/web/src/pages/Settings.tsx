@@ -9,6 +9,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import type {
   AccountMember,
   AccountSettings,
+  GraceDaysBasis,
   Integration,
   IntegrationType,
   MemberPermission,
@@ -549,6 +550,10 @@ function AccountForm({ account }: { account: AccountSettings }) {
   const [defaultLateFee, setDefaultLateFee] = useState(
     (account.defaultLateFeeCents / 100).toString(),
   );
+  // Grace period: how many days after the due date rent goes from due to
+  // late, and whether those days are calendar or business days.
+  const [graceDays, setGraceDays] = useState(String(account.graceDays));
+  const [graceDaysBasis, setGraceDaysBasis] = useState<GraceDaysBasis>(account.graceDaysBasis);
 
   const timezones = TIMEZONES.includes(account.timezone)
     ? TIMEZONES
@@ -563,6 +568,8 @@ function AccountForm({ account }: { account: AccountSettings }) {
         taxRatePct: Math.min(100, Math.max(0, Math.round(Number(taxRatePct) || 0))),
         timezone,
         defaultLateFeeCents: Math.max(0, Math.round(Number(defaultLateFee) * 100) || 0),
+        graceDays: Math.max(0, Math.round(Number(graceDays) || 0)),
+        graceDaysBasis,
       },
       {
         onSuccess: () => toast('Settings saved.', 'positive'),
@@ -623,6 +630,31 @@ function AccountForm({ account }: { account: AccountSettings }) {
             onChange={(e) => setTaxRatePct(e.target.value)}
             disabled={readOnly}
           />
+        </FormField>
+        <FormField
+          label="Grace period (days)"
+          htmlFor="settings-grace-days"
+          hint="Rent isn't marked late until this many days after the due date. Late fees can only be applied once a charge is past grace."
+        >
+          <Input
+            type="number"
+            inputMode="numeric"
+            min="0"
+            step="1"
+            value={graceDays}
+            onChange={(e) => setGraceDays(e.target.value)}
+            disabled={readOnly}
+          />
+        </FormField>
+        <FormField label="Grace period basis" htmlFor="settings-grace-days-basis">
+          <Select
+            value={graceDaysBasis}
+            onChange={(e) => setGraceDaysBasis(e.target.value as GraceDaysBasis)}
+            disabled={readOnly}
+          >
+            <option value="calendar">Calendar days</option>
+            <option value="business">Business days (Mon–Fri)</option>
+          </Select>
         </FormField>
         <FormField
           label="Default late fee (USD)"

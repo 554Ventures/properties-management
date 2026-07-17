@@ -1,5 +1,6 @@
 import type {
   CreateTenantInput,
+  GraceDaysBasis,
   Tenant,
   TenantDetailResponse,
   TenantListResponse,
@@ -50,11 +51,14 @@ function deriveTenantStatus(
     rentPayments: Array<{ status: string; dueDate: Date; amountCents: number; paidCents: number }>;
   }>,
   graceDays: number,
+  graceDaysBasis: GraceDaysBasis,
   tz: string,
   today: Date,
 ): TenantStatus {
   const anyLate = leases.some((l) =>
-    l.rentPayments.some((p) => deriveRentStatus(p, graceDays, tz, today).daysLate !== undefined),
+    l.rentPayments.some(
+      (p) => deriveRentStatus(p, graceDays, graceDaysBasis, tz, today).daysLate !== undefined,
+    ),
   );
   if (anyLate) return 'late';
   // renew_soon is a rolling 60-day duration off the current instant — no
@@ -87,7 +91,13 @@ export async function list(accountId: string): Promise<TenantListResponse> {
   return tenants.map((t) => {
     const activeLeases = t.leaseTenants.map((lt) => lt.lease).filter((l) => l.status === 'active');
     const lease = activeLeases[0];
-    const status = deriveTenantStatus(activeLeases, account.graceDays, account.timezone, today);
+    const status = deriveTenantStatus(
+      activeLeases,
+      account.graceDays,
+      account.graceDaysBasis as GraceDaysBasis,
+      account.timezone,
+      today,
+    );
     return {
       id: t.id,
       fullName: t.fullName,
@@ -114,7 +124,11 @@ export async function getDetail(accountId: string, id: string): Promise<TenantDe
           lease: {
             include: {
               unit: { include: { property: true } },
-              rentPayments: { orderBy: { dueDate: 'desc' } },
+              rentPayments: {
+                orderBy: { dueDate: 'desc' },
+                // Only the newest deposit is needed for lastDepositAt.
+                include: { deposits: { orderBy: { paidAt: 'desc' }, take: 1 } },
+              },
             },
           },
         },
@@ -128,7 +142,12 @@ export async function getDetail(accountId: string, id: string): Promise<TenantDe
     .flatMap((l) => l.rentPayments)
     .sort((a, b) => b.dueDate.getTime() - a.dueDate.getTime())
     .map((p) => {
-      const derived = deriveRentStatus(p, account.graceDays, account.timezone);
+      const derived = deriveRentStatus(
+        p,
+        account.graceDays,
+        account.graceDaysBasis as GraceDaysBasis,
+        account.timezone,
+      );
       return {
         id: p.id,
         period: p.period,
@@ -140,6 +159,7 @@ export async function getDetail(accountId: string, id: string): Promise<TenantDe
         ...(derived.daysLate !== undefined ? { daysLate: derived.daysLate } : {}),
         method: p.method as 'online' | 'manual' | 'bank' | null,
         paidAt: isoOrNull(p.paidAt),
+        lastDepositAt: p.deposits[0] ? iso(p.deposits[0].paidAt) : null,
       };
     });
 

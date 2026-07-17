@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { GraceDaysBasisSchema } from '../enums';
 
 export const AccountSchema = z.object({
   id: z.string(),
@@ -8,6 +9,8 @@ export const AccountSchema = z.object({
   taxRatePct: z.number().int().min(0).max(100),
   taxYearStartMonth: z.number().int().min(1).max(12),
   graceDays: z.number().int().min(0),
+  // How graceDays is measured — 'calendar' (default) or 'business' days.
+  graceDaysBasis: GraceDaysBasisSchema,
   // Account-wide default late fee in cents (WS7); 0 = late fees disabled. A
   // lease may override this. Applying a fee is always an explicit human action.
   defaultLateFeeCents: z.number().int().nonnegative(),
@@ -28,6 +31,7 @@ export const UpdateAccountSettingsInputSchema = z.object({
   taxRatePct: z.number().int().min(0).max(100).optional(),
   taxYearStartMonth: z.number().int().min(1).max(12).optional(),
   graceDays: z.number().int().min(0).optional(),
+  graceDaysBasis: GraceDaysBasisSchema.optional(),
   defaultLateFeeCents: z.number().int().nonnegative().optional(),
 });
 

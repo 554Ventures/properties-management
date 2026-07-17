@@ -4,6 +4,7 @@ import type {
   CreateLeaseInput,
   EsignEnvelopeResponse,
   EsignStatus,
+  GraceDaysBasis,
   Lease,
   LeaseDetailResponse,
   LeaseListResponse,
@@ -20,7 +21,7 @@ import type {
   Unit as DbUnit,
 } from '@prisma/client';
 import { addDays, iso, isoOrNull, startOfDayInTz } from '../lib/dates';
-import { ConflictError, NotFoundError } from '../lib/errors';
+import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { mockDocusign } from '../integrations/mock/mock-docusign';
 import { accountTimezone } from './account.service';
@@ -102,14 +103,27 @@ export async function getDetail(accountId: string, id: string): Promise<LeaseDet
   const lease = await prisma.lease.findFirst({
     // Detail resolves an archived unit/property (history retention).
     where: { id, unit: { property: { accountId } } },
-    include: { ...contextInclude, rentPayments: { orderBy: { dueDate: 'desc' } } },
+    include: {
+      ...contextInclude,
+      rentPayments: {
+        orderBy: { dueDate: 'desc' },
+        // Only the newest deposit is needed for lastDepositAt — cheaper than
+        // loading the full deposit list this serializer otherwise has no use for.
+        include: { deposits: { orderBy: { paidAt: 'desc' }, take: 1 } },
+      },
+    },
   });
   if (!lease) throw new NotFoundError('lease', id);
 
   return {
     lease: toLeaseWithContext(lease as LeaseWithJoins),
     rentPayments: lease.rentPayments.map((p) => {
-      const derived = deriveRentStatus(p, account.graceDays, account.timezone);
+      const derived = deriveRentStatus(
+        p,
+        account.graceDays,
+        account.graceDaysBasis as GraceDaysBasis,
+        account.timezone,
+      );
       return {
         id: p.id,
         period: p.period,
@@ -121,6 +135,7 @@ export async function getDetail(accountId: string, id: string): Promise<LeaseDet
         ...(derived.daysLate !== undefined ? { daysLate: derived.daysLate } : {}),
         method: p.method as 'online' | 'manual' | 'bank' | null,
         paidAt: isoOrNull(p.paidAt),
+        lastDepositAt: p.deposits[0] ? iso(p.deposits[0].paidAt) : null,
       };
     }),
   };
@@ -139,6 +154,34 @@ export async function create(
     where: { id: { in: input.tenantIds }, accountId },
   });
   if (tenants.length !== input.tenantIds.length) throw new NotFoundError('tenant');
+
+  // Reject a lease whose date range overlaps an existing lease on the same unit
+  // (any status — an 'ended' lease carries its true final range). Compared on
+  // the account's local calendar (WS4) under the same day-attribution rule
+  // reconcile/materialization use: endDate is a lease's inclusive last day, but
+  // the switchover day (one lease's endDate == the next's startDate) belongs to
+  // the successor, so abutting leases do NOT overlap — only a strict day
+  // intersection does. Treating each range as half-open [startDay, endDay)
+  // encodes exactly that: `newStart < exEnd && exStart < newEnd` is false when
+  // newStart == exEnd (abut after) or newEnd == exStart (abut before). The
+  // renewal switchover path creates its successor + shortens the source in one
+  // transaction via tx.lease.create and never reaches this guard, so abutting
+  // renewals stay unaffected.
+  const tz = await accountTimezone(accountId);
+  const newStart = startOfDayInTz(new Date(input.startDate), tz).getTime();
+  const newEnd = startOfDayInTz(new Date(input.endDate), tz).getTime();
+  const unitLeases = await prisma.lease.findMany({
+    where: { unitId: input.unitId },
+    select: { startDate: true, endDate: true },
+  });
+  const overlaps = unitLeases.some((l) => {
+    const exStart = startOfDayInTz(l.startDate, tz).getTime();
+    const exEnd = startOfDayInTz(l.endDate, tz).getTime();
+    return newStart < exEnd && exStart < newEnd;
+  });
+  if (overlaps) {
+    throw new BadRequestError('this unit already has a lease covering part of that date range');
+  }
 
   const row = await prisma.lease.create({
     data: {

@@ -35,6 +35,10 @@ model Account {
   taxRatePct          Int       @default(20)
   taxYearStartMonth   Int       @default(1)
   graceDays           Int       @default(0)
+  // How graceDays is measured (GraceDaysBasis @hearth/shared): 'calendar'
+  // (default) counts every day; 'business' counts only Mon–Fri. Threaded
+  // alongside timezone everywhere deriveRentStatus is called.
+  graceDaysBasis      String    @default("calendar")
   // Account-wide default late fee (integer cents) applied when a landlord marks
   // a late charge (WS7). 0 = late fees disabled account-wide. A Lease may
   // override this (Lease.lateFeeCents). Policy only — never auto-applied.

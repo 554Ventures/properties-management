@@ -514,6 +514,11 @@ export function RentTracker() {
                                 <span className="text-xs text-ink-muted"> · {row.method}</span>
                               )}
                             </>
+                          ) : row.lastDepositAt ? (
+                            <>
+                              {formatDate(row.lastDepositAt)}
+                              <span className="text-xs text-ink-muted"> (partial)</span>
+                            </>
                           ) : (
                             '—'
                           )}

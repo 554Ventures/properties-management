@@ -2,6 +2,7 @@ import {
   formatUsd,
   formatUsdWhole,
   type GenerateReportInput,
+  type GraceDaysBasis,
   type Report,
   type ReportDetailResponse,
   type ReportType,
@@ -314,7 +315,12 @@ async function buildTenantLedger(
     orderBy: [{ dueDate: 'asc' }],
   });
   const rows = payments.map((p) => {
-    const derived = deriveRentStatus(p, account.graceDays, account.timezone);
+    const derived = deriveRentStatus(
+      p,
+      account.graceDays,
+      account.graceDaysBasis as GraceDaysBasis,
+      account.timezone,
+    );
     return {
       tenantName: p.lease.leaseTenants[0]?.tenant.fullName ?? '',
       propertyLabel: p.lease.unit.property.nickname ?? p.lease.unit.property.addressLine1,
