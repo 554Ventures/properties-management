@@ -6,7 +6,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import type { ReactNode } from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { PropertyTasks } from '../components/property/PropertyTasks';
+import { NeedsAttention } from '../components/property/NeedsAttention';
 import { ToastProvider, ToastViewport } from '../components/ui/Toast';
 import { PropertyDetail } from '../pages/PropertyDetail';
 import {
@@ -15,6 +15,7 @@ import {
   hubRoutes,
   isoIn,
   makeFetch,
+  makeInsight,
   makeLease,
   makeProperty,
   makeTenant,
@@ -185,7 +186,7 @@ describe('needs attention triage', () => {
       }),
     ];
     renderProviders(
-      <PropertyTasks
+      <NeedsAttention
         title="12 Maple St"
         units={units}
         canTenants
@@ -221,7 +222,7 @@ describe('needs attention triage', () => {
       }),
     ];
     renderProviders(
-      <PropertyTasks
+      <NeedsAttention
         title="12 Maple St"
         units={units}
         canTenants
@@ -232,6 +233,236 @@ describe('needs attention triage', () => {
     );
     expect(screen.getAllByRole('listitem')).toHaveLength(1);
     expect(screen.getByRole('listitem')).toHaveTextContent('R. Chen · Unit E — 4 days late');
+  });
+});
+
+// --- Needs attention: merged AI insights ---------------------------------------
+
+describe('needs attention — merged AI insights', () => {
+  it('merges a matching late_rent insight into the rent row exactly once, with the AI pill, Send reminder, and Dismiss', async () => {
+    const detail = hubDetailResponse();
+    detail.insights = [makeInsight()];
+    renderHub(hubRoutes([{ method: 'GET', path: '/api/v1/properties/p1', body: detail }]));
+
+    const card = await findTriageCard();
+    const rows = within(card).getAllByRole('listitem');
+    // Still 5 rows — the insight enriches Unit A's rent row, it doesn't add a
+    // 6th (no duplicate row for the same lease).
+    expect(rows).toHaveLength(5);
+
+    const late = rows[0]!;
+    expect(late).toHaveTextContent(
+      'D. Park · Unit A — 3 days late · $700.00 of $1,400.00 received',
+    );
+    // The AiSurface inline pill's accessible text: the ✦ glyph is
+    // aria-hidden, "AI" is the badge's own text, "suggestion" is the pill's
+    // label content.
+    expect(within(late).getByText('AI')).toBeInTheDocument();
+    expect(within(late).getByText('suggestion')).toBeInTheDocument();
+    expect(within(late).getByRole('button', { name: 'Send reminder' })).toBeInTheDocument();
+    expect(within(late).getByRole('button', { name: 'Dismiss' })).toBeInTheDocument();
+    // The row's own derived affordance (tracker link) still shows alongside
+    // the AI action cluster — merged rows relax the one-affordance rule.
+    expect(within(late).getByRole('link', { name: 'Open rent tracker →' })).toBeInTheDocument();
+    // But the insight's own legacy link ("Review", same /rent?period=... URL
+    // as the tracker link) is suppressed on merged rows — it would just be a
+    // second link to the same place.
+    expect(within(late).queryByRole('link', { name: 'Review' })).not.toBeInTheDocument();
+  });
+
+  it('Send reminder POSTs /rent/reminders with the fixture body, then marks the insight actioned', async () => {
+    const detail = hubDetailResponse();
+    const insight = makeInsight();
+    detail.insights = [insight];
+    const fetchMock = renderHub(
+      hubRoutes([
+        { method: 'GET', path: '/api/v1/properties/p1', body: detail },
+        { method: 'POST', path: '/api/v1/rent/reminders', body: {} },
+        { method: 'POST', path: `/api/v1/insights/${insight.id}/actioned`, body: insight },
+      ]),
+    );
+
+    const card = await findTriageCard();
+    fireEvent.click(within(card).getByRole('button', { name: 'Send reminder' }));
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          ([u, i]) =>
+            String(u).includes(`/api/v1/insights/${insight.id}/actioned`) &&
+            (i as RequestInit | undefined)?.method === 'POST',
+        ),
+      ).toBe(true);
+    });
+
+    const postCalls = fetchMock.mock.calls.filter(
+      ([, i]) => (i as RequestInit | undefined)?.method === 'POST',
+    );
+    const postPaths = postCalls.map(([u]) => String(u).replace(/^https?:\/\/[^/]+/, ''));
+    const reminderIndex = postPaths.indexOf('/api/v1/rent/reminders');
+    const actionedIndex = postPaths.indexOf(`/api/v1/insights/${insight.id}/actioned`);
+    expect(reminderIndex).toBeGreaterThanOrEqual(0);
+    expect(actionedIndex).toBeGreaterThan(reminderIndex);
+
+    const reminderCall = postCalls[reminderIndex]!;
+    expect(JSON.parse(String((reminderCall[1] as RequestInit).body))).toEqual({
+      rentPaymentIds: ['rp-u1'],
+    });
+  });
+
+  it('Dismiss POSTs /insights/:id/dismiss', async () => {
+    const detail = hubDetailResponse();
+    const insight = makeInsight();
+    detail.insights = [insight];
+    const fetchMock = renderHub(
+      hubRoutes([
+        { method: 'GET', path: '/api/v1/properties/p1', body: detail },
+        { method: 'POST', path: `/api/v1/insights/${insight.id}/dismiss`, body: insight },
+      ]),
+    );
+
+    const card = await findTriageCard();
+    fireEvent.click(within(card).getByRole('button', { name: 'Dismiss' }));
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          ([u, i]) =>
+            String(u).includes(`/api/v1/insights/${insight.id}/dismiss`) &&
+            (i as RequestInit | undefined)?.method === 'POST',
+        ),
+      ).toBe(true);
+    });
+    // Merged-row dismiss clears only the AI suggestion — the derived rent
+    // status stays put, which is what this toast (over the generic one)
+    // confirms. The static fixture doesn't change on the mocked refetch, so
+    // this is the assertion the harness supports for "stays a plain derived
+    // task" (see NeedsAttention.tsx's MERGED_DISMISS_MESSAGE).
+    expect(
+      await screen.findByText(
+        "AI suggestion dismissed — the rent status stays until it's resolved.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('renders an expense_spike insight as an insight-only row — no duplicate standalone card', async () => {
+    const detail = hubDetailResponse();
+    const spike = makeInsight({
+      id: 'i-spike',
+      scope: 'property',
+      type: 'expense_spike',
+      severity: 'warning',
+      title: 'Utilities spending spiked at 12 Maple St',
+      body: 'Utilities came in at $640 this month vs a $380 three-month average.',
+      actionLabel: 'View transactions',
+      actionTarget: '/money?type=expense&propertyId=p1',
+      action: {
+        label: 'View transactions',
+        action: { kind: 'navigate', to: '/money?type=expense&propertyId=p1' },
+      },
+      propertyId: 'p1',
+      tenantId: null,
+      leaseId: null,
+      dedupeKey: `expense_spike:utilities:${PERIOD}`,
+    });
+    detail.insights = [spike];
+    renderHub(hubRoutes([{ method: 'GET', path: '/api/v1/properties/p1', body: detail }]));
+
+    const card = await findTriageCard();
+    const rows = within(card).getAllByRole('listitem');
+    // The 5 derived task rows, unchanged, plus exactly one insight-only row.
+    expect(rows).toHaveLength(6);
+
+    const spikeRow = rows.find((row) =>
+      row.textContent?.includes('Utilities spending spiked'),
+    ) as HTMLElement;
+    expect(spikeRow).toBeDefined();
+    expect(
+      within(spikeRow).getByText('Utilities spending spiked at 12 Maple St'),
+    ).toBeInTheDocument();
+    expect(
+      within(spikeRow).getByText(
+        'Utilities came in at $640 this month vs a $380 three-month average.',
+      ),
+    ).toBeInTheDocument();
+    expect(within(spikeRow).getByRole('link', { name: 'View transactions' })).toHaveAttribute(
+      'href',
+      '/money?type=expense&propertyId=p1',
+    );
+    // No second, standalone InsightCard rendering the same insight elsewhere.
+    expect(screen.getAllByText('Utilities spending spiked at 12 Maple St')).toHaveLength(1);
+  });
+
+  it('archived property with an insight still renders an insight-only row', async () => {
+    const detail = hubDetailResponse();
+    detail.property = makeProperty({ archivedAt: '2026-01-01T00:00:00.000Z' });
+    detail.insights = [
+      makeInsight({
+        id: 'i-spike-archived',
+        scope: 'property',
+        type: 'expense_spike',
+        severity: 'warning',
+        title: 'Utilities spending spiked at 12 Maple St',
+        body: 'Utilities came in high this month.',
+        actionLabel: null,
+        actionTarget: null,
+        action: null,
+        propertyId: 'p1',
+        tenantId: null,
+        leaseId: null,
+        dedupeKey: `expense_spike:utilities-archived:${PERIOD}`,
+      }),
+    ];
+    renderHub(hubRoutes([{ method: 'GET', path: '/api/v1/properties/p1', body: detail }]));
+
+    expect(
+      await screen.findByText('This property is archived and hidden from your lists.'),
+    ).toBeInTheDocument();
+    const card = await findTriageCard();
+    expect(
+      within(card).getByText('Utilities spending spiked at 12 Maple St'),
+    ).toBeInTheDocument();
+    // Archived: no derived tasks, so the insight-only row is the only one.
+    expect(within(card).getAllByRole('listitem')).toHaveLength(1);
+  });
+
+  it('archived property with no insights hides the section entirely', async () => {
+    const detail = hubDetailResponse();
+    detail.property = makeProperty({ archivedAt: '2026-01-01T00:00:00.000Z' });
+    renderHub(hubRoutes([{ method: 'GET', path: '/api/v1/properties/p1', body: detail }]));
+
+    expect(
+      await screen.findByText('This property is archived and hidden from your lists.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Needs attention' })).not.toBeInTheDocument();
+  });
+});
+
+// --- Key metrics (KPI row) ------------------------------------------------------
+
+describe('key metrics', () => {
+  it('computes occupancy, rent roll, and net MTD/YTD from the fixture data', async () => {
+    renderHub(hubRoutes());
+    await screen.findByRole('heading', { name: 'Units & leases' });
+
+    // hubDetailResponse(): 6 units, 1 archived (Unit D excluded from active).
+    // Active: A (occupied), B (occupied), C (vacant), E (occupied), F
+    // (occupied) → 4 of 5 occupied → 80%.
+    const occupancy = screen.getByRole('group', { name: 'Occupancy: 4 of 5 units occupied' });
+    expect(within(occupancy).getByText('80%')).toBeInTheDocument();
+
+    // Rent roll: sum of active units' current-lease rent — A $1,400 + B
+    // $1,200 + E $1,200 + F $1,100 (C vacant, contributes $0) = $4,900.
+    const rentRoll = screen.getByRole('group', { name: 'Rent roll, $4,900.00 per month' });
+    expect(within(rentRoll).getByText('$4,900')).toBeInTheDocument();
+
+    // pnl fixture: mtd.netCents 380000 → $3,800; ytd.netCents 2490000 →
+    // $24,900.
+    const netMtd = screen.getByRole('group', { name: 'Net income, month to date, $3,800.00' });
+    expect(within(netMtd).getByText('$3,800')).toBeInTheDocument();
+
+    const netYtd = screen.getByRole('group', { name: 'Net income, year to date, $24,900.00' });
+    expect(within(netYtd).getByText('$24,900')).toBeInTheDocument();
   });
 });
 

@@ -36,9 +36,11 @@ import { MoneyReview } from '../pages/MoneyReview';
 import { PropertyDetail } from '../pages/PropertyDetail';
 import { UnitDetail } from '../pages/UnitDetail';
 import {
+  hubDetailResponse,
   hubRoutes,
   isoIn,
   makeFetch,
+  makeInsight,
   makeProperty,
   ownerUser,
   PERIOD,
@@ -759,7 +761,34 @@ describe('property hub accessibility', () => {
   }
 
   it('populated hub (triage rows, enriched units table) has no axe violations', async () => {
-    vi.stubGlobal('fetch', makeFetch(hubRoutes()));
+    const detail = hubDetailResponse();
+    // A merged late_rent insight (Unit A's rent row — inline ✦ pill + Send
+    // reminder + Dismiss) and an unmatched expense_spike insight-only row, so
+    // the merged attention section, KPI row, and two-column grid are all
+    // covered by this audit.
+    detail.insights = [
+      makeInsight(),
+      makeInsight({
+        id: 'i-spike',
+        scope: 'property',
+        type: 'expense_spike',
+        title: 'Utilities spending spiked at 12 Maple St',
+        body: 'Utilities came in at $640 this month vs a $380 three-month average.',
+        actionLabel: 'View transactions',
+        actionTarget: '/money?type=expense&propertyId=p1',
+        action: {
+          label: 'View transactions',
+          action: { kind: 'navigate', to: '/money?type=expense&propertyId=p1' },
+        },
+        tenantId: null,
+        leaseId: null,
+        dedupeKey: `expense_spike:utilities:${PERIOD}`,
+      }),
+    ];
+    vi.stubGlobal(
+      'fetch',
+      makeFetch(hubRoutes([{ method: 'GET', path: '/api/v1/properties/p1', body: detail }])),
+    );
     const { container } = renderPropertyHub();
 
     // Triage, units table, financials, and documents all settled.
@@ -767,6 +796,10 @@ describe('property hub accessibility', () => {
     await screen.findByText('5 units · 2 of 4 paid this month · 1 late');
     await screen.findByText('Renews in 58 days');
     await screen.findByText('No documents on file.');
+    // Merged row's inline pill + insight-only row both settled too (both
+    // AI-sourced/-enriched rows carry the ✦ pill — two "suggestion" pills).
+    await screen.findAllByText('suggestion');
+    await screen.findByText('Utilities spending spiked at 12 Maple St');
 
     const results = await axe.run(container, {
       rules: { 'color-contrast': { enabled: false } },

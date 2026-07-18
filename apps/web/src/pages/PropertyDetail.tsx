@@ -1,7 +1,9 @@
-// Property detail (PRD §5.2) — the hub for one property: header, a derived
-// "Needs attention" triage card, the enriched units & leases table (tenant
-// quick sheets, this-month rent status, renewal affordances), financials, and
-// documents. Write controls hide behind usePermissions; reads stay visible.
+// Property detail (PRD §5.2) — the hub for one property: header, a KPI row
+// (occupancy, rent roll, net MTD/YTD), then a two-column layout — "Needs
+// attention" triage + documents in the aside, the enriched units & leases
+// table (tenant quick sheets, this-month rent status, renewal affordances)
+// and financials in the main column. Write controls hide behind
+// usePermissions; reads stay visible.
 import { useMemo, useState } from 'react';
 import { RENEW_SOON_DAYS, formatUsd, formatUsdWhole } from '@hearth/shared';
 import type {
@@ -22,7 +24,6 @@ import {
   useTerminateLease,
   useUnitDetail,
 } from '../api/queries';
-import { InsightCard } from '../components/ai/InsightCard';
 import { DocumentsCard } from '../components/documents/DocumentsCard';
 import { LeaseFormModal, type LeasePrefill } from '../components/forms/LeaseFormModal';
 import { LeaseTenantsModal } from '../components/forms/LeaseTenantsModal';
@@ -30,7 +31,7 @@ import { PropertyFormModal } from '../components/forms/PropertyFormModal';
 import { RenewalModal } from '../components/forms/RenewalModal';
 import { UnitFormModal } from '../components/forms/UnitFormModal';
 import { LeaseHistoryModal } from '../components/property/LeaseHistoryModal';
-import { PropertyTasks } from '../components/property/PropertyTasks';
+import { NeedsAttention } from '../components/property/NeedsAttention';
 import { RentSnapshotBadge } from '../components/property/RentSnapshotBadge';
 import { TenantQuickSheet } from '../components/property/TenantQuickSheet';
 import { PageHeader } from '../components/shell/PageHeader';
@@ -39,7 +40,8 @@ import { Card } from '../components/ui/Card';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorNotice } from '../components/ui/ErrorNotice';
-import { LiveRegion } from '../components/ui/LiveRegion';
+import { KpiTile, KpiTileSkeleton } from '../components/ui/KpiTile';
+import { ProgressBar } from '../components/ui/ProgressBar';
 import { RowActions, type RowAction } from '../components/ui/RowActions';
 import { Skeleton } from '../components/ui/Skeleton';
 import { StatusBadge } from '../components/ui/StatusBadge';
@@ -123,8 +125,20 @@ export function PropertyDetail() {
       <div className="flex flex-col gap-6">
         <Skeleton className="h-5 w-56" />
         <Skeleton className="h-9 w-72" />
-        <Skeleton className="h-40 w-full" />
-        <Skeleton className="h-64 w-full" />
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <KpiTileSkeleton />
+          <KpiTileSkeleton />
+          <KpiTileSkeleton />
+          <KpiTileSkeleton />
+        </div>
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+          <div className="flex flex-col gap-6 lg:col-start-3 lg:row-start-1">
+            <Skeleton className="h-40 w-full" />
+          </div>
+          <div className="flex flex-col gap-6 lg:col-span-2 lg:col-start-1 lg:row-start-1">
+            <Skeleton className="h-64 w-full" />
+          </div>
+        </div>
       </div>
     );
   }
@@ -147,6 +161,16 @@ export function PropertyDetail() {
   const activeUnits = units.filter((unit) => !unit.archivedAt);
   const archivedUnits = units.filter((unit) => unit.archivedAt);
   const visibleUnits = showArchived ? units : activeUnits;
+
+  // KPI row — occupancy over active units, rent roll from current leases only
+  // (a pendingLease awaiting signature doesn't count toward rent roll yet).
+  const occupiedUnits = activeUnits.filter((unit) => unit.status === 'occupied').length;
+  const occupancyPct =
+    activeUnits.length > 0 ? Math.round((occupiedUnits / activeUnits.length) * 100) : null;
+  const rentRollCents = activeUnits.reduce(
+    (sum, unit) => sum + (unit.currentLease?.rentCents ?? 0),
+    0,
+  );
 
   // Summary counts consider only units with a rent charge this month — a
   // leased unit whose lease doesn't touch the month (rent: null) owes nothing.
@@ -269,154 +293,189 @@ export function PropertyDetail() {
         </div>
       )}
 
-      {/* Property-scoped AI insights lead the page — same top-of-page
-          placement as every other contextual insight surface. */}
-      <LiveRegion className="flex flex-col gap-4">
-        {insights.map((insight) => (
-          <InsightCard key={insight.id} insight={insight} headingLevel={2} />
-        ))}
-      </LiveRegion>
-
-      {!property.archivedAt && (
-        <PropertyTasks
-          title={title}
-          units={units}
-          canTenants={canTenants}
-          draftBusy={draftRenewal.isPending}
-          onDraftRenewal={startRenewalDraft}
-          onCreateLease={(unit) => setModal({ kind: 'create-lease', unit })}
+      <section aria-label="Key metrics" className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <KpiTile
+          label="Occupancy"
+          value={occupancyPct != null ? `${occupancyPct}%` : '—'}
+          ariaLabel={
+            occupancyPct != null
+              ? `Occupancy: ${occupiedUnits} of ${activeUnits.length} units occupied`
+              : 'Occupancy: no active units'
+          }
+        >
+          {occupancyPct != null && (
+            <ProgressBar
+              value={occupiedUnits}
+              max={activeUnits.length}
+              label="Occupancy"
+              text={`${occupiedUnits} of ${activeUnits.length} units occupied`}
+            />
+          )}
+        </KpiTile>
+        <KpiTile
+          label="Rent roll / mo"
+          value={formatUsdWhole(rentRollCents)}
+          ariaLabel={`Rent roll, ${formatUsd(rentRollCents)} per month`}
         />
-      )}
+        <KpiTile
+          label="Net (MTD)"
+          value={formatUsdWhole(pnl.mtd.netCents)}
+          ariaLabel={`Net income, month to date, ${formatUsd(pnl.mtd.netCents)}`}
+        />
+        <KpiTile
+          label="Net (YTD)"
+          value={formatUsdWhole(pnl.ytd.netCents)}
+          ariaLabel={`Net income, year to date, ${formatUsd(pnl.ytd.netCents)}`}
+        />
+      </section>
 
-      <section aria-label="Units and leases" className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <h2 className="text-base font-semibold text-ink">Units &amp; leases</h2>
-            <p className="text-sm text-ink-muted">{summaryParts.join(' · ')}</p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {archivedUnits.length > 0 && (
-              <Button
-                variant="ghost"
-                size="sm"
-                aria-pressed={showArchived}
-                onClick={() => setShowArchived((v) => !v)}
-              >
-                {showArchived ? 'Hide archived' : `Show archived (${archivedUnits.length})`}
-              </Button>
-            )}
-            {canProperties && (
-              <Button size="sm" onClick={() => setModal({ kind: 'add-unit' })}>
-                <IconPlus size={14} />
-                Add unit
-              </Button>
-            )}
-          </div>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        {/* Aside first in DOM so attention items precede the units table on
+            mobile, where the grid collapses to a single column. */}
+        <div className="flex flex-col gap-6 lg:col-start-3 lg:row-start-1">
+          <NeedsAttention
+            title={title}
+            units={units}
+            insights={insights}
+            archived={Boolean(property.archivedAt)}
+            canTenants={canTenants}
+            draftBusy={draftRenewal.isPending}
+            onDraftRenewal={startRenewalDraft}
+            onCreateLease={(unit) => setModal({ kind: 'create-lease', unit })}
+          />
+          <section aria-label="Documents">
+            <DocumentsCard
+              filter={{ propertyId }}
+              uploadTarget={{ entityType: 'property', entityId: propertyId }}
+            />
+          </section>
         </div>
-        <Card flush>
-          {units.length === 0 ? (
-            <EmptyState
-              title="No units yet"
-              body="Add the first unit to start a lease."
-              action={
-                canProperties ? (
+
+        <div className="flex flex-col gap-6 lg:col-span-2 lg:col-start-1 lg:row-start-1">
+          <section aria-label="Units and leases" className="flex flex-col gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                <h2 className="text-base font-semibold text-ink">Units &amp; leases</h2>
+                <p className="text-sm text-ink-muted">{summaryParts.join(' · ')}</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {archivedUnits.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-pressed={showArchived}
+                    onClick={() => setShowArchived((v) => !v)}
+                  >
+                    {showArchived ? 'Hide archived' : `Show archived (${archivedUnits.length})`}
+                  </Button>
+                )}
+                {canProperties && (
                   <Button size="sm" onClick={() => setModal({ kind: 'add-unit' })}>
                     <IconPlus size={14} />
                     Add unit
                   </Button>
-                ) : undefined
-              }
-            />
-          ) : visibleUnits.length === 0 ? (
-            <p className="p-5 text-sm text-ink-muted">
-              All units here are archived — use “Show archived” above to see them.
-            </p>
-          ) : (
-            <Table caption={`${title} — units, tenants, rent, and lease status`}>
-              <thead>
-                <tr>
-                  <Th>Unit</Th>
-                  <Th>Tenants</Th>
-                  <Th align="right">Rent / mo</Th>
-                  <Th>Lease</Th>
-                  <Th>This month</Th>
-                  <Th align="right" stickyRight>
-                    <span className="sr-only">Actions</span>
-                  </Th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleUnits.map((unit) => (
-                  <UnitRow
-                    key={unit.id}
-                    unit={unit}
-                    canProperties={canProperties}
-                    canTenants={canTenants}
-                    restoreBusy={restoreUnit.isPending}
-                    draftBusy={draftRenewal.isPending}
-                    onRestore={() => doRestoreUnit(unit)}
-                    onRenew={startRenewalDraft}
-                    setModal={setModal}
-                  />
-                ))}
-              </tbody>
-            </Table>
-          )}
-        </Card>
-      </section>
+                )}
+              </div>
+            </div>
+            <Card flush>
+              {units.length === 0 ? (
+                <EmptyState
+                  title="No units yet"
+                  body="Add the first unit to start a lease."
+                  action={
+                    canProperties ? (
+                      <Button size="sm" onClick={() => setModal({ kind: 'add-unit' })}>
+                        <IconPlus size={14} />
+                        Add unit
+                      </Button>
+                    ) : undefined
+                  }
+                />
+              ) : visibleUnits.length === 0 ? (
+                <p className="p-5 text-sm text-ink-muted">
+                  All units here are archived — use “Show archived” above to see them.
+                </p>
+              ) : (
+                <Table caption={`${title} — units, tenants, rent, and lease status`}>
+                  <thead>
+                    <tr>
+                      <Th>Unit</Th>
+                      <Th>Tenants</Th>
+                      <Th align="right">Rent / mo</Th>
+                      <Th>Lease</Th>
+                      <Th>This month</Th>
+                      <Th align="right" stickyRight>
+                        <span className="sr-only">Actions</span>
+                      </Th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleUnits.map((unit) => (
+                      <UnitRow
+                        key={unit.id}
+                        unit={unit}
+                        canProperties={canProperties}
+                        canTenants={canTenants}
+                        restoreBusy={restoreUnit.isPending}
+                        draftBusy={draftRenewal.isPending}
+                        onRestore={() => doRestoreUnit(unit)}
+                        onRenew={startRenewalDraft}
+                        setModal={setModal}
+                      />
+                    ))}
+                  </tbody>
+                </Table>
+              )}
+            </Card>
+          </section>
 
-      <section aria-label="Financials" className="flex flex-col gap-3">
-        <h2 className="text-base font-semibold text-ink">Financials</h2>
-        <Card flush>
-          <Table
-            caption={`${title} — profit and loss, month to date and year to date`}
-            captionVisible
-            className="px-4"
-          >
-            <thead>
-              <tr>
-                <Th>
-                  <span className="sr-only">Line item</span>
-                </Th>
-                <Th align="right">Month to date</Th>
-                <Th align="right">Year to date</Th>
-              </tr>
-            </thead>
-            <tbody>
-              <Tr>
-                <Th scope="row">Income</Th>
-                <Td align="right">{formatUsd(pnl.mtd.incomeCents)}</Td>
-                <Td align="right">{formatUsd(pnl.ytd.incomeCents)}</Td>
-              </Tr>
-              <Tr>
-                <Th scope="row">Expenses</Th>
-                <Td align="right">{formatUsd(pnl.mtd.expenseCents)}</Td>
-                <Td align="right">{formatUsd(pnl.ytd.expenseCents)}</Td>
-              </Tr>
-              <Tr className="font-semibold">
-                <Th scope="row">Net</Th>
-                <Td align="right">{formatUsd(pnl.mtd.netCents)}</Td>
-                <Td align="right">{formatUsd(pnl.ytd.netCents)}</Td>
-              </Tr>
-            </tbody>
-          </Table>
-        </Card>
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-xs text-ink-muted">
-            Excludes transactions not assigned to this property.
-          </p>
-          <Link to={`/money?propertyId=${propertyId}`} className={buttonClasses('ghost', 'sm')}>
-            View transactions →
-          </Link>
+          <section aria-label="Financials" className="flex flex-col gap-3">
+            <h2 className="text-base font-semibold text-ink">Financials</h2>
+            <Card flush>
+              <Table
+                caption={`${title} — profit and loss, month to date and year to date`}
+                captionVisible
+                className="px-4"
+              >
+                <thead>
+                  <tr>
+                    <Th>
+                      <span className="sr-only">Line item</span>
+                    </Th>
+                    <Th align="right">Month to date</Th>
+                    <Th align="right">Year to date</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <Tr>
+                    <Th scope="row">Income</Th>
+                    <Td align="right">{formatUsd(pnl.mtd.incomeCents)}</Td>
+                    <Td align="right">{formatUsd(pnl.ytd.incomeCents)}</Td>
+                  </Tr>
+                  <Tr>
+                    <Th scope="row">Expenses</Th>
+                    <Td align="right">{formatUsd(pnl.mtd.expenseCents)}</Td>
+                    <Td align="right">{formatUsd(pnl.ytd.expenseCents)}</Td>
+                  </Tr>
+                  <Tr className="font-semibold">
+                    <Th scope="row">Net</Th>
+                    <Td align="right">{formatUsd(pnl.mtd.netCents)}</Td>
+                    <Td align="right">{formatUsd(pnl.ytd.netCents)}</Td>
+                  </Tr>
+                </tbody>
+              </Table>
+            </Card>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs text-ink-muted">
+                Excludes transactions not assigned to this property.
+              </p>
+              <Link to={`/money?propertyId=${propertyId}`} className={buttonClasses('ghost', 'sm')}>
+                View transactions →
+              </Link>
+            </div>
+          </section>
         </div>
-      </section>
-
-      <section aria-label="Documents">
-        <DocumentsCard
-          filter={{ propertyId }}
-          uploadTarget={{ entityType: 'property', entityId: propertyId }}
-        />
-      </section>
+      </div>
 
       {/* --- Modals & confirmations (one open at a time, mounted on demand) --- */}
       {modal?.kind === 'edit-property' && (

@@ -15,29 +15,18 @@
 // /rent, underperforming on its property page) — a "go here" button for the
 // page you're on is noise, so navigation actions whose target pathname is the
 // current pathname are hidden. Executable actions and Dismiss always show.
-import { useState } from 'react';
 import type { Insight } from '@hearth/shared';
-import { useQueryClient } from '@tanstack/react-query';
-import { Link, useLocation } from 'react-router-dom';
-import { api, ApiClientError } from '../../api/client';
-import { useDismissInsight, useMarkInsightActioned } from '../../api/queries';
+import { Link } from 'react-router-dom';
 import { Button, buttonClasses } from '../ui/Button';
 import { StatusBadge, type BadgeTone } from '../ui/StatusBadge';
-import { useToast } from '../ui/Toast';
-import { isAllowedApiCall, isAllowedNavigate } from '../chat/actionAllowlist';
 import { AiSurface } from './AiSurface';
+import { useInsightActions } from './useInsightActions';
 
 export const severityBadge: Record<Insight['severity'], { tone: BadgeTone; label: string }> = {
   info: { tone: 'neutral', label: 'Heads up' },
   warning: { tone: 'warning', label: 'Needs attention' },
   positive: { tone: 'positive', label: 'Good news' },
 };
-
-function isActionAllowed(action: NonNullable<Insight['action']>): boolean {
-  return action.action.kind === 'navigate'
-    ? isAllowedNavigate(action.action.to)
-    : isAllowedApiCall(action.action.method, action.action.path);
-}
 
 export function InsightCard({
   insight,
@@ -50,59 +39,17 @@ export function InsightCard({
   headingLevel?: 2 | 3;
 }) {
   const Heading = headingLevel === 2 ? 'h2' : 'h3';
-  const dismiss = useDismissInsight();
-  const markActioned = useMarkInsightActioned();
-  const queryClient = useQueryClient();
-  const { toast } = useToast();
-  const [executing, setExecuting] = useState(false);
   const severity = severityBadge[insight.severity];
-
-  const { pathname } = useLocation();
-  /** True when a link would land on the page the card is already on. */
-  const isSamePage = (to: string) => (to.split('?')[0] ?? to) === pathname;
-
-  const structured = insight.action ?? null;
-  const structuredAllowed = structured !== null && isActionAllowed(structured);
-  const showStructuredNavigate =
-    structuredAllowed &&
-    structured?.action.kind === 'navigate' &&
-    !isSamePage(structured.action.to);
-  const hasRouteAction = Boolean(
-    insight.actionLabel &&
-      insight.actionTarget?.startsWith('/') &&
-      !isSamePage(insight.actionTarget),
-  );
-  // The legacy link is the primary affordance when there's no structured
-  // action, and the secondary context link next to an api_call button. When
-  // the structured action is a navigate it mirrors the legacy link — render
-  // only one.
-  const showLegacyLink =
-    hasRouteAction && (!structuredAllowed || structured?.action.kind === 'api_call');
-
-  const runApiCall = async () => {
-    if (!structured || structured.action.kind !== 'api_call' || !structuredAllowed) return;
-    const { method, path, body } = structured.action;
-    setExecuting(true);
-    try {
-      if (method === 'PATCH') await api.patch(path, body ?? {});
-      else await api.post(path, body);
-      toast(`Done — ${structured.label}.`, 'positive');
-      // Record the confirmed suggestion; its onSuccess drops the card from
-      // every active list. The action itself can touch rent/ledger data, so
-      // refresh everything (same posture as chat action cards).
-      markActioned.mutate(insight.id);
-      await queryClient.invalidateQueries();
-    } catch (error) {
-      toast(
-        error instanceof ApiClientError
-          ? error.message
-          : `Could not complete “${structured.label}”. Try again.`,
-        'danger',
-      );
-    } finally {
-      setExecuting(false);
-    }
-  };
+  const {
+    structured,
+    structuredAllowed,
+    showStructuredNavigate,
+    showLegacyLink,
+    executing,
+    runApiCall,
+    dismiss,
+    dismissPending,
+  } = useInsightActions(insight);
 
   return (
     <AiSurface>
@@ -133,17 +80,7 @@ export function InsightCard({
             {insight.actionLabel}
           </Link>
         )}
-        <Button
-          variant="ghost"
-          size="sm"
-          busy={dismiss.isPending}
-          onClick={() =>
-            dismiss.mutate(insight.id, {
-              onSuccess: () => toast('Insight dismissed. It will stay hidden until something new comes up.'),
-              onError: () => toast('Could not dismiss the insight. Try again.', 'danger'),
-            })
-          }
-        >
+        <Button variant="ghost" size="sm" busy={dismissPending} onClick={dismiss}>
           Dismiss
         </Button>
       </div>

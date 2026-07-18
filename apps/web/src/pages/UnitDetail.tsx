@@ -22,7 +22,7 @@ import { LeaseTenantsModal } from '../components/forms/LeaseTenantsModal';
 import { RenewalModal } from '../components/forms/RenewalModal';
 import { UnitFormModal } from '../components/forms/UnitFormModal';
 import { LeaseHistoryTable } from '../components/property/LeaseHistoryTable';
-import { PropertyTasks } from '../components/property/PropertyTasks';
+import { NeedsAttention } from '../components/property/NeedsAttention';
 import { RentSnapshotBadge } from '../components/property/RentSnapshotBadge';
 import { PageHeader } from '../components/shell/PageHeader';
 import { Button, buttonClasses } from '../components/ui/Button';
@@ -207,7 +207,7 @@ export function UnitDetail() {
       {/* Triage over just this unit — hidden while archived so an archived unit
           never reads as an all-clear. */}
       {!unit.archivedAt && (
-        <PropertyTasks
+        <NeedsAttention
           title={`${unit.label} · ${propertyLabel}`}
           units={[unit]}
           canTenants={canTenants}

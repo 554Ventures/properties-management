@@ -5,6 +5,7 @@
 // whenever the suite runs.
 import type {
   CurrentUser,
+  Insight,
   LeaseWithTenants,
   PnlSummary,
   Property,
@@ -15,6 +16,7 @@ import type {
   TenantOnLease,
   UnitDetailResponse,
 } from '@hearth/shared';
+import { InsightSchema } from '@hearth/shared';
 import { vi } from 'vitest';
 
 const DAY = 86_400_000;
@@ -108,6 +110,46 @@ export function makeProperty(overrides: Partial<Property> = {}): Property {
     archivedAt: null,
     ...overrides,
   };
+}
+
+/**
+ * A backend-shaped Insight, parsed through `InsightSchema` so a typo'd
+ * override can't silently produce an invalid fixture. Defaults to a
+ * `late_rent` insight matching Unit A's this-month rent task below (same
+ * leaseId/tenantId, scope 'tenant') — mirrors
+ * `apps/api/src/services/insight.service.ts:224-247`. Override `type`/
+ * `scope`/ids/`action` to produce an `expense_spike` (scope 'property',
+ * tenantId/leaseId null, navigate action) or any other shape.
+ */
+export function makeInsight(overrides: Partial<Insight> = {}): Insight {
+  const insight: Insight = {
+    id: 'i-late-park',
+    accountId: 'acc1',
+    scope: 'tenant',
+    type: 'late_rent',
+    severity: 'warning',
+    title: 'D. Park is 3 days late on rent',
+    body: 'Rent of $1,400.00 for Unit A was due on the 1st.',
+    actionLabel: 'Review',
+    actionTarget: `/rent?period=${PERIOD}`,
+    action: {
+      label: 'Send reminder',
+      action: {
+        kind: 'api_call',
+        method: 'POST',
+        path: '/rent/reminders',
+        body: { rentPaymentIds: ['rp-u1'] },
+      },
+    },
+    propertyId: 'p1',
+    tenantId: 't-park',
+    leaseId: 'l1',
+    dedupeKey: `late_rent:d-park:${PERIOD}`,
+    status: 'active',
+    createdAt: '2026-07-10T00:00:00.000Z',
+    ...overrides,
+  };
+  return InsightSchema.parse(insight);
 }
 
 export const pnl: PnlSummary = {
