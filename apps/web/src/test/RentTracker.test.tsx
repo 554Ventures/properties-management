@@ -2,17 +2,25 @@
 // grace period with no fee applied yet (the row can't know the lease's
 // effective policy up front, so the button stays amount-free and the toast
 // reports the real figure from the response); applied rows show "+$X late
-// fee" next to the amount due and expose "Waive" from the Deposits modal
-// (reachable even with zero deposits, since the fee itself needs a way in).
-// Confirm dialogs gate both actions; server 400s surface verbatim via toast.
-import type { RentTrackerResponse, RentTrackerRow } from '@hearth/shared';
+// fee" next to the amount due and expose "Waive" from the Payment details
+// modal (reachable even with zero deposits, since the fee itself needs a way
+// in). Confirm dialogs gate both actions; server 400s surface verbatim via
+// toast. Also covers the redesigned UI: short status badges + a right-aligned
+// Remaining column, triage-first row sort, status filter chips, KpiTile
+// summary row, multi-tenant share/mismatch surfacing, and unlinked-deposit
+// nudges inside a single AiSurface panel.
+import type {
+  RentTrackerResponse,
+  RentTrackerRow,
+  UnlinkedRentDepositsResponse,
+} from '@hearth/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ToastProvider, ToastViewport } from '../components/ui/Toast';
-import { currentPeriod } from '../lib/format';
+import { currentPeriod, formatMonthLong } from '../lib/format';
 import { RentTracker } from '../pages/RentTracker';
 
 const period = currentPeriod();
@@ -113,7 +121,8 @@ const dueNotLate = makeRow({
   ],
 });
 
-// Partial past grace with a fee — extends the existing "$X of $Y" pattern.
+// Partial past grace with a fee — drives the short "Partial · Nd" badge and
+// the Remaining/paid-so-far assertions.
 const partialWithFee = makeRow({
   rentPaymentId: 'rp-partial-fee',
   tenantId: 't4',
@@ -197,7 +206,7 @@ afterEach(() => {
 });
 
 describe('RentTracker late fees (WS7)', () => {
-  it('shows Apply late fee only on eligible rows, "+$X late fee" on applied rows, extends the partial label, and passes axe', async () => {
+  it('shows Apply late fee only on eligible rows, "+$X late fee" on applied rows, the short partial badge + Remaining column, and passes axe', async () => {
     stubDesktopViewport();
     vi.stubGlobal('fetch', makeFetch(baseRoutes));
     const { container } = renderRentTracker();
@@ -216,16 +225,18 @@ describe('RentTracker late fees (WS7)', () => {
     expect(within(lateWithFeeRow).getByText('+$50.00 late fee')).toBeInTheDocument();
     // Zero deposits, but the fee itself needs a way to the Waive action.
     expect(
-      within(lateWithFeeRow).getByRole('button', { name: /Deposits — J\. Rivera/ }),
+      within(lateWithFeeRow).getByRole('button', { name: /Details — J\. Rivera/ }),
     ).toBeInTheDocument();
 
     const dueRow = screen.getByText('M. Chen').closest('tr') as HTMLElement;
     expect(within(dueRow).queryByRole('button', { name: /Apply late fee/ })).not.toBeInTheDocument();
 
+    // Short badge (not the old long "Partial — $X of $Y ... · N days late"
+    // string) plus the Remaining column: 115000 + 2500 − 50000 = 67500.
     const partialRow = screen.getByText('S. Patel').closest('tr') as HTMLElement;
-    expect(
-      within(partialRow).getByText('Partial — $500.00 of $1,150.00 (+$25.00 late fee) · 3 days late'),
-    ).toBeInTheDocument();
+    expect(within(partialRow).getByText('Partial · 3d')).toBeInTheDocument();
+    expect(within(partialRow).getByText('$675.00')).toBeInTheDocument();
+    expect(within(partialRow).getByText('$500.00 paid')).toBeInTheDocument();
 
     const results = await axe.run(container, { rules: { 'color-contrast': { enabled: false } } });
     expect(results.violations.map((v) => v.id)).toEqual([]);
@@ -287,7 +298,7 @@ describe('RentTracker late fees (WS7)', () => {
     expect(await screen.findByText('no late-fee policy configured')).toBeInTheDocument();
   });
 
-  it('waiving a late fee is reachable from the Deposits modal (even with zero deposits), DELETEs, and toasts the result', async () => {
+  it('waiving a late fee is reachable from the Payment details modal (even with zero deposits), DELETEs, and toasts the result', async () => {
     stubDesktopViewport();
     const fetchMock = makeFetch([
       ...baseRoutes,
@@ -297,14 +308,14 @@ describe('RentTracker late fees (WS7)', () => {
     renderRentTracker();
 
     const targetRow = (await screen.findByText('J. Rivera')).closest('tr') as HTMLElement;
-    fireEvent.click(within(targetRow).getByRole('button', { name: /Deposits — J\. Rivera/ }));
+    fireEvent.click(within(targetRow).getByRole('button', { name: /Details — J\. Rivera/ }));
 
-    const depositsDialog = await screen.findByRole('dialog', { name: 'Deposits — J. Rivera' });
+    const depositsDialog = await screen.findByRole('dialog', { name: 'Payment details — J. Rivera' });
     expect(within(depositsDialog).getByText('$50.00')).toBeInTheDocument();
     fireEvent.click(within(depositsDialog).getByRole('button', { name: 'Waive' }));
 
-    // Opening Waive closes the Deposits modal (no nested dialogs).
-    expect(screen.queryByText('Deposits — J. Rivera')).not.toBeInTheDocument();
+    // Opening Waive closes the Payment details modal (no nested dialogs).
+    expect(screen.queryByText('Payment details — J. Rivera')).not.toBeInTheDocument();
     const waiveDialog = await screen.findByRole('dialog', { name: 'Waive late fee?' });
     expect(within(waiveDialog).getByText(/Removes the \$50\.00 late fee/)).toBeInTheDocument();
     fireEvent.click(within(waiveDialog).getByRole('button', { name: 'Waive fee' }));
@@ -341,8 +352,8 @@ describe('RentTracker late fees (WS7)', () => {
     renderRentTracker();
 
     const targetRow = (await screen.findByText('J. Rivera')).closest('tr') as HTMLElement;
-    fireEvent.click(within(targetRow).getByRole('button', { name: /Deposits — J\. Rivera/ }));
-    const depositsDialog = await screen.findByRole('dialog', { name: 'Deposits — J. Rivera' });
+    fireEvent.click(within(targetRow).getByRole('button', { name: /Details — J\. Rivera/ }));
+    const depositsDialog = await screen.findByRole('dialog', { name: 'Payment details — J. Rivera' });
     fireEvent.click(within(depositsDialog).getByRole('button', { name: 'Waive' }));
     const waiveDialog = await screen.findByRole('dialog', { name: 'Waive late fee?' });
     fireEvent.click(within(waiveDialog).getByRole('button', { name: 'Waive fee' }));
@@ -435,5 +446,318 @@ describe('RentTracker Paid column — partial deposits', () => {
 
     const results = await axe.run(container, { rules: { 'color-contrast': { enabled: false } } });
     expect(results.violations.map((v) => v.id)).toEqual([]);
+  });
+});
+
+// Triage-first client sort: late outranks a partial still in grace, which
+// outranks due/paid — regardless of tenant name or the fixture's own order.
+describe('RentTracker row sort — triage-first', () => {
+  it('orders rows late → partial (past grace) → due → paid, not by tenant name or input order', async () => {
+    stubDesktopViewport();
+    const lateRow = makeRow({
+      rentPaymentId: 'rp-sort-late',
+      tenantId: 'ts1',
+      tenantName: 'Z. Late',
+      status: 'late',
+      daysLate: 6,
+      tenants: [
+        {
+          tenantId: 'ts1',
+          tenantName: 'Z. Late',
+          isPrimary: true,
+          shareCents: 115000,
+          shareSpecified: false,
+          paidCents: 0,
+          settled: false,
+        },
+      ],
+    });
+    const partialLateRow = makeRow({
+      rentPaymentId: 'rp-sort-partial',
+      tenantId: 'ts2',
+      tenantName: 'Y. Partial',
+      status: 'partial',
+      daysLate: 3,
+      paidCents: 50000,
+      tenants: [
+        {
+          tenantId: 'ts2',
+          tenantName: 'Y. Partial',
+          isPrimary: true,
+          shareCents: 115000,
+          shareSpecified: false,
+          paidCents: 50000,
+          settled: false,
+        },
+      ],
+    });
+    const dueRow = makeRow({
+      rentPaymentId: 'rp-sort-due',
+      tenantId: 'ts3',
+      tenantName: 'X. Due',
+      status: 'due',
+      daysLate: undefined,
+      tenants: [
+        {
+          tenantId: 'ts3',
+          tenantName: 'X. Due',
+          isPrimary: true,
+          shareCents: 115000,
+          shareSpecified: false,
+          paidCents: 0,
+          settled: false,
+        },
+      ],
+    });
+    const paidRow = makeRow({
+      rentPaymentId: 'rp-sort-paid',
+      tenantId: 'ts4',
+      tenantName: 'W. Paid',
+      status: 'paid',
+      paidCents: 115000,
+      daysLate: undefined,
+      paidAt: '2026-07-02T00:00:00.000Z',
+      tenants: [
+        {
+          tenantId: 'ts4',
+          tenantName: 'W. Paid',
+          isPrimary: true,
+          shareCents: 115000,
+          shareSpecified: false,
+          paidCents: 115000,
+          settled: true,
+        },
+      ],
+    });
+    // Deliberately shuffled, and named in the reverse of the expected order —
+    // proves the sort is triage rank, not alphabetical or fixture order.
+    const localTracker: RentTrackerResponse = {
+      period,
+      collectedCents: 115000,
+      outstandingCents: 165000,
+      paidUnits: 1,
+      partialUnits: 1,
+      totalUnits: 4,
+      rows: [paidRow, dueRow, partialLateRow, lateRow],
+    };
+    vi.stubGlobal(
+      'fetch',
+      makeFetch([
+        { method: 'GET', path: '/api/v1/rent/tracker', body: localTracker },
+        { method: 'GET', path: '/api/v1/rent/unlinked-deposits', body: { items: [] } },
+        { method: 'GET', path: '/api/v1/insights', body: [] },
+      ]),
+    );
+    renderRentTracker();
+
+    await screen.findByText('Z. Late');
+    const bodyRows = screen.getAllByRole('row').slice(1); // drop the header row
+    expect(bodyRows).toHaveLength(4);
+    expect(within(bodyRows[0]!).getByText('Z. Late')).toBeInTheDocument();
+    expect(within(bodyRows[1]!).getByText('Y. Partial')).toBeInTheDocument();
+    expect(within(bodyRows[2]!).getByText('X. Due')).toBeInTheDocument();
+    expect(within(bodyRows[3]!).getByText('W. Paid')).toBeInTheDocument();
+  });
+});
+
+describe('RentTracker filter chips', () => {
+  it('shows chip counts, filters the table, updates aria-pressed and the live status text, and passes axe while filtered', async () => {
+    stubDesktopViewport();
+    vi.stubGlobal('fetch', makeFetch(baseRoutes));
+    const { container } = renderRentTracker();
+
+    await screen.findByText('T. Okafor');
+
+    // Base tracker: 2 late (lateNoFee, lateWithFee), 1 partial (partialWithFee),
+    // 1 due (dueNotLate), 0 paid.
+    const chipGroup = screen.getByRole('group', { name: 'Filter by status' });
+    expect(within(chipGroup).getByRole('button', { name: 'All (4)' })).toBeInTheDocument();
+    const lateChip = within(chipGroup).getByRole('button', { name: 'Late (2)' });
+    expect(within(chipGroup).getByRole('button', { name: 'Partial (1)' })).toBeInTheDocument();
+    expect(within(chipGroup).getByRole('button', { name: 'Due (1)' })).toBeInTheDocument();
+    expect(within(chipGroup).getByRole('button', { name: 'Paid (0)' })).toBeInTheDocument();
+
+    fireEvent.click(lateChip);
+
+    expect(lateChip).toHaveAttribute('aria-pressed', 'true');
+    expect(within(chipGroup).getByRole('button', { name: 'All (4)' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+    expect(within(chipGroup).getByRole('button', { name: 'Partial (1)' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+
+    const bodyRows = screen.getAllByRole('row').slice(1);
+    expect(bodyRows).toHaveLength(2);
+    expect(screen.getByText('T. Okafor')).toBeInTheDocument();
+    expect(screen.getByText('J. Rivera')).toBeInTheDocument();
+    expect(screen.queryByText('M. Chen')).not.toBeInTheDocument();
+    expect(screen.queryByText('S. Patel')).not.toBeInTheDocument();
+
+    expect(screen.getByText('Showing 2 of 4 tenants — Late.')).toBeInTheDocument();
+
+    const results = await axe.run(container, { rules: { 'color-contrast': { enabled: false } } });
+    expect(results.violations.map((v) => v.id)).toEqual([]);
+  });
+
+  it('selecting a 0-count chip shows an empty-bucket row with a "Show all" reset', async () => {
+    stubDesktopViewport();
+    vi.stubGlobal('fetch', makeFetch(baseRoutes));
+    renderRentTracker();
+
+    await screen.findByText('T. Okafor');
+    const chipGroup = screen.getByRole('group', { name: 'Filter by status' });
+    fireEvent.click(within(chipGroup).getByRole('button', { name: 'Paid (0)' }));
+
+    expect(screen.getByText(`No paid rows for ${formatMonthLong(period)}.`)).toBeInTheDocument();
+    expect(screen.queryByText('T. Okafor')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show all' }));
+
+    expect(within(chipGroup).getByRole('button', { name: 'All (4)' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(await screen.findByText('T. Okafor')).toBeInTheDocument();
+    expect(screen.getAllByRole('row')).toHaveLength(5); // header + 4 tenant rows
+  });
+});
+
+describe('RentTracker KPI tiles', () => {
+  it('renders the three summary tiles with "of $… billed" lines computed from collected + outstanding', async () => {
+    stubDesktopViewport();
+    vi.stubGlobal('fetch', makeFetch(baseRoutes));
+    renderRentTracker();
+
+    await screen.findByText('T. Okafor');
+
+    // billedCents = collectedCents (50000) + outstandingCents (300000) = 350000.
+    const collectedTile = screen.getByRole('group', { name: /^Collected,/ });
+    expect(within(collectedTile).getByText(/of \$3,500\.00 billed/)).toBeInTheDocument();
+    expect(within(collectedTile).getByText(/1 partial/)).toBeInTheDocument();
+
+    const outstandingTile = screen.getByRole('group', { name: /^Outstanding,/ });
+    expect(within(outstandingTile).getByText(/of \$3,500\.00 billed/)).toBeInTheDocument();
+
+    const unitsTile = screen.getByRole('group', { name: /^Units paid,/ });
+    expect(within(unitsTile).getByText('0 of 4')).toBeInTheDocument();
+    expect(within(unitsTile).getByText('0%')).toBeInTheDocument();
+  });
+});
+
+describe('RentTracker multi-tenant rows', () => {
+  it('collapses a shared lease to one name + an "N tenants" button, flags a share mismatch, and the Payment details modal shows both shares plus the mismatch sentence', async () => {
+    stubDesktopViewport();
+    const multiTenantRow = makeRow({
+      rentPaymentId: 'rp-multi',
+      tenantId: 't7',
+      tenantName: 'K. Alvarez',
+      status: 'due',
+      daysLate: undefined,
+      sharesMismatch: true,
+      tenants: [
+        {
+          tenantId: 't7',
+          tenantName: 'K. Alvarez',
+          isPrimary: true,
+          shareCents: 60000,
+          shareSpecified: true,
+          paidCents: 0,
+          settled: false,
+        },
+        {
+          tenantId: 't8',
+          tenantName: 'L. Novak',
+          isPrimary: false,
+          shareCents: 60000,
+          shareSpecified: true,
+          paidCents: 0,
+          settled: false,
+        },
+      ],
+    });
+    const localTracker: RentTrackerResponse = {
+      period,
+      collectedCents: 0,
+      outstandingCents: 115000,
+      paidUnits: 0,
+      partialUnits: 0,
+      totalUnits: 1,
+      rows: [multiTenantRow],
+    };
+    vi.stubGlobal(
+      'fetch',
+      makeFetch([
+        { method: 'GET', path: '/api/v1/rent/tracker', body: localTracker },
+        { method: 'GET', path: '/api/v1/rent/unlinked-deposits', body: { items: [] } },
+        { method: 'GET', path: '/api/v1/insights', body: [] },
+      ]),
+    );
+    renderRentTracker();
+
+    const row = (await screen.findByText('K. Alvarez')).closest('tr') as HTMLElement;
+    // Only the primary name shows in the Tenant cell — no bare "L. Novak" there.
+    expect(within(row).queryByText('L. Novak')).not.toBeInTheDocument();
+    const tenantsButton = within(row).getByRole('button', {
+      name: /2 tenants — view shares for K\. Alvarez/,
+    });
+    expect(tenantsButton).toBeInTheDocument();
+    expect(within(row).getByText(/Shares don.t match/)).toBeInTheDocument();
+
+    fireEvent.click(tenantsButton);
+
+    const dialog = await screen.findByRole('dialog', { name: 'Payment details — K. Alvarez' });
+    expect(within(dialog).getByText('K. Alvarez')).toBeInTheDocument();
+    expect(within(dialog).getByText('L. Novak')).toBeInTheDocument();
+    // Shares (60000 + 60000 = 120000) don't add up to the 115000 charge.
+    expect(
+      within(dialog).getByText(/Shares don.t add up to the \$1,150\.00 charge/),
+    ).toBeInTheDocument();
+  });
+});
+
+describe('RentTracker unlinked rent deposits', () => {
+  it('renders an unlinked deposit nudge inside the AiSurface panel and links it to the rent charge', async () => {
+    stubDesktopViewport();
+    const unlinkedItem: UnlinkedRentDepositsResponse['items'][number] = {
+      transactionId: 'tx-unlinked',
+      description: 'Zelle payment',
+      amountCents: 115000,
+      date: '2026-07-05T00:00:00.000Z',
+      rentPaymentId: 'rp-late-no-fee',
+      leaseId: 'l1',
+      tenantName: 'T. Okafor',
+      unitLabel: 'Main',
+      propertyLabel: '21 Cedar Ct',
+      period,
+      remainingCents: 115000,
+    };
+    const fetchMock = makeFetch([
+      ...baseRoutes.filter((r) => r.path !== '/api/v1/rent/unlinked-deposits'),
+      { method: 'GET', path: '/api/v1/rent/unlinked-deposits', body: { items: [unlinkedItem] } },
+      { method: 'POST', path: '/api/v1/transactions/tx-unlinked/confirm', body: {} },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+    renderRentTracker();
+
+    const panel = await screen.findByRole('region', { name: 'Unlinked rent deposits' });
+    expect(within(panel).getByText('AI')).toBeInTheDocument();
+    expect(within(panel).getByText(/Zelle payment/)).toBeInTheDocument();
+
+    fireEvent.click(within(panel).getByRole('button', { name: 'Link to rent' }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url) === '/api/v1/transactions/tx-unlinked/confirm' &&
+          (init as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(call).toBeDefined();
+      expect((call![1] as RequestInit).body).toBe(
+        JSON.stringify({ rentPaymentId: 'rp-late-no-fee' }),
+      );
+    });
   });
 });

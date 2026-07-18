@@ -1,10 +1,11 @@
-// Rent Collection (PRD §5.5): period selector, collected/outstanding/progress
-// tiles, per-tenant rows with status text + days late, individual Remind and
-// a confirmed "Remind all late" bulk action, and manual payment recording.
+// Rent Collection (PRD §5.5) — KpiTile summary row (collected/outstanding
+// against billed, units-paid progress), a compact AI-surfaced unlinked-deposit
+// panel, and a single triage-first table (late → partial → due → paid) with
+// status filter chips and per-row actions incl. manual payment recording.
 // The ledger itself stays deterministic; the one AI element is the single
 // most recent late_rent insight card (clearly marked via AiSurface) since
 // this is the page that insight is about.
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { formatUsd } from '@hearth/shared';
 import type { RentPaymentMethod, RentTrackerRow, SendRemindersResponse } from '@hearth/shared';
 import { useSearchParams } from 'react-router-dom';
@@ -25,12 +26,15 @@ import {
   ComposedRemindersModal,
   type ComposedReminder,
 } from '../components/rent/ComposedRemindersModal';
+import { PaymentDetailsModal } from '../components/rent/PaymentDetailsModal';
 import { PageHeader } from '../components/shell/PageHeader';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorNotice } from '../components/ui/ErrorNotice';
+import { FilterChips } from '../components/ui/FilterChips';
+import { KpiTile, KpiTileSkeleton } from '../components/ui/KpiTile';
 import { LiveRegion } from '../components/ui/LiveRegion';
 import { Modal } from '../components/ui/Modal';
 import { ProgressBar } from '../components/ui/ProgressBar';
@@ -46,31 +50,19 @@ import { currentPeriod, formatDate, formatMonthLong, recentPeriods } from '../li
 import { usePageTitle } from '../lib/usePageTitle';
 import { usePermissions } from '../lib/usePermissions';
 
+// Badges stay short and glanceable — paid-so-far and late-fee detail live in
+// the Amount/Remaining columns, not the status label.
 function statusInfo(row: RentTrackerRow): { tone: BadgeTone; label: string; clock?: boolean } {
   switch (row.status) {
     case 'paid':
       return { tone: 'positive', label: 'Paid' };
     case 'partial':
-      // A partial past the grace window is still late — say both. A late fee
-      // (WS7) is called out separately from the base "$X of $Y" so it never
-      // reads as a change to the rent amount itself.
       return {
         tone: 'warning',
-        label:
-          `Partial — ${formatUsd(row.paidCents)} of ${formatUsd(row.amountCents)}` +
-          (row.lateFeeCents > 0 ? ` (+${formatUsd(row.lateFeeCents)} late fee)` : '') +
-          (row.daysLate != null
-            ? ` · ${row.daysLate} ${row.daysLate === 1 ? 'day' : 'days'} late`
-            : ''),
+        label: row.daysLate != null ? `Partial · ${row.daysLate}d` : 'Partial',
       };
     case 'late':
-      return {
-        tone: 'danger',
-        label:
-          row.daysLate != null
-            ? `${row.daysLate} ${row.daysLate === 1 ? 'day' : 'days'} late`
-            : 'Late',
-      };
+      return { tone: 'danger', label: row.daysLate != null ? `Late · ${row.daysLate}d` : 'Late' };
     case 'processing':
       return { tone: 'neutral', label: 'Processing', clock: true };
     case 'failed':
@@ -78,6 +70,39 @@ function statusInfo(row: RentTrackerRow): { tone: BadgeTone; label: string; cloc
     default:
       return { tone: 'neutral', label: 'Due' };
   }
+}
+
+type StatusFilter = 'all' | 'late' | 'partial' | 'due' | 'paid';
+
+// Chip buckets: Due absorbs processing/failed (the badge still distinguishes
+// them inside the bucket); Partial covers both in-grace and late partials.
+const FILTER_STATUSES: Record<
+  Exclude<StatusFilter, 'all'>,
+  ReadonlyArray<RentTrackerRow['status']>
+> = {
+  late: ['late'],
+  partial: ['partial'],
+  due: ['due', 'processing', 'failed'],
+  paid: ['paid'],
+};
+
+const FILTER_LABELS: Record<StatusFilter, string> = {
+  all: 'All',
+  late: 'Late',
+  partial: 'Partial',
+  due: 'Due',
+  paid: 'Paid',
+};
+
+// Triage order — rows needing action float to the top; a partial past its
+// grace window outranks one still in grace.
+function triageRank(row: RentTrackerRow): number {
+  if (row.status === 'late') return 0;
+  if (row.status === 'partial') return row.daysLate != null ? 1 : 2;
+  if (row.status === 'failed') return 3;
+  if (row.status === 'due') return 4;
+  if (row.status === 'processing') return 5;
+  return 6; // paid
 }
 
 export function RentTracker() {
@@ -116,14 +141,15 @@ export function RentTracker() {
   const [payError, setPayError] = useState<string | null>(null);
   // Which co-tenant paid ('' = unattributed) — only shown for shared leases.
   const [payTenantId, setPayTenantId] = useState('');
-  const [depositsRow, setDepositsRow] = useState<RentTrackerRow | null>(null);
+  const [detailsRow, setDetailsRow] = useState<RentTrackerRow | null>(null);
   const [composedReminders, setComposedReminders] = useState<ComposedReminder[]>([]);
   const unlink = useUnlinkDeposit();
   // Apply/waive confirm dialogs (WS7) — separate top-level dialogs rather
-  // than nesting inside the deposits modal, matching the rest of the page's
+  // than nesting inside the details modal, matching the rest of the page's
   // one-dialog-at-a-time pattern.
   const [feeRow, setFeeRow] = useState<RentTrackerRow | null>(null);
   const [waiveRow, setWaiveRow] = useState<RentTrackerRow | null>(null);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
 
   // Exactly one contextual AI card (newest late_rent) — this page is where
   // that insight points, so it surfaces here instead of a separate AI page.
@@ -135,6 +161,37 @@ export function RentTracker() {
   const lateRows = rows.filter(
     (row) => row.status === 'late' || (row.status === 'partial' && row.daysLate != null),
   );
+
+  const sortedRows = useMemo(
+    () =>
+      [...rows].sort(
+        (a, b) =>
+          triageRank(a) - triageRank(b) ||
+          (b.daysLate ?? -1) - (a.daysLate ?? -1) ||
+          a.dueDate.localeCompare(b.dueDate) ||
+          a.tenantName.localeCompare(b.tenantName),
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tracker.data],
+  );
+  const visibleRows =
+    statusFilter === 'all'
+      ? sortedRows
+      : sortedRows.filter((row) => FILTER_STATUSES[statusFilter].includes(row.status));
+  const chipOptions = (['all', 'late', 'partial', 'due', 'paid'] as const).map((value) => ({
+    value,
+    label: FILTER_LABELS[value],
+    count:
+      value === 'all'
+        ? rows.length
+        : rows.filter((row) => FILTER_STATUSES[value].includes(row.status)).length,
+  }));
+
+  const billedCents = (tracker.data?.collectedCents ?? 0) + (tracker.data?.outstandingCents ?? 0);
+  const paidPct =
+    tracker.data && tracker.data.totalUnits > 0
+      ? Math.round((tracker.data.paidUnits / tracker.data.totalUnits) * 100)
+      : 0;
 
   const summarizeReminders = (results: SendRemindersResponse['results']) => {
     const sent = results.filter((r) => r.status === 'sent').length;
@@ -230,7 +287,7 @@ export function RentTracker() {
       {
         onSuccess: () => {
           toast(`Deposit unlinked — ${row.tenantName}'s charge recomputed.`, 'positive');
-          setDepositsRow(null);
+          setDetailsRow(null);
         },
         onError: () => toast('Could not unlink the deposit. Try again.', 'danger'),
       },
@@ -306,11 +363,9 @@ export function RentTracker() {
       {tracker.isPending ? (
         <>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            {Array.from({ length: 3 }, (_, i) => (
-              <Card key={i}>
-                <Skeleton className="h-16 w-full" />
-              </Card>
-            ))}
+            <KpiTileSkeleton />
+            <KpiTileSkeleton />
+            <KpiTileSkeleton />
           </div>
           <Card flush className="p-4">
             <Skeleton className="h-64 w-full" />
@@ -324,103 +379,106 @@ export function RentTracker() {
             aria-label="Collection summary"
             className="grid grid-cols-1 gap-4 sm:grid-cols-3"
           >
-            <Card>
-              <p className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
-                Collected
+            <KpiTile
+              label="Collected"
+              value={formatUsd(tracker.data.collectedCents)}
+              ariaLabel={`Collected, ${formatUsd(tracker.data.collectedCents)} of ${formatUsd(billedCents)} billed${
+                tracker.data.partialUnits > 0
+                  ? `, including ${tracker.data.partialUnits} partial payment${tracker.data.partialUnits === 1 ? '' : 's'}`
+                  : ''
+              }`}
+            >
+              <p className="text-xs text-ink-muted">
+                of {formatUsd(billedCents)} billed
+                {tracker.data.partialUnits > 0 && ` · ${tracker.data.partialUnits} partial`}
               </p>
-              <p className="mt-1 text-2xl font-semibold tabular-nums text-ink">
-                {formatUsd(tracker.data.collectedCents)}
-              </p>
-              {tracker.data.partialUnits > 0 && (
-                <p className="mt-1 text-xs text-ink-muted">
-                  includes {tracker.data.partialUnits} partial payment
-                  {tracker.data.partialUnits === 1 ? '' : 's'}
-                </p>
-              )}
-            </Card>
-            <Card>
-              <p className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
-                Outstanding
-              </p>
-              <p className="mt-1 text-2xl font-semibold tabular-nums text-ink">
-                {formatUsd(tracker.data.outstandingCents)}
-              </p>
-            </Card>
-            <Card>
-              <p className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
-                Progress
-              </p>
-              <p className="mt-1 text-2xl font-semibold tabular-nums text-ink">
-                {tracker.data.totalUnits > 0
-                  ? Math.round((tracker.data.paidUnits / tracker.data.totalUnits) * 100)
-                  : 0}
-                %
-              </p>
+            </KpiTile>
+            <KpiTile
+              label="Outstanding"
+              value={formatUsd(tracker.data.outstandingCents)}
+              tone={tracker.data.outstandingCents > 0 ? 'danger' : undefined}
+              ariaLabel={`Outstanding, ${formatUsd(tracker.data.outstandingCents)} of ${formatUsd(billedCents)} billed`}
+            >
+              <p className="text-xs text-ink-muted">of {formatUsd(billedCents)} billed</p>
+            </KpiTile>
+            <KpiTile
+              label="Units paid"
+              value={`${tracker.data.paidUnits} of ${tracker.data.totalUnits}`}
+              ariaLabel={`Units paid, ${tracker.data.paidUnits} of ${tracker.data.totalUnits}, ${paidPct} percent collected`}
+            >
               <ProgressBar
                 value={tracker.data.paidUnits}
                 max={tracker.data.totalUnits}
                 label={`Rent collected for ${formatMonthLong(period)}`}
-                text={`${tracker.data.paidUnits} of ${tracker.data.totalUnits} units`}
-                className="mt-2"
+                text={`${paidPct}%`}
               />
-            </Card>
+            </KpiTile>
           </section>
 
           {(unlinkedDeposits.data?.items.length ?? 0) > 0 && (
-            <section aria-label="Unlinked rent deposits" className="flex flex-col gap-2">
-              {unlinkedDeposits.data!.items.map((item) => (
-                <AiSurface key={item.transactionId}>
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <p className="text-sm text-ink">
-                      A {formatUsd(item.amountCents)} Rent-categorized deposit (&ldquo;
-                      {item.description}&rdquo;, {formatDate(item.date)}) isn&rsquo;t linked to
-                      rent. It could apply to {item.tenantName}&rsquo;s{' '}
-                      {formatMonthLong(item.period)} charge — {formatUsd(item.remainingCents)}{' '}
-                      still due for {item.unitLabel} at {item.propertyLabel}.
-                    </p>
-                    {canMoney && (
-                      <Button
-                        variant="secondary"
-                        busy={linkDeposit.isPending}
-                        onClick={() =>
-                          linkDeposit.mutate(
-                            { id: item.transactionId, rentPaymentId: item.rentPaymentId },
-                            {
-                              onSuccess: () =>
-                                toast(
-                                  `Deposit applied to ${item.tenantName}'s ${formatMonthLong(item.period)} rent.`,
-                                  'positive',
-                                ),
-                              onError: () =>
-                                toast('Could not link the deposit. Try again.', 'danger'),
-                            },
-                          )
-                        }
+            <section aria-label="Unlinked rent deposits">
+              <AiSurface>
+                <div className="flex flex-col gap-1">
+                  <p className="text-sm font-medium text-ink">
+                    {unlinkedDeposits.data!.items.length === 1
+                      ? 'A Rent-categorized deposit isn’t linked to a rent charge'
+                      : `${unlinkedDeposits.data!.items.length} Rent-categorized deposits aren’t linked to rent charges`}
+                  </p>
+                  <ul className="divide-y divide-border">
+                    {unlinkedDeposits.data!.items.map((item) => (
+                      <li
+                        key={item.transactionId}
+                        className="flex flex-col gap-2 py-2.5 sm:flex-row sm:items-center sm:justify-between"
                       >
-                        Link to rent
-                      </Button>
-                    )}
-                  </div>
-                </AiSurface>
-              ))}
+                        <div className="text-sm">
+                          <p className="text-ink">
+                            <span className="font-medium tabular-nums">
+                              {formatUsd(item.amountCents)}
+                            </span>
+                            <span className="text-ink-muted">
+                              {' '}
+                              · &ldquo;{item.description}&rdquo; · {formatDate(item.date)}
+                            </span>
+                          </p>
+                          <p className="text-xs text-ink-muted">
+                            Could apply to {item.tenantName}&rsquo;s {formatMonthLong(item.period)}{' '}
+                            charge — {formatUsd(item.remainingCents)} still due for {item.unitLabel}{' '}
+                            at {item.propertyLabel}
+                          </p>
+                        </div>
+                        {canMoney && (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            busy={
+                              linkDeposit.isPending &&
+                              linkDeposit.variables?.id === item.transactionId
+                            }
+                            onClick={() =>
+                              linkDeposit.mutate(
+                                { id: item.transactionId, rentPaymentId: item.rentPaymentId },
+                                {
+                                  onSuccess: () =>
+                                    toast(
+                                      `Deposit applied to ${item.tenantName}'s ${formatMonthLong(item.period)} rent.`,
+                                      'positive',
+                                    ),
+                                  onError: () =>
+                                    toast('Could not link the deposit. Try again.', 'danger'),
+                                },
+                              )
+                            }
+                          >
+                            Link to rent
+                          </Button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </AiSurface>
             </section>
           )}
-
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="text-base font-semibold text-ink">
-              {formatMonthLong(period)} — per tenant
-            </h2>
-            {canRent && (
-              <Button
-                variant="secondary"
-                disabled={lateRows.length === 0}
-                onClick={() => setBulkConfirmOpen(true)}
-              >
-                <IconBell size={14} />
-                Remind all late ({lateRows.length})
-              </Button>
-            )}
-          </div>
 
           {rows.length === 0 ? (
             <Card flush>
@@ -431,168 +489,228 @@ export function RentTracker() {
               />
             </Card>
           ) : (
-            <Card flush>
-              <Table caption={`Rent tracker for ${formatMonthLong(period)} — tenant, amount, due date, status`}>
-                <thead>
-                  <tr>
-                    <Th>Tenant</Th>
-                    <Th>Unit / property</Th>
-                    <Th align="right">Amount</Th>
-                    <Th>Due</Th>
-                    <Th>Status</Th>
-                    <Th>Paid</Th>
-                    <Th stickyRight>
-                      <span className="sr-only">Actions</span>
-                    </Th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((row) => {
-                    const info = statusInfo(row);
-                    const unpaid =
-                      row.status === 'due' ||
-                      row.status === 'late' ||
-                      row.status === 'failed' ||
-                      row.status === 'partial';
-                    // Past its grace period (late outright, or a partial that's
-                    // still late) — the condition Remind and Apply late fee share.
-                    const pastGrace =
-                      row.status === 'late' || (row.status === 'partial' && row.daysLate != null);
-                    return (
-                      <Tr key={row.rentPaymentId}>
-                        <Td className="font-medium">
-                          {row.tenants.length > 1 ? (
-                            <ul className="flex flex-col gap-0.5">
-                              {row.tenants.map((t) => (
-                                <li key={t.tenantId} className="flex items-center gap-2">
-                                  <span>{t.tenantName}</span>
-                                  <span className="text-xs font-normal text-ink-muted">
-                                    {formatUsd(t.shareCents)}
-                                    {t.shareSpecified ? '' : ' (even split)'} ·{' '}
-                                    {t.settled
-                                      ? 'paid'
-                                      : t.paidCents > 0
-                                        ? `${formatUsd(t.paidCents)} of share`
-                                        : 'due'}
-                                  </span>
-                                </li>
-                              ))}
-                              {row.sharesMismatch && (
-                                <li className="text-xs font-normal text-warning">
-                                  Shares don&rsquo;t add up to the {formatUsd(row.amountCents)}{' '}
-                                  charge
-                                </li>
-                              )}
-                            </ul>
-                          ) : (
-                            row.tenantName
-                          )}
-                        </Td>
-                        <Td>
-                          {row.unitLabel}
-                          <span className="text-ink-muted"> · {row.propertyLabel}</span>
-                        </Td>
-                        <Td align="right">
-                          {formatUsd(row.amountCents)}
-                          {row.lateFeeCents > 0 && (
-                            <div className="text-xs font-normal text-ink-muted">
-                              +{formatUsd(row.lateFeeCents)} late fee
-                            </div>
-                          )}
-                        </Td>
-                        <Td className="whitespace-nowrap">{formatDate(row.dueDate)}</Td>
-                        <Td>
-                          <StatusBadge tone={info.tone} icon={info.clock ? 'clock' : undefined}>
-                            {info.label}
-                          </StatusBadge>
-                        </Td>
-                        <Td className="whitespace-nowrap">
-                          {row.paidAt ? (
-                            <>
-                              {formatDate(row.paidAt)}
-                              {row.method && (
-                                <span className="text-xs text-ink-muted"> · {row.method}</span>
-                              )}
-                            </>
-                          ) : row.lastDepositAt ? (
-                            <>
-                              {formatDate(row.lastDepositAt)}
-                              <span className="text-xs text-ink-muted"> (partial)</span>
-                            </>
-                          ) : (
-                            '—'
-                          )}
-                        </Td>
-                        <Td stickyRight>
-                          {canRent && (
-                          <RowActions
-                            context={row.tenantName}
-                            actions={[
-                              ...(pastGrace
-                                ? [
-                                    {
-                                      label: 'Remind',
-                                      icon: <IconBell size={12} />,
-                                      variant: 'secondary' as const,
-                                      busy: remind.isPending,
-                                      onClick: () => remindOne(row),
-                                    },
-                                  ]
-                                : []),
-                              ...(unpaid
-                                ? [
-                                    {
-                                      label: row.status === 'partial' ? 'Record payment' : 'Mark paid',
-                                      icon: <IconCheck size={14} />,
-                                      onClick: () => {
-                                        setPayMethod('manual');
-                                        setPayAmount(
-                                          (
-                                            (row.amountCents + row.lateFeeCents - row.paidCents) /
-                                            100
-                                          ).toFixed(2),
-                                        );
-                                        setPayError(null);
-                                        setPayTenantId('');
-                                        setPayRow(row);
-                                      },
-                                    },
-                                  ]
-                                : []),
-                              // Late-fee amount isn't knowable client-side (the
-                              // row doesn't carry the lease's effective policy),
-                              // so the label stays amount-free until the confirm
-                              // succeeds and the toast reports the real figure.
-                              ...(pastGrace && row.lateFeeCents === 0
-                                ? [
-                                    {
-                                      label: 'Apply late fee',
-                                      icon: <IconDollar size={12} />,
-                                      variant: 'secondary' as const,
-                                      busy: applyFee.isPending,
-                                      onClick: () => setFeeRow(row),
-                                    },
-                                  ]
-                                : []),
-                              ...(row.deposits.length > 0 || row.lateFeeCents > 0
-                                ? [
-                                    {
-                                      label: 'Deposits',
-                                      variant: 'secondary' as const,
-                                      onClick: () => setDepositsRow(row),
-                                    },
-                                  ]
-                                : []),
-                            ]}
-                          />
-                          )}
+            <section
+              aria-label={`Rent by tenant for ${formatMonthLong(period)}`}
+              className="flex flex-col"
+            >
+              <p role="status" className="sr-only">
+                Showing {visibleRows.length} of {rows.length} tenants
+                {statusFilter !== 'all' && ` — ${FILTER_LABELS[statusFilter]}`}.
+              </p>
+              <Card flush>
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+                  <FilterChips
+                    label="Filter by status"
+                    options={chipOptions}
+                    value={statusFilter}
+                    onChange={setStatusFilter}
+                  />
+                  {canRent && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={lateRows.length === 0}
+                      onClick={() => setBulkConfirmOpen(true)}
+                    >
+                      <IconBell size={14} />
+                      Remind all late ({lateRows.length})
+                    </Button>
+                  )}
+                </div>
+                <Table
+                  caption={`Rent tracker for ${formatMonthLong(period)} — tenant, amount, due date, status`}
+                >
+                  <thead>
+                    <tr>
+                      <Th>Tenant</Th>
+                      <Th>Unit / property</Th>
+                      <Th>Status</Th>
+                      <Th align="right">Amount</Th>
+                      <Th align="right">Remaining</Th>
+                      <Th>Due</Th>
+                      <Th>Paid</Th>
+                      <Th stickyRight>
+                        <span className="sr-only">Actions</span>
+                      </Th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleRows.length === 0 ? (
+                      <Tr>
+                        <Td colSpan={8} className="py-8 text-center">
+                          <span className="text-sm text-ink-muted">
+                            No {FILTER_LABELS[statusFilter].toLowerCase()} rows for{' '}
+                            {formatMonthLong(period)}.
+                          </span>{' '}
+                          <Button variant="ghost" size="sm" onClick={() => setStatusFilter('all')}>
+                            Show all
+                          </Button>
                         </Td>
                       </Tr>
-                    );
-                  })}
-                </tbody>
-              </Table>
-            </Card>
+                    ) : (
+                      visibleRows.map((row) => {
+                        const info = statusInfo(row);
+                        const remainingCents = row.amountCents + row.lateFeeCents - row.paidCents;
+                        const unpaid =
+                          row.status === 'due' ||
+                          row.status === 'late' ||
+                          row.status === 'failed' ||
+                          row.status === 'partial';
+                        // Past its grace period (late outright, or a partial that's
+                        // still late) — the condition Remind and Apply late fee share.
+                        const pastGrace =
+                          row.status === 'late' ||
+                          (row.status === 'partial' && row.daysLate != null);
+                        return (
+                          <Tr key={row.rentPaymentId}>
+                            <Td className="font-medium">
+                              {row.tenantName}
+                              {row.tenants.length > 1 && (
+                                <div className="mt-0.5 flex flex-wrap items-center gap-2 font-normal">
+                                  <button
+                                    type="button"
+                                    className="text-xs text-ink-muted underline decoration-dotted underline-offset-2 transition-colors duration-fast hover:text-ink"
+                                    onClick={() => setDetailsRow(row)}
+                                  >
+                                    {row.tenants.length} tenants
+                                    <span className="sr-only">
+                                      {' '}
+                                      — view shares for {row.tenantName}
+                                    </span>
+                                  </button>
+                                  {row.sharesMismatch && (
+                                    <StatusBadge tone="warning">
+                                      Shares don&rsquo;t match
+                                    </StatusBadge>
+                                  )}
+                                </div>
+                              )}
+                            </Td>
+                            <Td>
+                              {row.unitLabel}
+                              <span className="text-ink-muted"> · {row.propertyLabel}</span>
+                            </Td>
+                            <Td>
+                              <StatusBadge
+                                tone={info.tone}
+                                icon={info.clock ? 'clock' : undefined}
+                              >
+                                {info.label}
+                              </StatusBadge>
+                            </Td>
+                            <Td align="right">
+                              {formatUsd(row.amountCents)}
+                              {row.lateFeeCents > 0 && (
+                                <div className="text-xs font-normal text-ink-muted">
+                                  +{formatUsd(row.lateFeeCents)} late fee
+                                </div>
+                              )}
+                            </Td>
+                            <Td align="right">
+                              {remainingCents > 0 ? formatUsd(remainingCents) : '—'}
+                              {row.paidCents > 0 && remainingCents > 0 && (
+                                <div className="text-xs font-normal text-ink-muted">
+                                  {formatUsd(row.paidCents)} paid
+                                </div>
+                              )}
+                            </Td>
+                            <Td className="whitespace-nowrap">{formatDate(row.dueDate)}</Td>
+                            <Td className="whitespace-nowrap">
+                              {row.paidAt ? (
+                                <>
+                                  {formatDate(row.paidAt)}
+                                  {row.method && (
+                                    <span className="text-xs text-ink-muted"> · {row.method}</span>
+                                  )}
+                                </>
+                              ) : row.lastDepositAt ? (
+                                <>
+                                  {formatDate(row.lastDepositAt)}
+                                  <span className="text-xs text-ink-muted"> (partial)</span>
+                                </>
+                              ) : (
+                                '—'
+                              )}
+                            </Td>
+                            <Td stickyRight>
+                              {canRent && (
+                                <RowActions
+                                  context={row.tenantName}
+                                  actions={[
+                                    ...(unpaid
+                                      ? [
+                                          {
+                                            label:
+                                              row.status === 'partial'
+                                                ? 'Record payment'
+                                                : 'Mark paid',
+                                            icon: <IconCheck size={14} />,
+                                            onClick: () => {
+                                              setPayMethod('manual');
+                                              setPayAmount(
+                                                (
+                                                  (row.amountCents +
+                                                    row.lateFeeCents -
+                                                    row.paidCents) /
+                                                  100
+                                                ).toFixed(2),
+                                              );
+                                              setPayError(null);
+                                              setPayTenantId('');
+                                              setPayRow(row);
+                                            },
+                                          },
+                                        ]
+                                      : []),
+                                    ...(pastGrace
+                                      ? [
+                                          {
+                                            label: 'Remind',
+                                            icon: <IconBell size={12} />,
+                                            variant: 'secondary' as const,
+                                            busy: remind.isPending,
+                                            onClick: () => remindOne(row),
+                                          },
+                                        ]
+                                      : []),
+                                    // Late-fee amount isn't knowable client-side (the
+                                    // row doesn't carry the lease's effective policy),
+                                    // so the label stays amount-free until the confirm
+                                    // succeeds and the toast reports the real figure.
+                                    ...(pastGrace && row.lateFeeCents === 0
+                                      ? [
+                                          {
+                                            label: 'Apply late fee',
+                                            icon: <IconDollar size={12} />,
+                                            variant: 'secondary' as const,
+                                            busy: applyFee.isPending,
+                                            onClick: () => setFeeRow(row),
+                                          },
+                                        ]
+                                      : []),
+                                    ...(row.deposits.length > 0 ||
+                                    row.lateFeeCents > 0 ||
+                                    row.tenants.length > 1
+                                      ? [
+                                          {
+                                            label: 'Details',
+                                            variant: 'secondary' as const,
+                                            onClick: () => setDetailsRow(row),
+                                          },
+                                        ]
+                                      : []),
+                                  ]}
+                                />
+                              )}
+                            </Td>
+                          </Tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </Table>
+              </Card>
+            </section>
           )}
         </>
       )}
@@ -700,76 +818,19 @@ export function RentTracker() {
         )}
       </Modal>
 
-      <Modal
-        open={depositsRow !== null}
-        onClose={() => setDepositsRow(null)}
-        title={depositsRow ? `Deposits — ${depositsRow.tenantName}` : 'Deposits'}
-        size="sm"
-      >
-        {depositsRow && (
-          <div className="flex flex-col gap-4">
-            <p className="text-sm text-ink-muted">
-              {formatUsd(depositsRow.paidCents)} of{' '}
-              {formatUsd(depositsRow.amountCents + depositsRow.lateFeeCents)} received for{' '}
-              {formatMonthLong(period)}
-              {depositsRow.lateFeeCents > 0 &&
-                ` (includes ${formatUsd(depositsRow.lateFeeCents)} late fee)`}
-              . Unlinking a deposit recomputes the charge; the ledger transaction itself is kept.
-            </p>
-            {depositsRow.lateFeeCents > 0 && (
-              <div className="flex items-center justify-between gap-3 rounded-md border border-border-strong px-3 py-2 text-sm">
-                <span>
-                  <span className="tabular-nums font-medium text-ink">
-                    {formatUsd(depositsRow.lateFeeCents)}
-                  </span>
-                  <span className="text-ink-muted"> late fee applied</span>
-                </span>
-                {canRent && (
-                  <Button
-                    variant="ghost"
-                    onClick={() => {
-                      setDepositsRow(null);
-                      setWaiveRow(depositsRow);
-                    }}
-                  >
-                    Waive
-                  </Button>
-                )}
-              </div>
-            )}
-            <ul className="flex flex-col gap-2">
-              {depositsRow.deposits.map((d) => (
-                <li
-                  key={d.id}
-                  className="flex items-center justify-between gap-3 rounded-md border border-border-strong px-3 py-2 text-sm"
-                >
-                  <span className="tabular-nums font-medium text-ink">
-                    {formatUsd(d.amountCents)}
-                  </span>
-                  <span className="text-ink-muted">
-                    {formatDate(d.paidAt)}
-                    {d.method ? ` · ${d.method}` : ''}
-                  </span>
-                  {canRent && (
-                    <Button
-                      variant="ghost"
-                      busy={unlink.isPending}
-                      onClick={() => unlinkDeposit(depositsRow, d.id)}
-                    >
-                      Unlink
-                    </Button>
-                  )}
-                </li>
-              ))}
-            </ul>
-            <div className="flex justify-end">
-              <Button variant="ghost" onClick={() => setDepositsRow(null)}>
-                Close
-              </Button>
-            </div>
-          </div>
-        )}
-      </Modal>
+      <PaymentDetailsModal
+        row={detailsRow}
+        period={period}
+        canRent={canRent}
+        unlinkBusy={unlink.isPending}
+        onUnlink={(depositId) => detailsRow && unlinkDeposit(detailsRow, depositId)}
+        onWaive={() => {
+          if (!detailsRow) return;
+          setWaiveRow(detailsRow);
+          setDetailsRow(null);
+        }}
+        onClose={() => setDetailsRow(null)}
+      />
 
       <ConfirmDialog
         open={feeRow !== null}
