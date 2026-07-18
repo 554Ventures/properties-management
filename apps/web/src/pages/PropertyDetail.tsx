@@ -31,6 +31,7 @@ import { RenewalModal } from '../components/forms/RenewalModal';
 import { UnitFormModal } from '../components/forms/UnitFormModal';
 import { LeaseHistoryModal } from '../components/property/LeaseHistoryModal';
 import { PropertyTasks } from '../components/property/PropertyTasks';
+import { RentSnapshotBadge } from '../components/property/RentSnapshotBadge';
 import { TenantQuickSheet } from '../components/property/TenantQuickSheet';
 import { PageHeader } from '../components/shell/PageHeader';
 import { Button, buttonClasses } from '../components/ui/Button';
@@ -54,7 +55,6 @@ import {
   IconX,
 } from '../components/ui/icons';
 import { daysUntil, formatDate } from '../lib/format';
-import { rentStatusBadge } from '../lib/statusBadges';
 import { usePageTitle } from '../lib/usePageTitle';
 import { usePermissions } from '../lib/usePermissions';
 
@@ -759,25 +759,4 @@ function UnitRow({
       </Td>
     </Tr>
   );
-}
-
-// "This month" rent snapshot badge: status word for the calm states, the
-// specifics for the loud ones (partial amounts, days late).
-function RentSnapshotBadge({ rent }: { rent: NonNullable<PropertyDetailUnit['rent']> }) {
-  if (rent.status === 'partial') {
-    return (
-      <StatusBadge tone="warning">
-        {formatUsd(rent.paidCents)} of {formatUsd(rent.amountCents)}
-      </StatusBadge>
-    );
-  }
-  if (rent.status === 'late') {
-    return (
-      <StatusBadge tone="danger">
-        {rent.daysLate != null ? `${daysLabel(rent.daysLate)} late` : 'Late'}
-      </StatusBadge>
-    );
-  }
-  const badge = rentStatusBadge[rent.status] ?? rentStatusBadge.due;
-  return badge ? <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge> : null;
 }

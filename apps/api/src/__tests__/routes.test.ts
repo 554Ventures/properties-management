@@ -92,6 +92,27 @@ describe('GET endpoints satisfy the shared response schemas', () => {
     // An occupied unit resolves its current lease + at least one lease in history.
     expect(detail.currentLease?.id).toBe(unit.currentLease?.id ?? undefined);
     expect(detail.leases.length).toBeGreaterThanOrEqual(1);
+
+    // The enriched `unit` is the same PropertyDetailUnit the property detail
+    // returns — agree field-for-field (daysLate is whole-day arithmetic, so the
+    // rent snapshot is stable across these two sequential requests).
+    expect(detail.unit.status).toBe(unit.status);
+    expect(detail.unit.currentLease?.id).toBe(unit.currentLease?.id);
+    expect(detail.unit.leaseCount).toBe(unit.leaseCount);
+    expect(detail.unit.pendingLease).toBeNull(); // no pending_signature lease in seed
+    expect(detail.unit.rent).toEqual(unit.rent);
+  });
+
+  it('/units/:id — Okafor’s unit surfaces a late current-month rent snapshot', async () => {
+    const list = PropertyListResponseSchema.parse(await getJson('/api/v1/properties'));
+    const cedar = list.find((p) => p.addressLine1 === '21 Cedar Ct')!;
+    const cedarDetail = PropertyDetailResponseSchema.parse(
+      await getJson(`/api/v1/properties/${cedar.id}`),
+    );
+    const unit = cedarDetail.units[0]!; // 'Main' — Cedar has a single unit
+    const detail = UnitDetailResponseSchema.parse(await getJson(`/api/v1/units/${unit.id}`));
+    expect(detail.unit.rent?.status).toBe('late');
+    expect(detail.unit.rent?.daysLate).toBe(OKAFOR_DAYS_LATE);
   });
 
   it('/tenants + /tenants/:id', async () => {

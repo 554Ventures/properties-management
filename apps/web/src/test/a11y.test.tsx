@@ -34,7 +34,17 @@ import { ContractorsPage } from '../pages/ContractorsPage';
 import { Dashboard } from '../pages/Dashboard';
 import { MoneyReview } from '../pages/MoneyReview';
 import { PropertyDetail } from '../pages/PropertyDetail';
-import { hubRoutes, makeFetch, makeProperty, pnl } from './propertyHubFixtures';
+import { UnitDetail } from '../pages/UnitDetail';
+import {
+  hubRoutes,
+  isoIn,
+  makeFetch,
+  makeProperty,
+  ownerUser,
+  PERIOD,
+  pnl,
+  unitADetailResponse,
+} from './propertyHubFixtures';
 
 const kpis: DashboardKpisResponse = {
   netCashFlowMtdCents: 845000,
@@ -782,6 +792,78 @@ describe('property hub accessibility', () => {
     const { container } = renderPropertyHub();
 
     await screen.findByText('No units yet');
+    await screen.findByText('No documents on file.');
+
+    const results = await axe.run(container, {
+      rules: { 'color-contrast': { enabled: false } },
+    });
+    expect(
+      results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`),
+    ).toEqual([]);
+  }, 20_000);
+});
+
+// --- Unit hub --------------------------------------------------------------------
+
+describe('unit hub accessibility', () => {
+  function renderUnitHub() {
+    const detail = unitADetailResponse();
+    // Populate a payment-history row (mirrors the this-month snapshot) so the
+    // section renders a real table instead of the empty-state paragraph.
+    const withPayments: typeof detail = {
+      ...detail,
+      rentPayments: [
+        {
+          id: 'rp1',
+          period: PERIOD,
+          dueDate: isoIn(-3),
+          amountCents: 140000,
+          paidCents: 70000,
+          lateFeeCents: 0,
+          status: 'late',
+          daysLate: 3,
+          method: null,
+          paidAt: null,
+          lastDepositAt: isoIn(-1),
+        },
+      ],
+    };
+    vi.stubGlobal(
+      'fetch',
+      makeFetch([
+        { method: 'GET', path: '/api/v1/units/u1', body: withPayments },
+        { method: 'GET', path: '/api/v1/settings/me', body: ownerUser },
+        { method: 'GET', path: '/api/v1/documents', body: { documents: [], total: 0 } },
+      ]),
+    );
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <MemoryRouter initialEntries={['/units/u1']}>
+            <Routes>
+              {/* Pages render inside AppShell's <main> in the app. */}
+              <Route
+                path="/units/:id"
+                element={
+                  <main>
+                    <UnitDetail />
+                  </main>
+                }
+              />
+            </Routes>
+          </MemoryRouter>
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+  }
+
+  it('populated unit hub (triage, payment history, documents) has no axe violations', async () => {
+    const { container } = renderUnitHub();
+
+    // Triage, payment history, and documents all settled.
+    await screen.findByRole('heading', { name: 'Needs attention' });
+    await screen.findByRole('table', { name: /rent payment history/ });
     await screen.findByText('No documents on file.');
 
     const results = await axe.run(container, {

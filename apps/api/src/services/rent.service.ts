@@ -2,6 +2,7 @@ import type {
   ApplyLateFeeInput,
   GraceDaysBasis,
   PaymentLinkResponse,
+  PropertyDetailUnitRent,
   RecordRentPaymentInput,
   RentPayment,
   RentPaymentMethod,
@@ -174,6 +175,67 @@ export function expectedChargeCents(
       tz,
     ),
   );
+}
+
+/**
+ * In-memory expected charge for a lease/period with no RentPayment row yet —
+ * same derivation as rent.service's materializeExpectedPayments (prorated
+ * charge, due date never before the lease starts) but NEVER persisted: the
+ * property detail is a read.
+ */
+function synthesizeExpectedCharge(
+  lease: { rentCents: number; dueDay: number; startDate: Date; endDate: Date },
+  period: string,
+  tz: string,
+): { status: string; dueDate: Date; amountCents: number; paidCents: number } {
+  const nominalDue = addDays(monthStartInTz(period, tz), lease.dueDay - 1);
+  const startDay = startOfDayInTz(lease.startDate, tz);
+  return {
+    status: 'due',
+    dueDate: nominalDue < startDay ? startDay : nominalDue,
+    amountCents: expectedChargeCents(lease, period, tz),
+    paidCents: 0,
+  };
+}
+
+export interface RentSnapshotCtx {
+  period: string;
+  tz: string;
+  graceDays: number;
+  graceDaysBasis: GraceDaysBasis;
+  now: Date;
+}
+
+/** This month's rent snapshot for a unit's active lease — the period's charge
+ *  row when one exists, else the expected charge synthesized in memory (same
+ *  derivation as materializeExpectedPayments; never persisted). Null when
+ *  there is no active lease or the lease doesn't touch the period. */
+export function currentRentSnapshot(
+  lease: { rentCents: number; dueDay: number; startDate: Date; endDate: Date } | null | undefined,
+  chargeRow: { status: string; dueDate: Date; amountCents: number; paidCents: number } | undefined,
+  ctx: RentSnapshotCtx,
+): PropertyDetailUnitRent | null {
+  if (!lease) return null;
+  const { period, tz, graceDays, graceDaysBasis, now } = ctx;
+  // Charge row when one exists; otherwise (e.g. a lease created after this
+  // month's charges materialized) synthesize the expected charge in memory. A
+  // lease that doesn't touch this month has no charge.
+  const row =
+    chargeRow ??
+    (lease.startDate < monthEndExclusiveInTz(period, tz) &&
+    lease.endDate >= monthStartInTz(period, tz)
+      ? synthesizeExpectedCharge(lease, period, tz)
+      : undefined);
+  if (!row) return null;
+  const derived = deriveRentStatus(row, graceDays, graceDaysBasis, tz, now);
+  return {
+    period,
+    status: derived.status,
+    daysLate: derived.daysLate ?? null,
+    paidCents: row.paidCents,
+    amountCents: row.amountCents,
+    dueDate: iso(row.dueDate),
+  };
 }
 
 /** Insert any missing expected RentPayment rows for `period`.

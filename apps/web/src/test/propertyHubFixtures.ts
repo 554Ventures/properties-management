@@ -10,6 +10,7 @@ import type {
   Property,
   PropertyDetailResponse,
   PropertyDetailUnit,
+  PropertyDetailUnitRent,
   RenewalDraftResponse,
   TenantOnLease,
   UnitDetailResponse,
@@ -146,6 +147,17 @@ export const quinnPendingLease = makeLease('l6p', 'u6', 115000, [quinn], {
   status: 'pending_signature',
 });
 
+// Unit A's this-month rent snapshot: late, 3 days, $700 of $1,400 received.
+// Shared so the property hub and the unit-detail fixture stay field-for-field.
+export const unitALateRent: PropertyDetailUnitRent = {
+  period: PERIOD,
+  status: 'late',
+  daysLate: 3,
+  paidCents: 70000,
+  amountCents: 140000,
+  dueDate: isoIn(-3),
+};
+
 export function hubDetailResponse(): PropertyDetailResponse {
   return {
     property: makeProperty(),
@@ -156,14 +168,7 @@ export function hubDetailResponse(): PropertyDetailResponse {
         marketRentCents: 135000,
         status: 'occupied',
         currentLease: parkLease,
-        rent: {
-          period: PERIOD,
-          status: 'late',
-          daysLate: 3,
-          paidCents: 70000,
-          amountCents: 140000,
-          dueDate: isoIn(-3),
-        },
+        rent: unitALateRent,
         leaseCount: 2,
       }),
       makeUnit('u2', 'Unit B', {
@@ -215,28 +220,95 @@ export function hubDetailResponse(): PropertyDetailResponse {
   };
 }
 
-/** Unit A's detail payload for the lazily-fetched lease-history modal. */
+/**
+ * Unit A's detail payload: an occupied unit matching the hub's Unit A
+ * field-for-field (late this-month rent, primary tenant + co-tenant, one prior
+ * ended lease). Also serves the property hub's lazily-fetched lease-history
+ * modal. Top-level status/currentLease mirror the enriched unit's own fields.
+ */
 export function unitADetailResponse(): UnitDetailResponse {
   const priorLease = makeLease('l0', 'u1', 128000, [makeTenant('t-former', 'F. Ormer')], {
     startDate: isoIn(-665),
     endDate: isoIn(-300),
     status: 'ended',
   });
-  return {
-    unit: {
-      id: 'u1',
-      propertyId: 'p1',
-      label: 'Unit A',
-      bedrooms: 2,
-      bathrooms: 1,
-      marketRentCents: 135000,
-      archivedAt: null,
-    },
-    propertyId: 'p1',
-    propertyLabel: '12 Maple St',
+  const unit = makeUnit('u1', 'Unit A', {
+    bedrooms: 2,
+    bathrooms: 1,
+    marketRentCents: 135000,
     status: 'occupied',
     currentLease: parkLease,
+    rent: unitALateRent,
+    leaseCount: 2,
+  });
+  return {
+    unit,
+    propertyId: 'p1',
+    propertyLabel: '12 Maple St',
+    status: unit.status,
+    currentLease: unit.currentLease,
     leases: [parkLease, priorLease],
+    rentPayments: [],
+    pnl,
+  };
+}
+
+/**
+ * A vacant unit with a prior ended lease in history — exercises the re-lease
+ * prefill path (Create lease seeds from the most recent ended lease).
+ */
+export function vacantUnitDetailResponse(): UnitDetailResponse {
+  const priorLease = makeLease('l3', 'u3', 95000, [makeTenant('t-gray', 'G. Ray')], {
+    startDate: isoIn(-700),
+    endDate: isoIn(-30),
+    status: 'ended',
+    dueDay: 5,
+  });
+  const unit = makeUnit('u3', 'Unit C', {
+    bedrooms: 1,
+    bathrooms: 1,
+    marketRentCents: 95000,
+    status: 'vacant',
+    currentLease: null,
+    rent: null,
+    leaseCount: 1,
+  });
+  return {
+    unit,
+    propertyId: 'p1',
+    propertyLabel: '12 Maple St',
+    status: unit.status,
+    currentLease: null,
+    leases: [priorLease],
+    rentPayments: [],
+    pnl,
+  };
+}
+
+/** An archived unit — no current lease, one ended lease retained in history. */
+export function archivedUnitDetailResponse(): UnitDetailResponse {
+  const priorLease = makeLease('l4', 'u4', 105000, [makeTenant('t-dee', 'D. Dee')], {
+    startDate: isoIn(-700),
+    endDate: isoIn(-120),
+    status: 'ended',
+  });
+  const unit = makeUnit('u4', 'Unit D', {
+    bedrooms: 3,
+    bathrooms: 2,
+    marketRentCents: 105000,
+    archivedAt: '2025-06-01T00:00:00.000Z',
+    status: 'vacant',
+    currentLease: null,
+    rent: null,
+    leaseCount: 1,
+  });
+  return {
+    unit,
+    propertyId: 'p1',
+    propertyLabel: '12 Maple St',
+    status: unit.status,
+    currentLease: null,
+    leases: [priorLease],
     rentPayments: [],
     pnl,
   };

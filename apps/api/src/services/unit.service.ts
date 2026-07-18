@@ -19,7 +19,7 @@ import { prisma } from '../lib/prisma';
 import { writeAudit, type AuditActor } from './audit.service';
 import { toApiLease } from './lease.service';
 import { pnlTotals, propertyLabel } from './property.service';
-import { deriveRentStatus } from './rent.service';
+import { currentRentSnapshot, deriveRentStatus } from './rent.service';
 import { toTenantOnLease } from './tenant.service';
 
 export function toApiUnit(u: DbUnit): Unit {
@@ -99,6 +99,22 @@ export async function getDetail(accountId: string, id: string): Promise<UnitDeta
   const now = new Date();
   const tz = account.timezone;
   const period = currentPeriodInTz(tz, now);
+
+  // Computed once and reused for the embedded unit and the kept top-level
+  // currentLease/status so they cannot diverge.
+  const currentLease = currentLeaseRow ? toLeaseWithTenants(currentLeaseRow) : null;
+  const pendingLeaseRow = unit.leases.find((l) => l.status === 'pending_signature');
+  // One charge per unit per month, possibly on the outgoing lease after a renewal
+  // switchover — search ALL leases (matches property.service's unitId-keyed lookup).
+  const chargeRow = unit.leases.flatMap((l) => l.rentPayments).find((p) => p.period === period);
+  const rent = currentRentSnapshot(currentLeaseRow, chargeRow, {
+    period,
+    tz,
+    graceDays: account.graceDays,
+    graceDaysBasis: account.graceDaysBasis as GraceDaysBasis,
+    now,
+  });
+
   const mtd = await pnlTotals(
     accountId,
     { from: monthStartInTz(period, tz), to: monthEndExclusiveInTz(period, tz) },
@@ -131,11 +147,18 @@ export async function getDetail(accountId: string, id: string): Promise<UnitDeta
     });
 
   return {
-    unit: toApiUnit(unit),
+    unit: {
+      ...toApiUnit(unit),
+      status: currentLeaseRow ? 'occupied' : 'vacant',
+      currentLease,
+      rent,
+      leaseCount: unit.leases.length,
+      pendingLease: pendingLeaseRow ? toLeaseWithTenants(pendingLeaseRow) : null,
+    },
     propertyId: unit.propertyId,
     propertyLabel: propertyLabel(unit.property),
     status: currentLeaseRow ? 'occupied' : 'vacant',
-    currentLease: currentLeaseRow ? toLeaseWithTenants(currentLeaseRow) : null,
+    currentLease,
     leases: unit.leases.map(toLeaseWithTenants),
     rentPayments,
     pnl: { mtd, ytd },
