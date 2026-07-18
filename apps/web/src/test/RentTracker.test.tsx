@@ -10,6 +10,7 @@
 // summary row, multi-tenant share/mismatch surfacing, and unlinked-deposit
 // nudges inside a single AiSurface panel.
 import type {
+  Insight,
   RentTrackerResponse,
   RentTrackerRow,
   UnlinkedRentDepositsResponse,
@@ -719,7 +720,7 @@ describe('RentTracker multi-tenant rows', () => {
 });
 
 describe('RentTracker unlinked rent deposits', () => {
-  it('renders an unlinked deposit nudge inside the AiSurface panel and links it to the rent charge', async () => {
+  it('renders the insight and the deposit nudge in ONE AiSurface panel (single ✦ badge) and links the deposit to the rent charge', async () => {
     stubDesktopViewport();
     const unlinkedItem: UnlinkedRentDepositsResponse['items'][number] = {
       transactionId: 'tx-unlinked',
@@ -734,17 +735,41 @@ describe('RentTracker unlinked rent deposits', () => {
       period,
       remainingCents: 115000,
     };
+    const lateRentInsight: Insight = {
+      id: 'i-late',
+      accountId: 'acc1',
+      scope: 'tenant',
+      type: 'late_rent',
+      severity: 'warning',
+      title: 'T. Okafor is 6 days late on rent',
+      body: 'Rent of $1,150.00 for 21 Cedar Ct was due on the 1st.',
+      actionLabel: 'Review',
+      actionTarget: `/rent?period=${period}`,
+      propertyId: 'p1',
+      tenantId: 't1',
+      leaseId: 'l1',
+      dedupeKey: `late_rent:t-okafor:${period}`,
+      status: 'active',
+      createdAt: '2026-07-03T08:00:00.000Z',
+    };
     const fetchMock = makeFetch([
-      ...baseRoutes.filter((r) => r.path !== '/api/v1/rent/unlinked-deposits'),
+      ...baseRoutes.filter(
+        (r) => r.path !== '/api/v1/rent/unlinked-deposits' && r.path !== '/api/v1/insights',
+      ),
       { method: 'GET', path: '/api/v1/rent/unlinked-deposits', body: { items: [unlinkedItem] } },
+      { method: 'GET', path: '/api/v1/insights', body: [lateRentInsight] },
       { method: 'POST', path: '/api/v1/transactions/tx-unlinked/confirm', body: {} },
     ]);
     vi.stubGlobal('fetch', fetchMock);
     renderRentTracker();
 
-    const panel = await screen.findByRole('region', { name: 'Unlinked rent deposits' });
-    expect(within(panel).getByText('AI')).toBeInTheDocument();
+    // The regression this guards: the late_rent insight and the deposit nudge
+    // used to render as two separate AI-bordered boxes; they must share one
+    // panel with exactly one "✦ AI" badge.
+    const panel = await screen.findByRole('region', { name: 'AI insights' });
+    await within(panel).findByText('T. Okafor is 6 days late on rent');
     expect(within(panel).getByText(/Zelle payment/)).toBeInTheDocument();
+    expect(screen.getAllByText('AI')).toHaveLength(1);
 
     fireEvent.click(within(panel).getByRole('button', { name: 'Link to rent' }));
 

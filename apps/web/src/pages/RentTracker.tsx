@@ -1,10 +1,10 @@
 // Rent Collection (PRD §5.5) — KpiTile summary row (collected/outstanding
-// against billed, units-paid progress), a compact AI-surfaced unlinked-deposit
-// panel, and a single triage-first table (late → partial → due → paid) with
-// status filter chips and per-row actions incl. manual payment recording.
-// The ledger itself stays deterministic; the one AI element is the single
-// most recent late_rent insight card (clearly marked via AiSurface) since
-// this is the page that insight is about.
+// against billed, units-paid progress) and a single triage-first table
+// (late → partial → due → paid) with status filter chips and per-row actions
+// incl. manual payment recording. The ledger itself stays deterministic; ALL
+// AI content shares one AiSurface panel at the top — the single most recent
+// late_rent insight (this is the page that insight is about) plus any
+// unlinked rent-deposit suggestions — so the page has exactly one ✦ AI area.
 import { useEffect, useMemo, useState } from 'react';
 import { formatUsd } from '@hearth/shared';
 import type { RentPaymentMethod, RentTrackerRow, SendRemindersResponse } from '@hearth/shared';
@@ -157,6 +157,7 @@ export function RentTracker() {
   const lateRentInsight = insights.data?.find((i) => i.type === 'late_rent');
 
   const rows = tracker.data?.rows ?? [];
+  const unlinkedItems = unlinkedDeposits.data?.items ?? [];
   // Partial-but-past-grace rows are still owed and remindable.
   const lateRows = rows.filter(
     (row) => row.status === 'late' || (row.status === 'partial' && row.daysLate != null),
@@ -356,8 +357,83 @@ export function RentTracker() {
         }
       />
 
+      {/* The page's single AI panel — the newest late_rent insight and any
+          unlinked-deposit suggestions share one AiSurface (one ✦ badge)
+          instead of stacking separate bordered boxes around the KPI row. */}
       <LiveRegion>
-        {lateRentInsight && <InsightCard insight={lateRentInsight} headingLevel={2} />}
+        {(lateRentInsight || unlinkedItems.length > 0) && (
+          <section aria-label="AI insights">
+            <AiSurface>
+              {lateRentInsight && (
+                <InsightCard insight={lateRentInsight} headingLevel={2} surface={false} />
+              )}
+              {unlinkedItems.length > 0 && (
+                <div
+                  className={
+                    lateRentInsight ? 'mt-4 flex flex-col gap-1 border-t border-border pt-3' : 'flex flex-col gap-1'
+                  }
+                >
+                  <p className="text-sm font-medium text-ink">
+                    {unlinkedItems.length === 1
+                      ? 'A Rent-categorized deposit isn’t linked to a rent charge'
+                      : `${unlinkedItems.length} Rent-categorized deposits aren’t linked to rent charges`}
+                  </p>
+                  <ul className="divide-y divide-border">
+                    {unlinkedItems.map((item) => (
+                      <li
+                        key={item.transactionId}
+                        className="flex flex-col gap-2 py-2.5 sm:flex-row sm:items-center sm:justify-between"
+                      >
+                        <div className="text-sm">
+                          <p className="text-ink">
+                            <span className="font-medium tabular-nums">
+                              {formatUsd(item.amountCents)}
+                            </span>
+                            <span className="text-ink-muted">
+                              {' '}
+                              · &ldquo;{item.description}&rdquo; · {formatDate(item.date)}
+                            </span>
+                          </p>
+                          <p className="text-xs text-ink-muted">
+                            Could apply to {item.tenantName}&rsquo;s {formatMonthLong(item.period)}{' '}
+                            charge — {formatUsd(item.remainingCents)} still due for {item.unitLabel}{' '}
+                            at {item.propertyLabel}
+                          </p>
+                        </div>
+                        {canMoney && (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            busy={
+                              linkDeposit.isPending &&
+                              linkDeposit.variables?.id === item.transactionId
+                            }
+                            onClick={() =>
+                              linkDeposit.mutate(
+                                { id: item.transactionId, rentPaymentId: item.rentPaymentId },
+                                {
+                                  onSuccess: () =>
+                                    toast(
+                                      `Deposit applied to ${item.tenantName}'s ${formatMonthLong(item.period)} rent.`,
+                                      'positive',
+                                    ),
+                                  onError: () =>
+                                    toast('Could not link the deposit. Try again.', 'danger'),
+                                },
+                              )
+                            }
+                          >
+                            Link to rent
+                          </Button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </AiSurface>
+          </section>
+        )}
       </LiveRegion>
 
       {tracker.isPending ? (
@@ -414,71 +490,6 @@ export function RentTracker() {
               />
             </KpiTile>
           </section>
-
-          {(unlinkedDeposits.data?.items.length ?? 0) > 0 && (
-            <section aria-label="Unlinked rent deposits">
-              <AiSurface>
-                <div className="flex flex-col gap-1">
-                  <p className="text-sm font-medium text-ink">
-                    {unlinkedDeposits.data!.items.length === 1
-                      ? 'A Rent-categorized deposit isn’t linked to a rent charge'
-                      : `${unlinkedDeposits.data!.items.length} Rent-categorized deposits aren’t linked to rent charges`}
-                  </p>
-                  <ul className="divide-y divide-border">
-                    {unlinkedDeposits.data!.items.map((item) => (
-                      <li
-                        key={item.transactionId}
-                        className="flex flex-col gap-2 py-2.5 sm:flex-row sm:items-center sm:justify-between"
-                      >
-                        <div className="text-sm">
-                          <p className="text-ink">
-                            <span className="font-medium tabular-nums">
-                              {formatUsd(item.amountCents)}
-                            </span>
-                            <span className="text-ink-muted">
-                              {' '}
-                              · &ldquo;{item.description}&rdquo; · {formatDate(item.date)}
-                            </span>
-                          </p>
-                          <p className="text-xs text-ink-muted">
-                            Could apply to {item.tenantName}&rsquo;s {formatMonthLong(item.period)}{' '}
-                            charge — {formatUsd(item.remainingCents)} still due for {item.unitLabel}{' '}
-                            at {item.propertyLabel}
-                          </p>
-                        </div>
-                        {canMoney && (
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            busy={
-                              linkDeposit.isPending &&
-                              linkDeposit.variables?.id === item.transactionId
-                            }
-                            onClick={() =>
-                              linkDeposit.mutate(
-                                { id: item.transactionId, rentPaymentId: item.rentPaymentId },
-                                {
-                                  onSuccess: () =>
-                                    toast(
-                                      `Deposit applied to ${item.tenantName}'s ${formatMonthLong(item.period)} rent.`,
-                                      'positive',
-                                    ),
-                                  onError: () =>
-                                    toast('Could not link the deposit. Try again.', 'danger'),
-                                },
-                              )
-                            }
-                          >
-                            Link to rent
-                          </Button>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </AiSurface>
-            </section>
-          )}
 
           {rows.length === 0 ? (
             <Card flush>

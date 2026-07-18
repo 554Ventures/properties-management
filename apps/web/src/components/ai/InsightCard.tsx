@@ -31,12 +31,16 @@ export const severityBadge: Record<Insight['severity'], { tone: BadgeTone; label
 export function InsightCard({
   insight,
   headingLevel = 3,
+  surface = true,
 }: {
   insight: Insight;
   /** 2 when the card sits directly under the page h1 (RentTracker, Money,
    *  TenantsList banners); 3 inside an h2 section (Dashboard, PropertyDetail).
    *  Axe's heading-order rule is merge-blocking. */
   headingLevel?: 2 | 3;
+  /** false when a parent AiSurface already frames this card (a page combining
+   *  several AI blocks into one panel) — avoids nested borders/badges. */
+  surface?: boolean;
 }) {
   const Heading = headingLevel === 2 ? 'h2' : 'h3';
   const severity = severityBadge[insight.severity];
@@ -51,8 +55,8 @@ export function InsightCard({
     dismissPending,
   } = useInsightActions(insight);
 
-  return (
-    <AiSurface>
+  const content = (
+    <>
       <div className="mb-1 flex items-center gap-2">
         <StatusBadge tone={severity.tone}>{severity.label}</StatusBadge>
       </div>
@@ -87,6 +91,8 @@ export function InsightCard({
       {structured && !structuredAllowed && (
         <p className="mt-2 text-xs text-ink-muted">This action isn't available here.</p>
       )}
-    </AiSurface>
+    </>
   );
+
+  return surface ? <AiSurface>{content}</AiSurface> : content;
 }
