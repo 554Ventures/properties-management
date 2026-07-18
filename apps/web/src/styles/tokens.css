@@ -102,23 +102,26 @@
   --motion-ease: cubic-bezier(0.2, 0, 0, 1);
 }
 
-/* Dark mode — same hues, adjusted lightness; contrast maintained. */
+/* Dark mode — neutral grey surfaces (no warm cast, per customer feedback)
+   and an indigo/periwinkle accent (split-complement of the light-mode
+   terracotta; the true complement is cerulean, reserved for AI surfaces).
+   Contrast maintained: brand 7.3:1 on surface, text-on-brand 7.5:1. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --color-bg: #16130f;
-    --color-surface: #201c18;
-    --color-surface-raised: #201c18;
-    --color-surface-sunken: #141110;
-    --color-border: #352f28;
-    --color-border-strong: #554b40;
-    --color-text: #f4efe8;
-    --color-text-muted: #b5aa9e;
-    --color-text-faint: #857b70;
-    --color-text-on-brand: #2a1208;
+    --color-bg: #141414;
+    --color-surface: #1e1e1e;
+    --color-surface-raised: #1e1e1e;
+    --color-surface-sunken: #111111;
+    --color-border: #303030;
+    --color-border-strong: #4d4d4d;
+    --color-text: #f2f2f2;
+    --color-text-muted: #ababab;
+    --color-text-faint: #7d7d7d;
+    --color-text-on-brand: #1c1c1c;
 
-    --color-brand: #e0663a;
-    --color-brand-strong: #ea825c;
-    --color-brand-soft: #38200f;
+    --color-brand: #9aa8f0;
+    --color-brand-strong: #b3bef5;
+    --color-brand-soft: #232741;
 
     --color-positive: #55c184;
     --color-positive-soft: #17301f;
@@ -138,7 +141,7 @@
     --chart-warning: #fbbf24;
     --chart-neutral: #94a3b8;
     --chart-ai: #57b9d0;
-    --chart-grid: #352f28;
+    --chart-grid: #303030;
     /* Same eight hues stepped for the dark surface (all ≥3:1 here). */
     --chart-cat-1: #3987e5;
     --chart-cat-2: #199e70;
