@@ -9,6 +9,17 @@ import { env } from 'cloudflare:workers';
 // which this repo doesn't generate — assert to the local interface instead.
 const secrets = env as unknown as Env;
 
+// A secret that isn't set on the Worker must be DROPPED, not forwarded: the
+// container runtime stringifies env values, so an undefined arrives in the
+// container as the literal string "undefined" — which reads as *configured*
+// downstream (e.g. SUPABASE_STORAGE_BUCKET became a bucket named "undefined",
+// 500ing every document upload while the real default bucket sat unused).
+function definedEnvVars(vars: Record<string, string | undefined>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(vars).filter((entry): entry is [string, string] => Boolean(entry[1])),
+  );
+}
+
 export class HearthApi extends Container<Env> {
   defaultPort = 3001;
   // Scale to zero when idle; the cron trigger wakes it for daily jobs.
@@ -17,7 +28,7 @@ export class HearthApi extends Container<Env> {
   // as normal env vars — same names as .env.example). Plaid's three secrets
   // (+ PLAID_ENV) must all be forwarded together, else the API silently falls
   // back to the mock Plaid adapter (integrations/factory.ts).
-  envVars = {
+  envVars = definedEnvVars({
     DATABASE_URL: secrets.DATABASE_URL,
     SUPABASE_URL: secrets.SUPABASE_URL,
     ANTHROPIC_API_KEY: secrets.ANTHROPIC_API_KEY,
@@ -49,7 +60,7 @@ export class HearthApi extends Container<Env> {
     EMAIL_FROM: secrets.EMAIL_FROM,
     FEEDBACK_NOTIFY_EMAIL: secrets.FEEDBACK_NOTIFY_EMAIL,
     FEEDBACK_RATE_LIMIT_MAX: secrets.FEEDBACK_RATE_LIMIT_MAX,
-  };
+  });
 }
 
 interface Env {

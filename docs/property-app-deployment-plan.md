@@ -25,7 +25,7 @@
 | Backend/API compute | **Cloudflare Containers** (decided — see §3) | Fastify app in a container, fronted by that Worker (`deploy/worker.ts` + `wrangler.jsonc`) |
 | Database | Supabase (Postgres) | One project per environment (see §5) |
 | Auth | Supabase Auth | Login/signup via supabase-js in the frontend; API verifies the JWT (see §4.1) |
-| File storage | Supabase Storage | Future — no upload features exist yet beyond CSV import (held in memory) |
+| File storage | Supabase Storage | Live (2026-07) — private `documents` bucket; API uploads via `SUPABASE_SERVICE_ROLE_KEY` (StorageAdapter; local filesystem mock in dev/tests). See `docs/ACCOUNT_SETUP.md` §10 |
 | AI / Chat | Anthropic API | Chat completions, tool use; MCP stays local-only in Phase 1 (see §8) |
 | Source control / CI | GitHub + GitHub Actions | Monorepo; **no workflows exist yet — CI is built from scratch, see §6** |
 | Secrets | GitHub Environments + Cloudflare/Supabase native secret stores | No secrets in repo, ever |

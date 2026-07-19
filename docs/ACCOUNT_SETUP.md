@@ -175,6 +175,14 @@ Real outbound email (beta-feedback notifications now; the report email-to-accoun
 4. **Smoke test** before wiring the app: `npx wrangler email sending send --from feedback@mail.554properties.com --to <your inbox> --subject test --text test`.
 5. `npx wrangler secret put` all four — `CLOUDFLARE_EMAIL_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `EMAIL_FROM=feedback@mail.554properties.com`, `FEEDBACK_NOTIFY_EMAIL=<your inbox>` — and record them in `.secrets.local`. ⚠️ `EMAIL_FROM`'s domain must be exactly the onboarded one (`mail.554properties.com` — the bare apex is NOT onboarded and sends from it are rejected at runtime; with never-throw semantics that failure is only a `console.warn`). Partial adapter config (token/account id/from) fires a boot warning and keeps the mock; `FEEDBACK_NOTIFY_EMAIL` is a destination, not adapter config — unset just means feedback is stored without an email (send failures never fail the write either way).
 
+## 10. Supabase Storage (document uploads) — *added 2026-07-19*
+
+Document/receipt uploads store file bytes in Supabase Storage; Postgres holds only metadata (`Document` rows). Dev and tests use the local-filesystem mock adapter — nothing to set up locally.
+
+1. **Bucket** — Supabase dashboard → **Storage → New bucket** → name `documents`, **private**. *Done for this project.* The adapter defaults to the name `documents`; `SUPABASE_STORAGE_BUCKET` only needs setting if the bucket is named something else.
+2. **Service-role key** — dashboard → **Settings → API** → `service_role`. 📋 collect → `npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY`. *Done.* Without it (or `SUPABASE_URL`) the API silently falls back to the container-local filesystem adapter and uploads vanish on every container restart.
+3. ⚠️ Do **not** `wrangler secret put` optional secrets "just in case": an unset Worker secret used to reach the container as the literal string `"undefined"` (the runtime stringifies env values), which made the API upload to a bucket named `undefined` — every prod upload 500'd while the real bucket sat empty. `deploy/worker.ts` now drops unset/empty secrets before forwarding (*fixed 2026-07-19*), but the rule stands: set a secret only when it has a real value.
+
 ## Values you should have collected
 
 | # | Value | Goes to |
@@ -186,7 +194,7 @@ Real outbound email (beta-feedback notifications now; the report email-to-accoun
 | 5 | Anthropic API key | container `ANTHROPIC_API_KEY` |
 | 6 | Cloudflare API token | GitHub `CLOUDFLARE_API_TOKEN` |
 | 7 | `CRON_SECRET` (self-generated) | container + Worker |
-| 8 | (nothing else — the Supabase secret key is deliberately never provisioned) |
+| 8 | `SUPABASE_SERVICE_ROLE_KEY` (§10, storage uploads — *added 2026-07-19*; before that deliberately unprovisioned) | container secret |
 | 9 | Plaid Sandbox `client_id`/`secret` (§6) | container `PLAID_CLIENT_ID` / `PLAID_SECRET` |
 | 10 | `INTEGRATION_ENCRYPTION_KEY` (self-generated, §6) | container secret |
 | 11 | Stripe test `sk_test_…`/`pk_test_…` (§8) | container `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` |
