@@ -40,6 +40,15 @@ export class HearthApi extends Container<Env> {
     APNS_PRIVATE_KEY: secrets.APNS_PRIVATE_KEY,
     APNS_BUNDLE_ID: secrets.APNS_BUNDLE_ID,
     APNS_ENV: secrets.APNS_ENV,
+    // Outbound email (Cloudflare Email Service) — the first three forwarded
+    // together, else the API falls back to the mock email adapter
+    // (integrations/factory.ts). FEEDBACK_NOTIFY_EMAIL is where "Send
+    // feedback" submissions are mailed (unset = store-only, no notification).
+    CLOUDFLARE_EMAIL_API_TOKEN: secrets.CLOUDFLARE_EMAIL_API_TOKEN,
+    CLOUDFLARE_ACCOUNT_ID: secrets.CLOUDFLARE_ACCOUNT_ID,
+    EMAIL_FROM: secrets.EMAIL_FROM,
+    FEEDBACK_NOTIFY_EMAIL: secrets.FEEDBACK_NOTIFY_EMAIL,
+    FEEDBACK_RATE_LIMIT_MAX: secrets.FEEDBACK_RATE_LIMIT_MAX,
   };
 }
 
@@ -63,6 +72,11 @@ interface Env {
   APNS_PRIVATE_KEY: string;
   APNS_BUNDLE_ID: string;
   APNS_ENV: string;
+  CLOUDFLARE_EMAIL_API_TOKEN: string;
+  CLOUDFLARE_ACCOUNT_ID: string;
+  EMAIL_FROM: string;
+  FEEDBACK_NOTIFY_EMAIL: string;
+  FEEDBACK_RATE_LIMIT_MAX: string;
 }
 
 export default {

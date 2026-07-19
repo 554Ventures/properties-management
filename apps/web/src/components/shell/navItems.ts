@@ -33,6 +33,8 @@ export const navItems: NavItem[] = [
 
 // Settings (and Sign out, in auth mode) are pinned separately at the bottom of
 // both surfaces rather than living inline in the destination list.
+// The "Send feedback" trigger is also not a destination — it's a shell-level
+// button (AppShell passes onFeedbackClick to SideNav/BottomTabBar).
 export const settingsItem: NavItem = { to: '/settings', label: 'Settings', icon: IconGear };
 
 // Paths surfaced directly as mobile bottom-bar tabs; every other destination

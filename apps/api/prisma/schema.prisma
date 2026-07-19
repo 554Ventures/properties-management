@@ -64,6 +64,7 @@ model Account {
   documents    Document[]
   contractors  Contractor[]
   pushDevices  PushDevice[]
+  feedback     Feedback[]
   onboarding   OnboardingState?
   vendorCategoryMemories VendorCategoryMemory[]
   bankSyncDiscrepancies  BankSyncDiscrepancy[]
@@ -514,6 +515,24 @@ model PushDevice {
   token      String   @unique // APNs device token
   createdAt  DateTime @default(now())
   lastSeenAt DateTime @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+}
+
+// A beta-feedback submission from the in-app "Send feedback" modal. Stored
+// verbatim and emailed to FEEDBACK_NOTIFY_EMAIL (fire-and-forget); no read UI
+// — email + database dashboard suffice.
+model Feedback {
+  id        String   @id @default(cuid())
+  accountId String
+  userId    String?  // submitting User row (null in demo mode)
+  category  String   // FeedbackCategory (@hearth/shared): bug | idea | other
+  message   String
+  pagePath  String?
+  userAgent String?
+  createdAt DateTime @default(now())
 
   account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
 

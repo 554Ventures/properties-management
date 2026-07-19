@@ -133,6 +133,10 @@ export type DocumentEntityType = z.infer<typeof DocumentEntityTypeSchema>;
 export const PushPlatformSchema = z.enum(['ios']);
 export type PushPlatform = z.infer<typeof PushPlatformSchema>;
 
+// Beta feedback triage buckets ("Send feedback" in the app shell).
+export const FeedbackCategorySchema = z.enum(['bug', 'idea', 'other']);
+export type FeedbackCategory = z.infer<typeof FeedbackCategorySchema>;
+
 // Onboarding (getting-started checklist for new accounts). `completed` is
 // always derived — the API returns it when every step is completed or skipped;
 // only not_started | in_progress | dismissed are ever stored.

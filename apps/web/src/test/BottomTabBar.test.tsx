@@ -4,7 +4,7 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { MemoryRouter } from 'react-router-dom';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { BottomTabBar } from '../components/shell/BottomTabBar';
 
 function renderBar(initialPath = '/') {
@@ -64,5 +64,31 @@ describe('BottomTabBar', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Close menu' }));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.getByRole('button', { name: 'More' })).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('shows "Send feedback" in the More sheet, closes the sheet, and fires the callback', async () => {
+    const onFeedbackClick = vi.fn();
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <BottomTabBar onFeedbackClick={onFeedbackClick} />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+    const dialog = await screen.findByRole('dialog', { name: 'More menu' });
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Send feedback' }));
+    // The sheet closes first — the feedback modal (mounted in AppShell) takes
+    // over focus from a closed sheet, not a still-open one.
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(onFeedbackClick).toHaveBeenCalledTimes(1);
+  });
+
+  it('omits the "Send feedback" entry when no onFeedbackClick is passed', async () => {
+    renderBar();
+
+    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+    const dialog = await screen.findByRole('dialog', { name: 'More menu' });
+    expect(within(dialog).queryByRole('button', { name: 'Send feedback' })).toBeNull();
   });
 });

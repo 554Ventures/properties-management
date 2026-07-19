@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { ReportDetailResponseSchema, ReportSchema } from '@hearth/shared';
 import { buildApp } from '../app';
+import { resetMockEmail, sentEmails } from '../integrations/mock/mock-email';
 import {
   currentPeriodInTz,
   iso,
@@ -211,6 +212,25 @@ describe('schedule_e income line mapping', () => {
     await prisma.report.delete({ where: { id: report.id } });
     await prisma.transaction.delete({ where: { id: txn.id } });
     await prisma.category.delete({ where: { id: category.id } });
+    await prisma.auditLog.deleteMany({ where: { accountId, entityId: report.id } });
+  });
+});
+
+describe('emailToAccountant', () => {
+  it('routes through the email adapter factory — the send lands in the mock recorder', async () => {
+    const accountId = await getDemoAccountId();
+    const report = await reportService.generate(accountId, {
+      type: 'pnl',
+      taxYear: new Date().getUTCFullYear(),
+    });
+
+    resetMockEmail();
+    await reportService.emailToAccountant(accountId, report.id, 'accountant@example.com');
+    expect(sentEmails).toHaveLength(1);
+    expect(sentEmails[0]!.to).toBe('accountant@example.com');
+    expect(sentEmails[0]!.subject).toContain(report.title);
+
+    await prisma.report.delete({ where: { id: report.id } });
     await prisma.auditLog.deleteMany({ where: { accountId, entityId: report.id } });
   });
 });

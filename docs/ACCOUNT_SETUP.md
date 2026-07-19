@@ -104,6 +104,8 @@ Worker secrets (set once with `npx wrangler secret put <NAME>`; forwarded into t
 | `PLAID_ENV` | §6 — literal `sandbox` for now |
 | `INTEGRATION_ENCRYPTION_KEY` | §6 — self-generated, not from Plaid |
 | `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` | §8 — optional, falls back to the mock Stripe FC adapter until both set |
+| `CLOUDFLARE_EMAIL_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` / `EMAIL_FROM` | §9 — optional, falls back to the console mock email adapter until all three set |
+| `FEEDBACK_NOTIFY_EMAIL` | §9 — where "Send feedback" submissions are emailed; unset = DB-only |
 
 Instance sizing: `basic` to start; revisit after load testing (plan open item #2).
 
@@ -163,6 +165,16 @@ A second bank-transaction feed alongside Plaid (`docs/WHATS_NEXT.md` §3). Optio
 3. To test: Settings → Connect on the Stripe Financial Connections row → pick a test institution in Stripe's modal → Money → "Import from bank" (the first import after linking may return 0 rows while Stripe's initial transaction refresh finishes — import again a little later).
 4. Moving to live mode later: complete the **Financial Connections registration** under Dashboard → Settings → Financial Connections (there can be a review step), then swap in `sk_live_`/`pk_live_` values. Transactions pricing is per institution per account holder per month — the app subscribes each linked account to daily refreshes.
 
+## 9. Cloudflare Email Service (outbound email + feedback notifications) — *added 2026-07-18*
+
+Real outbound email (beta-feedback notifications now; the report email-to-accountant path uses the same adapter). Optional — the app runs the console-log mock email adapter until all three adapter vars are set.
+
+1. **Check availability first**: Email Service is a 2025-era Cloudflare product — confirm it appears under **Compute & AI → Email Service** for the account/plan. If unavailable, stop here; feedback still stores in Postgres (DB-only, no email).
+2. **Onboard the sending domain** — *done 2026-07-18: `mail.554properties.com`* (a subdomain keeps the apex's DNS untouched and isolates sending reputation): dashboard **Compute & AI → Email Service → Email Sending → Onboard Domain** → **Add records and onboard** (auto-adds the SPF/DKIM DNS records; propagation typically 5–15 min). Verify with `npx wrangler email sending dns get mail.554properties.com`.
+3. **Scoped API token** — *done 2026-07-18: Email Sending Edit + Read* — **My Profile → API Tokens → Create Token**; do **not** reuse the CI deploy token (§3.2). 📋 collect → `CLOUDFLARE_EMAIL_API_TOKEN`. Also 📋 collect the **account id** (dashboard → Workers & Pages overview, right rail) → `CLOUDFLARE_ACCOUNT_ID`.
+4. **Smoke test** before wiring the app: `npx wrangler email sending send --from feedback@mail.554properties.com --to <your inbox> --subject test --text test`.
+5. `npx wrangler secret put` all four — `CLOUDFLARE_EMAIL_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `EMAIL_FROM=feedback@mail.554properties.com`, `FEEDBACK_NOTIFY_EMAIL=<your inbox>` — and record them in `.secrets.local`. ⚠️ `EMAIL_FROM`'s domain must be exactly the onboarded one (`mail.554properties.com` — the bare apex is NOT onboarded and sends from it are rejected at runtime; with never-throw semantics that failure is only a `console.warn`). Partial adapter config (token/account id/from) fires a boot warning and keeps the mock; `FEEDBACK_NOTIFY_EMAIL` is a destination, not adapter config — unset just means feedback is stored without an email (send failures never fail the write either way).
+
 ## Values you should have collected
 
 | # | Value | Goes to |
@@ -178,3 +190,5 @@ A second bank-transaction feed alongside Plaid (`docs/WHATS_NEXT.md` §3). Optio
 | 9 | Plaid Sandbox `client_id`/`secret` (§6) | container `PLAID_CLIENT_ID` / `PLAID_SECRET` |
 | 10 | `INTEGRATION_ENCRYPTION_KEY` (self-generated, §6) | container secret |
 | 11 | Stripe test `sk_test_…`/`pk_test_…` (§8) | container `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` |
+| 12 | Email-scoped Cloudflare token + account id (§9) | container `CLOUDFLARE_EMAIL_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` |
+| 13 | `EMAIL_FROM` + `FEEDBACK_NOTIFY_EMAIL` (§9) | container secrets (from-address + notification inbox) |

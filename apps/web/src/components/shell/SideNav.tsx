@@ -1,10 +1,11 @@
 // Desktop navigation spine (hidden below md; BottomTabBar takes over).
 import { cx } from '../../lib/cx';
 import { useAuth } from '../../state/auth';
+import { IconMail } from '../ui/icons';
 import { navItems, settingsItem } from './navItems';
 import { NavItemLink, navLinkClasses } from './navLink';
 
-export function SideNav() {
+export function SideNav({ onFeedbackClick }: { onFeedbackClick?: () => void }) {
   const { enabled, signOut } = useAuth();
   return (
     <nav
@@ -22,8 +23,20 @@ export function SideNav() {
           </li>
         ))}
       </ul>
-      {/* Settings (and sign out, in auth mode) pinned to the bottom */}
+      {/* Feedback + Settings (and sign out, in auth mode) pinned to the bottom */}
       <ul className="border-t border-border px-3 py-3">
+        {onFeedbackClick && (
+          <li>
+            <button
+              type="button"
+              onClick={onFeedbackClick}
+              className={cx(navLinkClasses(false), 'w-full')}
+            >
+              <IconMail size={18} />
+              Send feedback
+            </button>
+          </li>
+        )}
         <li>
           <NavItemLink item={settingsItem} />
         </li>

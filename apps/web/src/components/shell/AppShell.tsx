@@ -6,11 +6,13 @@
 // toggled via layout state / `?chat=open` (ChatProvider). At xl the open
 // drawer is a docked sibling — the content column shifts left instead of
 // being covered.
+import { useState } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { cx } from '../../lib/cx';
 import { ChatProvider, useChat } from '../../state/chat';
 import { ChatDrawer } from '../chat/ChatDrawer';
 import { ChatLauncher } from '../chat/ChatLauncher';
+import { FeedbackModal } from '../forms/FeedbackModal';
 import { ToastViewport } from '../ui/Toast';
 import { BottomTabBar } from './BottomTabBar';
 import { SideNav } from './SideNav';
@@ -18,12 +20,15 @@ import { SideNav } from './SideNav';
 function ShellLayout() {
   const location = useLocation();
   const { open } = useChat();
+  // Beta "Send feedback" modal — triggered from the SideNav pinned row and
+  // the mobile More sheet, so it's reachable on every page.
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
   return (
     <div className="min-h-screen bg-app">
       <a href="#main" className="skip-link">
         Skip to content
       </a>
-      <SideNav />
+      <SideNav onFeedbackClick={() => setFeedbackOpen(true)} />
       <div
         className={cx(
           'pb-24 transition-[padding] duration-slow ease-ease md:pb-0 md:pl-60',
@@ -36,9 +41,10 @@ function ShellLayout() {
           </div>
         </main>
       </div>
-      <BottomTabBar />
+      <BottomTabBar onFeedbackClick={() => setFeedbackOpen(true)} />
       <ChatLauncher />
       <ChatDrawer />
+      <FeedbackModal open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
       <ToastViewport />
     </div>
   );

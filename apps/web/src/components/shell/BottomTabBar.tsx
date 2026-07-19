@@ -7,7 +7,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import { cx } from '../../lib/cx';
 import { useAuth } from '../../state/auth';
 import { BottomSheet } from '../ui/BottomSheet';
-import { IconMore, IconPlus } from '../ui/icons';
+import { IconMail, IconMore, IconPlus } from '../ui/icons';
 import { MOBILE_PRIMARY, navItems, settingsItem, type NavItem } from './navItems';
 import { NavItemLink, navLinkClasses } from './navLink';
 
@@ -32,7 +32,7 @@ function isPathActive(pathname: string, item: NavItem): boolean {
   return item.end ? pathname === item.to : pathname === item.to || pathname.startsWith(`${item.to}/`);
 }
 
-export function BottomTabBar() {
+export function BottomTabBar({ onFeedbackClick }: { onFeedbackClick?: () => void }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const { pathname } = useLocation();
   const { enabled, signOut } = useAuth();
@@ -83,6 +83,22 @@ export function BottomTabBar() {
               <NavItemLink item={item} onNavigate={() => setMoreOpen(false)} />
             </li>
           ))}
+          {onFeedbackClick && (
+            <li className="mt-1 border-t border-border pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  // Close the sheet first — the feedback modal takes over focus.
+                  setMoreOpen(false);
+                  onFeedbackClick();
+                }}
+                className={cx(navLinkClasses(false), 'w-full')}
+              >
+                <IconMail size={18} />
+                Send feedback
+              </button>
+            </li>
+          )}
           {enabled && (
             <li className="mt-1 border-t border-border pt-1">
               <button

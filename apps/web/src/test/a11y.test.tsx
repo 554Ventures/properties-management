@@ -18,6 +18,7 @@ import type { ReactNode } from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ContractorFormModal } from '../components/forms/ContractorFormModal';
+import { FeedbackModal } from '../components/forms/FeedbackModal';
 import { LeaseFormModal } from '../components/forms/LeaseFormModal';
 import { LeaseTenantsModal } from '../components/forms/LeaseTenantsModal';
 import { PropertyFormModal } from '../components/forms/PropertyFormModal';
@@ -401,6 +402,16 @@ describe('CRUD modal accessibility', () => {
     );
     // Wait for the tenant roster to load before auditing.
     await screen.findByText('Alex Primary');
+    await expectNoModalViolations();
+  });
+
+  it('FeedbackModal has no axe violations', async () => {
+    vi.stubGlobal('fetch', vi.fn(modalFetch));
+    render(
+      <Providers>
+        <FeedbackModal open onClose={() => {}} />
+      </Providers>,
+    );
     await expectNoModalViolations();
   });
 

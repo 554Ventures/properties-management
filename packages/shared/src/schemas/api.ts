@@ -69,6 +69,9 @@ export * from './integration';
 // Push notification devices (mobile shell)
 export * from './device';
 
+// Beta feedback ("Send feedback" in the app shell)
+export * from './feedback';
+
 // Onboarding (getting-started checklist for new accounts)
 export * from './onboarding';
 

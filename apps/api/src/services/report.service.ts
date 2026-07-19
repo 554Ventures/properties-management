@@ -23,7 +23,7 @@ import {
 import { BadRequestError, NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { renderReportPdf, type PdfBlock } from '../lib/pdf';
-import { mockEmail } from '../integrations/mock/mock-email';
+import { createEmailAdapter } from '../integrations/factory';
 import { accountTimezone } from './account.service';
 import { writeAudit, type AuditActor } from './audit.service';
 import { ordinaryExpense, pnlBucket } from '../lib/pnl';
@@ -1057,10 +1057,14 @@ export async function emailToAccountant(
   actor: AuditActor = 'user',
 ): Promise<void> {
   const report = await getById(accountId, id);
-  await mockEmail.send({
+  await createEmailAdapter().send({
     to,
     subject: `554 Properties report: ${report.title}`,
-    body: `Your report "${report.title}" is attached (mock email — no attachment actually sent).`,
+    // No attachment support yet — with the real email adapter configured this
+    // message reaches a real accountant, so it must not claim one is attached.
+    body:
+      `The report "${report.title}" is ready in 554 Properties. ` +
+      'The sender can export it as CSV or PDF from the Reports page and share it with you.',
   });
   await writeAudit(accountId, {
     actor,

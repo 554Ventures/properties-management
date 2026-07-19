@@ -23,6 +23,7 @@ import type {
   ContractorDetailResponse,
   ContractorListRow,
   CreateContractorInput,
+  CreateFeedbackInput,
   CreateLeaseInput,
   CreatePropertyInput,
   CreateTenantInput,
@@ -36,6 +37,7 @@ import type {
   DocumentListResponse,
   EsignEnvelopeResponse,
   ExpenseBreakdownResponse,
+  Feedback,
   GenerateReportInput,
   ImportTransactionsResponse,
   IncomeExpenseSeriesResponse,
@@ -982,6 +984,16 @@ export function useRemoveMember() {
   return useMutation({
     mutationFn: (userId: string) => api.delete(`/team/members/${userId}`),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['team'] }),
+  });
+}
+
+// ----------------------------------------------------------------- feedback
+
+/** POST /feedback — beta feedback from the shell's "Send feedback" modal.
+ *  No cache invalidation: there is no in-app read surface for feedback. */
+export function useSubmitFeedback() {
+  return useMutation({
+    mutationFn: (input: CreateFeedbackInput) => api.post<Feedback>('/feedback', input),
   });
 }
 

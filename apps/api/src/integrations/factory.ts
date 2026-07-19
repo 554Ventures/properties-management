@@ -1,13 +1,21 @@
 // Mock/real Plaid adapter selection, mirroring ai/client.ts's createAiClient().
+import { mockEmail } from './mock/mock-email';
 import { mockPlaid } from './mock/mock-plaid';
 import { mockPush } from './mock/mock-push';
 import { mockStorage } from './mock/mock-storage';
 import { mockStripeFc } from './mock/mock-stripe-fc';
 import { createApnsPushProvider } from './real/real-apns';
+import { createCfEmailAdapter } from './real/real-cf-email';
 import { createRealPlaidAdapter } from './real/real-plaid';
 import { createRealStorageAdapter } from './real/real-storage';
 import { createRealStripeFcAdapter } from './real/real-stripe-fc';
-import type { PlaidAdapter, PushProvider, StorageAdapter, StripeFcAdapter } from './types';
+import type {
+  EmailAdapter,
+  PlaidAdapter,
+  PushProvider,
+  StorageAdapter,
+  StripeFcAdapter,
+} from './types';
 
 let realAdapter: PlaidAdapter | undefined;
 let warned = false;
@@ -110,6 +118,33 @@ export function isRealPushConfigured(): boolean {
   }
 
   return setCount === configured.length;
+}
+
+let realEmailAdapter: EmailAdapter | undefined;
+let emailWarned = false;
+
+/** True once CLOUDFLARE_EMAIL_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, and EMAIL_FROM are all set. */
+export function isRealEmailConfigured(): boolean {
+  const { CLOUDFLARE_EMAIL_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, EMAIL_FROM } = process.env;
+  const configured = [CLOUDFLARE_EMAIL_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, EMAIL_FROM];
+  const setCount = configured.filter(Boolean).length;
+
+  if (setCount > 0 && setCount < configured.length && !emailWarned) {
+    emailWarned = true;
+    console.warn(
+      '[email] CLOUDFLARE_EMAIL_API_TOKEN/CLOUDFLARE_ACCOUNT_ID/EMAIL_FROM are partially set — ' +
+        'falling back to the mock email adapter until all three are configured.',
+    );
+  }
+
+  return setCount === configured.length;
+}
+
+/** Real Cloudflare Email Service adapter only when all three env vars are set, else the mock. */
+export function createEmailAdapter(): EmailAdapter {
+  if (!isRealEmailConfigured()) return mockEmail;
+  if (!realEmailAdapter) realEmailAdapter = createCfEmailAdapter();
+  return realEmailAdapter;
 }
 
 /** Real APNs provider only when all APNS_* vars are set, else the mock. */

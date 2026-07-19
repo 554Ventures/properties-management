@@ -30,6 +30,7 @@ import {
   useRestoreProperty,
   useRestoreUnit,
   useSendReminders,
+  useSubmitFeedback,
   useTerminateLease,
   useUnlinkDeposit,
   useUpdateLease,
@@ -506,6 +507,39 @@ describe('transaction mutations', () => {
     expect(url).toBe('/api/v1/transactions/bank-discrepancies/bd1/dismiss');
     expect(init?.method).toBe('POST');
     expect(keys).toEqual(expect.arrayContaining(FINANCIAL_KEYS));
+  });
+});
+
+describe('feedback mutations', () => {
+  it('useSubmitFeedback POSTs /feedback and invalidates nothing (no read UI)', async () => {
+    const fetchMock = stubFetch(() =>
+      jsonResponse(
+        {
+          id: 'fb1',
+          accountId: 'acc1',
+          userId: 'u1',
+          category: 'bug',
+          message: 'The rent chart is blank.',
+          pagePath: '/rent',
+          userAgent: 'vitest',
+          createdAt: '2026-07-18T00:00:00.000Z',
+        },
+        201,
+      ),
+    );
+    const { keys, wrapper } = setup();
+
+    const { result } = renderHook(() => useSubmitFeedback(), { wrapper });
+    result.current.mutate({ category: 'bug', message: 'The rent chart is blank.', pagePath: '/rent' });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/v1/feedback');
+    expect(init?.method).toBe('POST');
+    expect(init?.body).toBe(
+      JSON.stringify({ category: 'bug', message: 'The rent chart is blank.', pagePath: '/rent' }),
+    );
+    expect(keys).toEqual([]);
   });
 });
 
