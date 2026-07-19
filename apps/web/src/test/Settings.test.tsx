@@ -5,7 +5,7 @@
 // without opening a modal, (3) real mode opens the provider modal (Plaid
 // Link / Stripe.js) instead of auto-completing. Both provider SDKs are mocked
 // so tests never load a real hosted iframe.
-import type { AccountSettings } from '@hearth/shared';
+import type { AccountSettings, NotificationPrefs } from '@hearth/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
@@ -736,6 +736,98 @@ describe('Settings account form — grace period', () => {
       expect(body.graceDaysBasis).toBe('calendar');
     });
     expect(await screen.findByText('Settings saved.')).toBeInTheDocument();
+  });
+});
+
+describe('Settings notifications section (F2)', () => {
+  const prefs: NotificationPrefs = {
+    warning_insights: { push: true, email: false },
+    weekly_brief: { push: true, email: false },
+    monthly_review: { push: false, email: false },
+  };
+
+  const notificationRoutes = (putBody?: unknown): RouteFixture[] => [
+    { method: 'GET', path: '/api/v1/settings/account', body: account },
+    { method: 'GET', path: '/api/v1/integrations', body: [] },
+    { method: 'GET', path: '/api/v1/settings/notifications', body: prefs },
+    ...(putBody !== undefined
+      ? [{ method: 'PUT', path: '/api/v1/settings/notifications', body: putBody }]
+      : []),
+  ];
+
+  it('renders all three categories with Push and Email toggles from the stored prefs, passing axe', async () => {
+    vi.stubGlobal('fetch', makeFetch(notificationRoutes()));
+    const { container } = renderWithProviders(<Settings />);
+
+    const warnings = await screen.findByRole('group', { name: 'Warnings' });
+    expect(within(warnings).getByRole('checkbox', { name: 'Push' })).toBeChecked();
+    expect(within(warnings).getByRole('checkbox', { name: 'Email' })).not.toBeChecked();
+
+    const weekly = screen.getByRole('group', { name: 'Weekly brief' });
+    expect(within(weekly).getByRole('checkbox', { name: 'Push' })).toBeChecked();
+    expect(within(weekly).getByRole('checkbox', { name: 'Email' })).not.toBeChecked();
+
+    const monthly = screen.getByRole('group', { name: 'Monthly review' });
+    expect(within(monthly).getByRole('checkbox', { name: 'Push' })).not.toBeChecked();
+    expect(within(monthly).getByRole('checkbox', { name: 'Email' })).not.toBeChecked();
+
+    // The visible "where email goes" note (self-service, per-user semantics).
+    expect(
+      screen.getByText('Email notifications go to your sign-in email address.'),
+    ).toBeInTheDocument();
+
+    const results = await axe.run(container, {
+      rules: { 'color-contrast': { enabled: false } }, // jsdom can't compute this
+    });
+    expect(
+      results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`),
+    ).toEqual([]);
+  });
+
+  it('toggling a channel PUTs the full replaced prefs object and toasts', async () => {
+    const updated: NotificationPrefs = {
+      ...prefs,
+      monthly_review: { push: false, email: true },
+    };
+    const fetchMock = makeFetch(notificationRoutes(updated));
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithProviders(<Settings />);
+
+    const monthly = await screen.findByRole('group', { name: 'Monthly review' });
+    fireEvent.click(within(monthly).getByRole('checkbox', { name: 'Email' }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url) === '/api/v1/settings/notifications' &&
+          (init as RequestInit | undefined)?.method === 'PUT',
+      );
+      expect(call).toBeDefined();
+      // Full replace (the shared contract), not a sparse patch.
+      expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual(updated);
+    });
+    expect(await screen.findByText('Notification preferences saved.')).toBeInTheDocument();
+  });
+
+  it('surfaces a failed save as a danger toast', async () => {
+    const fetchMock = makeFetch([
+      ...notificationRoutes(),
+      {
+        method: 'PUT',
+        path: '/api/v1/settings/notifications',
+        status: 500,
+        body: { error: { code: 'internal', message: 'boom' } },
+      },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithProviders(<Settings />);
+
+    const weekly = await screen.findByRole('group', { name: 'Weekly brief' });
+    fireEvent.click(within(weekly).getByRole('checkbox', { name: 'Email' }));
+
+    expect(await screen.findByText('boom')).toBeInTheDocument();
   });
 });
 

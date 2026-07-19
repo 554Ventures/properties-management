@@ -45,7 +45,15 @@ export function createCfEmailAdapter(): EmailAdapter {
         const detail = data.errors?.map((e) => e.message).join('; ') || 'unknown error';
         throw new Error(`[email] send failed for ${to}: ${detail}`);
       }
-      const recipient = data.result?.delivered?.[0] ?? data.result?.queued?.[0] ?? to;
+      // success:true can still mean nothing was sent: a suppressed recipient
+      // comes back in permanent_bounces (delivered/queued empty). Treat that as
+      // a failure so callers degrade honestly (rent reminders fall back to
+      // mailto instead of claiming a real send).
+      const r = data.result ?? {};
+      if (r.permanent_bounces?.length || (!r.delivered?.length && !r.queued?.length)) {
+        throw new Error(`[email] permanent bounce for ${to}`);
+      }
+      const recipient = r.delivered?.[0] ?? r.queued?.[0] ?? to;
       return { messageId: `cf_email_${recipient}` };
     },
   };

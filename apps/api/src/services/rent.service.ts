@@ -33,6 +33,7 @@ import { isUniqueConstraintError } from '../lib/prisma-errors';
 import { formatUsd } from '@hearth/shared';
 import { createReminderEmailComposer } from '../ai/reminder-email';
 import type { UsageLog } from '../ai/agent-loop';
+import { createEmailAdapter, isRealEmailConfigured } from '../integrations/factory';
 import { mockStripe } from '../integrations/mock/mock-stripe';
 import { accountTimezone } from './account.service';
 import { writeAudit, type AuditActor } from './audit.service';
@@ -1075,6 +1076,27 @@ export async function createPaymentLink(
   return { url };
 }
 
+/**
+ * Delivery resolver for a composed reminder (pure, exported for tests):
+ *   • 'compose_only' — actor 'system' (model-, MCP-, or scheduler-invoked):
+ *     NO autonomous sends this milestone; the row returns a mailto only and
+ *     the email adapter is never called.
+ *   • 'email' — a human actor ('user' | 'ai_suggested_user_confirmed'), the
+ *     tenant has an email, and the real email adapter is configured: a real
+ *     server-side send is reported.
+ *   • 'mailto' — everything else (no tenant email, or unconfigured/dev mock
+ *     send): the landlord sends from their own mail client.
+ */
+export function reminderDelivery(
+  actor: AuditActor,
+  tenantEmail: string | null,
+  realEmailConfigured: boolean,
+): 'email' | 'mailto' | 'compose_only' {
+  if (actor === 'system') return 'compose_only';
+  if (tenantEmail && realEmailConfigured) return 'email';
+  return 'mailto';
+}
+
 export async function sendReminders(
   accountId: string,
   input: SendRemindersInput,
@@ -1120,9 +1142,30 @@ export async function sendReminders(
       period: payment.period,
       log,
     });
-    // No real email provider is wired up — compose a mailto: link so the
-    // landlord reviews and sends it from their own mail client instead.
+    // The mailto: link is always built — it's the visible fallback and the
+    // review copy even when a real send happens. The tenant@example.com
+    // placeholder exists only in this string; it is NEVER handed to the
+    // email adapter.
     const mailto = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    // Server-side send (F1): only for a HUMAN actor with a real tenant email —
+    // 'system' (model/MCP/scheduler) composes only, never sends autonomously.
+    // In dev/unconfigured environments this hits the mock adapter (a recorded,
+    // logged, deterministic send) but is still reported as 'mailto': we never
+    // claim a real email that didn't happen. A send failure degrades this row
+    // to 'mailto' too — it never fails the batch.
+    const delivery = reminderDelivery(actor, tenant?.email ?? null, isRealEmailConfigured());
+    let deliveredVia: 'email' | 'mailto' = 'mailto';
+    if (delivery !== 'compose_only' && tenant?.email) {
+      try {
+        await createEmailAdapter().send({ to: tenant.email, subject, body });
+        if (delivery === 'email') deliveredVia = 'email';
+      } catch (err) {
+        log?.(
+          { reminderSendError: err instanceof Error ? err.message : String(err) },
+          'reminder email send failed — falling back to mailto',
+        );
+      }
+    }
     await prisma.rentPayment.update({
       where: { id: payment.id },
       data: { remindedAt: new Date() },
@@ -1132,9 +1175,9 @@ export async function sendReminders(
       action: 'rent.reminder_sent',
       entityType: 'rent_payment',
       entityId: payment.id,
-      detail: { period: payment.period, tenantId: tenant?.id ?? null },
+      detail: { period: payment.period, tenantId: tenant?.id ?? null, deliveredVia, to },
     });
-    results.push({ rentPaymentId, status: 'sent', mailto, subject });
+    results.push({ rentPaymentId, status: 'sent', mailto, subject, deliveredVia, to });
   }
   return { results };
 }

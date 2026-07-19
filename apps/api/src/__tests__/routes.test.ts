@@ -13,6 +13,8 @@ import {
   InsightListResponseSchema,
   IntegrationListResponseSchema,
   LeaseListResponseSchema,
+  NotificationPrefsSchema,
+  DEFAULT_NOTIFICATION_PREFS,
   PropertyDetailResponseSchema,
   PropertyListResponseSchema,
   UnitDetailResponseSchema,
@@ -23,6 +25,7 @@ import {
   TenantDetailResponseSchema,
   TenantListResponseSchema,
   TransactionListResponseSchema,
+  WeeklyBriefLatestResponseSchema,
 } from '@hearth/shared';
 import {
   CONTRACTOR_COUNT,
@@ -182,8 +185,9 @@ describe('GET endpoints satisfy the shared response schemas', () => {
 
   it('/reports/library + /reports', async () => {
     const library = ReportLibraryResponseSchema.parse(await getJson('/api/v1/reports/library'));
-    expect(library).toHaveLength(14);
+    expect(library).toHaveLength(15);
     expect(library.find((i) => i.type === 'schedule_e')?.maturity).toBe('full');
+    expect(library.find((i) => i.type === 'weekly_brief')?.maturity).toBe('full');
     expect(library.find((i) => i.type === 'balance_sheet')?.maturity).toBe('simplified');
 
     const reports = ReportListResponseSchema.parse(await getJson('/api/v1/reports'));
@@ -222,6 +226,40 @@ describe('GET endpoints satisfy the shared response schemas', () => {
 
     const insight = DashboardInsightResponseSchema.parse(await getJson('/api/v1/dashboard/insight'));
     expect(insight?.severity).toBe('warning');
+  });
+
+  it('/settings/notifications GET + PUT round-trip', async () => {
+    const prefs = NotificationPrefsSchema.parse(await getJson('/api/v1/settings/notifications'));
+    expect(prefs).toEqual(DEFAULT_NOTIFICATION_PREFS);
+
+    const updated = { ...prefs, monthly_review: { push: true, email: false } };
+    const put = await app.inject({
+      method: 'PUT',
+      url: '/api/v1/settings/notifications',
+      payload: updated,
+    });
+    expect(put.statusCode).toBe(200);
+    expect(NotificationPrefsSchema.parse(put.json())).toEqual(updated);
+    expect(NotificationPrefsSchema.parse(await getJson('/api/v1/settings/notifications'))).toEqual(
+      updated,
+    );
+
+    // Restore the account-level store so later files see defaults.
+    const restore = await app.inject({
+      method: 'PUT',
+      url: '/api/v1/settings/notifications',
+      payload: prefs,
+    });
+    expect(restore.statusCode).toBe(200);
+  });
+
+  it('/reports/weekly-brief/latest parses with the shared schema', async () => {
+    // May be null (no brief yet) or a brief left by another suite's daily run —
+    // both are contract-valid.
+    const latest = WeeklyBriefLatestResponseSchema.parse(
+      await getJson('/api/v1/reports/weekly-brief/latest'),
+    );
+    if (latest !== null) expect(latest.report.type).toBe('weekly_brief');
   });
 
   it('/settings/account + /integrations', async () => {

@@ -159,6 +159,9 @@ export const SendReminderResultSchema = z.object({
   reason: z.string().optional(), // present when skipped
   mailto: z.string().optional(), // present when sent — opens the composed reminder in the user's own mail client
   subject: z.string().optional(), // present when sent — for display before opening the mail client
+  // Both present only when status === 'sent'.
+  deliveredVia: z.enum(['email', 'mailto']).optional(), // 'email' = real server-side send happened
+  to: z.string().optional(), // recipient of the real send / mailto target
 });
 
 export const SendRemindersResponseSchema = z.object({

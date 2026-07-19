@@ -195,6 +195,58 @@ const onboardingState = {
   ],
 };
 
+// Weekly brief (W1) — an api_call item and a navigate item so the axe smoke
+// run covers the card's button, link, and footer link together.
+const weeklyBrief = {
+  report: {
+    id: 'r-brief',
+    accountId: 'acc1',
+    type: 'weekly_brief',
+    title: 'Weekly brief — Jul 6 – Jul 12, 2026',
+    periodStart: '2026-07-06T04:00:00.000Z',
+    periodEnd: '2026-07-13T04:00:00.000Z',
+    taxYear: null,
+    propertyId: null,
+    generatedAt: '2026-07-13T09:00:00.000Z',
+  },
+  brief: {
+    weekStart: '2026-07-06T04:00:00.000Z',
+    weekEnd: '2026-07-13T04:00:00.000Z',
+    weekLabel: 'Jul 6 – Jul 12, 2026',
+    headline: '1 tenant is behind on rent — $1,150 outstanding',
+    summary: "You've collected $12,545 in rent for July so far.",
+    items: [
+      {
+        text: 'T. Okafor is 6 days late — $1,150 still owed.',
+        action: {
+          label: 'Send reminder',
+          action: {
+            kind: 'api_call',
+            method: 'POST',
+            path: '/rent/reminders',
+            body: { rentPaymentIds: ['rp1'] },
+          },
+        },
+      },
+      {
+        text: '3 imported transactions are waiting in the review queue.',
+        action: {
+          label: 'Review transactions',
+          action: { kind: 'navigate', to: '/money/review' },
+        },
+      },
+    ],
+    stats: {
+      rentCollectedCents: 1254500,
+      rentOutstandingCents: 115000,
+      lateCount: 1,
+      newTransactionCount: 6,
+      pendingReviewCount: 3,
+      leasesEndingSoonCount: 0,
+    },
+  },
+};
+
 const fixtures: Record<string, unknown> = {
   '/api/v1/dashboard/kpis': kpis,
   '/api/v1/dashboard/cashflow-series': series,
@@ -204,6 +256,7 @@ const fixtures: Record<string, unknown> = {
   '/api/v1/insights': [renewalInsight, insight],
   '/api/v1/properties': properties,
   '/api/v1/onboarding': onboardingState,
+  '/api/v1/reports/weekly-brief/latest': weeklyBrief,
 };
 
 function fixtureFetch(input: RequestInfo | URL): Promise<Response> {
@@ -252,8 +305,10 @@ describe('accessibility smoke test', () => {
       </QueryClientProvider>,
     );
 
-    // Wait for all async sections to settle (KPIs, insight, activity).
+    // Wait for all async sections to settle (KPIs, weekly brief, insight,
+    // activity).
     await screen.findByText('$8,450');
+    await screen.findByText('1 tenant is behind on rent — $1,150 outstanding');
     await screen.findByText('T. Okafor is 6 days late on July rent');
     await screen.findByText(/j\. rivera paid/i);
 

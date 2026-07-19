@@ -33,6 +33,13 @@ export async function reportsRoutes(app: FastifyInstance): Promise<void> {
     return reply.code(201).send(report);
   });
 
+  // Static before parameterized: must stay registered ahead of /reports/:id.
+  // Read route, no guard; body is JSON `null` until the first brief exists.
+  app.get('/reports/weekly-brief/latest', async (req, reply) => {
+    const latest = await reportService.getLatestWeeklyBrief(req.accountId);
+    return reply.send(latest);
+  });
+
   app.get<{ Params: { id: string } }>('/reports/:id', async (req) =>
     reportService.getById(req.accountId, req.params.id),
   );

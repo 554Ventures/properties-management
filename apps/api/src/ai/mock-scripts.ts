@@ -285,7 +285,7 @@ const lateRentScript: MockScript = {
         toolUse('toolu_mock_late_action', 'propose_action', {
           type: 'action_card',
           title: 'Send rent reminders',
-          body: 'A friendly reminder email goes out to the tenant right away.',
+          body: "Sends the reminder email to the tenant — or opens it in your mail app when email sending isn't set up.",
           actions,
         }),
         stopToolUse,

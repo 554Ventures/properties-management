@@ -16,6 +16,7 @@ import { api, ApiClientError } from '../../../api/client';
 import { useChat } from '../../../state/chat';
 import {
   ComposedRemindersModal,
+  composeRemindersFromResponse,
   type ComposedReminder,
 } from '../../rent/ComposedRemindersModal';
 import { Button } from '../../ui/Button';
@@ -27,14 +28,6 @@ function isActionAllowed(item: ActionCardAction): boolean {
   return item.action.kind === 'navigate'
     ? isAllowedNavigate(item.action.to)
     : isAllowedApiCall(item.action.method, item.action.path);
-}
-
-// "Send reminder to Jeremy Hopkins" -> "Jeremy Hopkins"; only meaningful for
-// the single-tenant action (mock-scripts.ts and the real prompt both use this
-// phrasing) — bulk actions fall back to the composed subject line per row.
-function extractTenantName(label: string): string | null {
-  const match = /^Send reminder to (.+)$/.exec(label);
-  return match?.[1] ?? null;
 }
 
 export function ActionCardBlock({ block }: { block: ActionCardBlockData }) {
@@ -60,21 +53,12 @@ export function ActionCardBlock({ block }: { block: ActionCardBlockData }) {
       if (method === 'PATCH') {
         await api.patch(path, body ?? {});
       } else if (method === 'POST' && path === '/rent/reminders') {
-        // No email is sent server-side (docs/WHATS_NEXT + rent.service.ts) —
-        // surface the composed mailto: links the same way the Rent
-        // Collection and Tenants pages do, instead of just a "Done" toast.
+        // Clicking here is a human action, so the server really emails the
+        // tenant when email sending is configured (F1) — surface the result
+        // through the same shared modal the Rent Collection page uses:
+        // "Sent to X" for real sends, the composed mailto: link otherwise.
         const response = await api.post<SendRemindersResponse>(path, body);
-        const sent = response.results.filter(
-          (r): r is typeof r & { mailto: string } => r.status === 'sent' && !!r.mailto,
-        );
-        const singleName = sent.length === 1 ? extractTenantName(item.label) : null;
-        setComposedReminders(
-          sent.map((r) => ({
-            tenantName: singleName ?? r.subject ?? item.label,
-            mailto: r.mailto,
-            subject: singleName ? r.subject : undefined,
-          })),
-        );
+        setComposedReminders(composeRemindersFromResponse(response, item.label));
       } else {
         await api.post(path, body);
       }

@@ -1,33 +1,45 @@
 import {
   formatUsd,
   formatUsdWhole,
+  WeeklyBriefDataSchema,
   type GenerateReportInput,
   type GraceDaysBasis,
   type Report,
   type ReportDetailResponse,
   type ReportType,
   type ReportTypeInfo,
+  type WeeklyBriefData,
+  type WeeklyBriefLatestResponse,
 } from '@hearth/shared';
-import type { Prisma, Report as DbReport } from '@prisma/client';
+import { Prisma, type Report as DbReport } from '@prisma/client';
 import { toCsv, type CsvColumn } from '../lib/csv';
 import {
+  addDays,
   addMonthsToPeriod,
   currentPeriodInTz,
   iso,
+  localMidnightUtc,
   monthEndExclusiveInTz,
   monthStartInTz,
   periodLabel,
   periodOfInTz,
+  wallClockParts,
+  weekStartInTz,
   yearRangeInTz,
 } from '../lib/dates';
 import { BadRequestError, NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { renderReportPdf, type PdfBlock } from '../lib/pdf';
 import { createEmailAdapter } from '../integrations/factory';
+import {
+  createWeeklyBriefComposer,
+  type WeeklyBriefCandidateAction,
+  type WeeklyBriefFacts,
+} from '../ai/weekly-brief';
 import { accountTimezone } from './account.service';
 import { writeAudit, type AuditActor } from './audit.service';
 import { ordinaryExpense, pnlBucket } from '../lib/pnl';
-import { deriveRentStatus } from './rent.service';
+import { deriveRentStatus, getMonthStatus } from './rent.service';
 
 // ── library ──────────────────────────────────────────────────────────────────
 
@@ -42,6 +54,7 @@ const LIBRARY: ReportTypeInfo[] = [
   { type: 'general_ledger', name: 'General Ledger', description: 'Every confirmed transaction in the period.', maturity: 'full', supportedFilters: ['taxYear', 'dateRange', 'property'] },
   { type: 'tenant_ledger', name: 'Tenant Ledger', description: 'Rent charges and payments per tenant.', maturity: 'full', supportedFilters: ['dateRange', 'property'] },
   { type: 'monthly_review', name: 'Monthly Review', description: 'AI-style monthly summary: bottom line, per-property nets and watch items.', maturity: 'full', supportedFilters: ['dateRange'] },
+  { type: 'weekly_brief', name: 'Weekly Brief', description: 'AI weekly digest: what changed this week and what needs attention.', maturity: 'full', supportedFilters: ['dateRange'] },
   { type: 'income_statement', name: 'Income Statement', description: 'Simplified income statement for the period.', maturity: 'simplified', supportedFilters: ['taxYear', 'dateRange', 'property'] },
   { type: 'balance_sheet', name: 'Balance Sheet', description: 'Simplified balance sheet: property cost basis and period cash.', maturity: 'simplified', supportedFilters: ['dateRange'] },
   { type: 'reo_schedule', name: 'REO Schedule', description: 'Real-estate-owned schedule: acquisition dates, cost basis and rents.', maturity: 'simplified', supportedFilters: [] },
@@ -772,7 +785,27 @@ async function buildData(
       return buildStressTest(accountId, range, propertyId);
     case 'monthly_review':
       return buildMonthlyReview(accountId, periodOfInTz(range.from, tz), tz);
+    case 'weekly_brief':
+      // Never reached — generate() branches to generateWeeklyBriefReport first
+      // (kept for switch exhaustiveness over ReportType).
+      throw new BadRequestError('weekly_brief is generated via its dedicated branch');
   }
+}
+
+// Scheduler-owned report types are idempotent per period: the partial unique
+// index on (accountId, type, periodStart) (migration report_period_unique)
+// rejects a second snapshot for the same week/month. On P2002 the manual
+// generate path re-reads and returns the existing snapshot (repo convention:
+// catch P2002 and re-read) instead of surfacing a 500.
+async function existingSchedulerReport(
+  err: unknown,
+  accountId: string,
+  type: 'weekly_brief' | 'monthly_review',
+  periodStart: Date,
+): Promise<Report | null> {
+  if (!(err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002')) return null;
+  const row = await prisma.report.findFirst({ where: { accountId, type, periodStart } });
+  return row ? toApiReport(row) : null;
 }
 
 /** Generates and snapshots a report (dataJson never silently changes later). */
@@ -786,7 +819,37 @@ export async function generate(
     const period = input.from
       ? periodOfInTz(new Date(input.from), tz)
       : addMonthsToPeriod(currentPeriodInTz(tz), -1);
-    return generateMonthlyReviewReport(accountId, period, actor);
+    try {
+      return await generateMonthlyReviewReport(accountId, period, actor);
+    } catch (err) {
+      const existing = await existingSchedulerReport(
+        err,
+        accountId,
+        'monthly_review',
+        monthStartInTz(period, tz),
+      );
+      if (existing) return existing;
+      throw err;
+    }
+  }
+  if (input.type === 'weekly_brief') {
+    // Default: the most recent COMPLETED Mon–Sun week (same anchor the daily
+    // scheduler uses); an explicit `from` snaps to the Monday of its week.
+    // Completed weeks only: a manual brief for the current (or a future) week
+    // would share the scheduler's periodStart key, permanently suppressing the
+    // end-of-week brief + notification for that week with mid-week data.
+    const latest = lastCompletedWeekStartInTz(new Date(), tz);
+    const weekStart = input.from ? weekStartInTz(new Date(input.from), tz) : latest;
+    if (weekStart.getTime() > latest.getTime()) {
+      throw new BadRequestError('Weekly briefs cover completed weeks only');
+    }
+    try {
+      return await generateWeeklyBriefReport(accountId, weekStart, actor);
+    } catch (err) {
+      const existing = await existingSchedulerReport(err, accountId, 'weekly_brief', weekStart);
+      if (existing) return existing;
+      throw err;
+    }
   }
   const info = typeInfo(input.type);
   const { from, to, taxYear, label } = resolveRange(input, tz);
@@ -842,6 +905,208 @@ export async function generateMonthlyReviewReport(
     detail: { type: 'monthly_review', period },
   });
   return toApiReport(row);
+}
+
+// ── weekly brief (W1) ────────────────────────────────────────────────────────
+
+/** Monday 00:00 (account-local) of the most recent COMPLETED Mon–Sun week —
+ *  i.e. one local week before the week containing `now`. */
+export function lastCompletedWeekStartInTz(now: Date, tz: string): Date {
+  const thisWeekStart = weekStartInTz(now, tz);
+  const p = wallClockParts(tz, thisWeekStart);
+  return localMidnightUtc(p.year, p.month, p.day - 7, tz);
+}
+
+/** "Jul 13 – Jul 19, 2026" for the Mon–Sun week starting at `weekStart`.
+ *  Formats in the account's timezone: weekStart/lastDay are UTC instants of
+ *  account-LOCAL midnights, so a UTC render would shift a day early for
+ *  UTC+ timezones. */
+function weekLabelOf(weekStart: Date, lastDay: Date, tz: string): string {
+  const fmt = (d: Date, withYear: boolean) =>
+    d.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      ...(withYear ? { year: 'numeric' } : {}),
+      timeZone: tz,
+    });
+  return `${fmt(weekStart, false)} – ${fmt(lastDay, true)}`;
+}
+
+/**
+ * Deterministic facts for the weekly brief: rent status (month-to-date for the
+ * month the week ends in), week-scoped activity counts, upcoming lease ends,
+ * active warnings — plus the server-built candidateActions the composer may
+ * reference by id. Every candidate reuses an already-allowlisted call
+ * (POST /rent/reminders) or an in-app navigate; nothing here is model-authored.
+ */
+export async function buildWeeklyBriefFacts(
+  accountId: string,
+  weekStart: Date,
+  tz: string,
+): Promise<WeeklyBriefFacts> {
+  const p = wallClockParts(tz, weekStart);
+  const weekEnd = localMidnightUtc(p.year, p.month, p.day + 7, tz); // exclusive
+  const lastDay = localMidnightUtc(p.year, p.month, p.day + 6, tz); // Sunday
+  const period = periodOfInTz(lastDay, tz);
+
+  const tracker = await getMonthStatus(accountId, period);
+  const lateRows = tracker.rows
+    .filter((r) => (r.status === 'late' || r.status === 'partial') && (r.daysLate ?? 0) > 0)
+    .map((r) => ({
+      tenantName: r.tenantName,
+      rentPaymentId: r.rentPaymentId,
+      daysLate: r.daysLate ?? 0,
+      owedCents: r.amountCents + r.lateFeeCents - r.paidCents,
+    }));
+
+  const newTransactionCount = await prisma.transaction.count({
+    where: { accountId, createdAt: { gte: weekStart, lt: weekEnd } },
+  });
+  const pendingReviewCount = await prisma.transaction.count({
+    where: { accountId, status: 'pending_review' },
+  });
+  const endingLeases = await prisma.lease.findMany({
+    where: {
+      status: 'active',
+      unit: { property: { accountId } },
+      endDate: { gte: weekEnd, lte: addDays(weekEnd, 60) },
+    },
+    include: { leaseTenants: { include: { tenant: true }, orderBy: { isPrimary: 'desc' } } },
+    orderBy: { endDate: 'asc' },
+  });
+  const warnings = await prisma.insight.findMany({
+    where: { accountId, status: 'active', severity: 'warning' },
+    orderBy: { createdAt: 'desc' },
+    select: { title: true, actionTarget: true },
+  });
+
+  const candidateActions: WeeklyBriefCandidateAction[] = [
+    ...lateRows.slice(0, 5).map((r) => ({
+      id: `remind:${r.rentPaymentId}`,
+      label: `Send reminder to ${r.tenantName}`,
+      action: {
+        kind: 'api_call' as const,
+        method: 'POST' as const,
+        path: '/rent/reminders',
+        body: { rentPaymentIds: [r.rentPaymentId] },
+      },
+    })),
+    ...(pendingReviewCount > 0
+      ? [
+          {
+            id: 'review-queue',
+            label: 'Open the review queue',
+            action: { kind: 'navigate' as const, to: '/money/review' },
+          },
+        ]
+      : []),
+    {
+      id: 'rent-tracker',
+      label: 'Open the rent tracker',
+      action: { kind: 'navigate' as const, to: `/rent?period=${period}` },
+    },
+    ...endingLeases.slice(0, 3).flatMap((lease) => {
+      const tenant = lease.leaseTenants[0]?.tenant;
+      if (!tenant) return [];
+      return [
+        {
+          id: `tenant:${tenant.id}`,
+          label: `Review ${tenant.fullName}'s lease`,
+          action: { kind: 'navigate' as const, to: `/tenants/${tenant.id}` },
+        },
+      ];
+    }),
+  ];
+
+  return {
+    accountId,
+    weekStart: iso(weekStart),
+    weekEnd: iso(weekEnd),
+    weekLabel: weekLabelOf(weekStart, lastDay, tz),
+    period,
+    rentCollectedCents: tracker.collectedCents,
+    rentOutstandingCents: tracker.outstandingCents,
+    lateRows,
+    pendingReviewCount,
+    newTransactionCount,
+    leasesEndingSoonCount: endingLeases.length,
+    warnings,
+    candidateActions,
+  };
+}
+
+// Defaults to 'system' — the daily scheduler is the canonical caller;
+// generate() passes the surface's actor through.
+export async function generateWeeklyBriefReport(
+  accountId: string,
+  weekStart: Date,
+  actor: AuditActor = 'system',
+): Promise<Report> {
+  const tz = await accountTimezone(accountId);
+  const facts = await buildWeeklyBriefFacts(accountId, weekStart, tz);
+  const composed = await createWeeklyBriefComposer().compose(facts);
+  const data: WeeklyBriefData & { table: ReportTable } = {
+    weekStart: facts.weekStart,
+    weekEnd: facts.weekEnd,
+    weekLabel: facts.weekLabel,
+    headline: composed.headline,
+    summary: composed.summary,
+    items: composed.items,
+    stats: {
+      rentCollectedCents: facts.rentCollectedCents,
+      rentOutstandingCents: facts.rentOutstandingCents,
+      lateCount: facts.lateRows.length,
+      newTransactionCount: facts.newTransactionCount,
+      pendingReviewCount: facts.pendingReviewCount,
+      leasesEndingSoonCount: facts.leasesEndingSoonCount,
+    },
+    // Generic snapshot table so CSV/PDF exports and the generic renderers
+    // keep working on a data shape they don't otherwise know.
+    table: {
+      columns: [{ key: 'item', label: 'Item' }],
+      rows: composed.items.map((i) => ({ item: i.text })),
+    },
+  };
+  // Contract check before persisting — a composer/shape bug fails loudly here,
+  // never as a corrupt archived snapshot.
+  WeeklyBriefDataSchema.parse(data);
+  const row = await prisma.report.create({
+    data: {
+      accountId,
+      type: 'weekly_brief',
+      title: `Weekly brief — ${facts.weekLabel}`,
+      periodStart: weekStart,
+      periodEnd: new Date(facts.weekEnd),
+      taxYear: null,
+      propertyId: null,
+      dataJson: JSON.stringify(data),
+    },
+  });
+  await writeAudit(accountId, {
+    actor,
+    action: 'report.generated',
+    entityType: 'report',
+    entityId: row.id,
+    detail: { type: 'weekly_brief', weekStart: facts.weekStart },
+  });
+  return toApiReport(row);
+}
+
+/** Newest weekly_brief with a contract-valid snapshot; null when none exists
+ *  or the stored shape no longer parses (never a 500). */
+export async function getLatestWeeklyBrief(accountId: string): Promise<WeeklyBriefLatestResponse> {
+  const row = await prisma.report.findFirst({
+    where: { accountId, type: 'weekly_brief' },
+    orderBy: { generatedAt: 'desc' },
+  });
+  if (!row) return null;
+  try {
+    const parsed = WeeklyBriefDataSchema.safeParse(JSON.parse(row.dataJson));
+    if (!parsed.success) return null;
+    return { report: toApiReport(row), brief: parsed.data };
+  } catch {
+    return null;
+  }
 }
 
 interface SnapshotTable {

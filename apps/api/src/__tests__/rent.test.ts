@@ -1,5 +1,5 @@
 // (b) Rent tracker derivations; (h) reminders set remindedAt + AuditLog.
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { SendRemindersResponseSchema } from '@hearth/shared';
 import {
@@ -13,10 +13,35 @@ import {
   TOTAL_UNITS,
 } from '../../prisma/seed-constants';
 import { buildApp } from '../app';
+import { resetMockEmail, sentEmails } from '../integrations/mock/mock-email';
 import { currentPeriod } from '../lib/dates';
 import { prisma } from '../lib/prisma';
 import { getDemoAccountId } from '../plugins/auth';
+import type { EmailAdapter } from '../integrations/types';
 import * as rentService from '../services/rent.service';
+
+// F1 'email' honesty coverage: the factory is module-mocked (spread of the real
+// module) because createEmailAdapter memoizes the real CF adapter — env
+// stubbing alone would construct a real Cloudflare client. The flag defaults to
+// false so every other test keeps the real (unconfigured → mock) behavior.
+const emailControl = vi.hoisted(() => ({
+  configured: false,
+  adapter: null as {
+    send: (msg: { to: string; subject: string; body: string }) => Promise<{ messageId: string }>;
+  } | null,
+}));
+
+vi.mock('../integrations/factory', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../integrations/factory')>();
+  return {
+    ...actual,
+    isRealEmailConfigured: () => emailControl.configured,
+    createEmailAdapter: (): EmailAdapter =>
+      emailControl.configured && emailControl.adapter
+        ? emailControl.adapter
+        : actual.createEmailAdapter(),
+  };
+});
 
 let app: FastifyInstance;
 
@@ -60,6 +85,10 @@ describe('rentService.getMonthStatus (seed derivations)', () => {
 });
 
 describe('POST /rent/reminders', () => {
+  beforeEach(() => {
+    resetMockEmail();
+  });
+
   it('sends to a late payment, sets remindedAt and writes an AuditLog row', async () => {
     const accountId = await getDemoAccountId();
     const tracker = await rentService.getMonthStatus(accountId, currentPeriod());
@@ -67,6 +96,9 @@ describe('POST /rent/reminders', () => {
     const paidRow = tracker.rows.find((r) => r.status === 'paid');
     expect(okafor).toBeDefined();
     expect(paidRow).toBeDefined();
+    const okaforTenant = await prisma.tenant.findFirstOrThrow({
+      where: { id: okafor!.tenantId },
+    });
 
     const res = await app.inject({
       method: 'POST',
@@ -81,9 +113,19 @@ describe('POST /rent/reminders', () => {
         status: 'sent',
         mailto: expect.stringMatching(/^mailto:/),
         subject: expect.stringMatching(/^Rent reminder/),
+        // Test env has no CF email vars → the mock adapter records the send
+        // but we never CLAIM a real email: deliveredVia stays 'mailto'.
+        deliveredVia: 'mailto',
+        to: okaforTenant.email,
       },
       { rentPaymentId: paidRow!.rentPaymentId, status: 'skipped', reason: 'already_paid' },
     ]);
+
+    // Human-actor route path drives the (mock) adapter — the deterministic
+    // dev-mode send hit the tenant's real address, never a placeholder.
+    expect(sentEmails).toHaveLength(1);
+    expect(sentEmails[0]!.to).toBe(okaforTenant.email);
+    expect(sentEmails[0]!.subject).toMatch(/^Rent reminder/);
 
     const updated = await prisma.rentPayment.findUnique({
       where: { id: okafor!.rentPaymentId },
@@ -92,8 +134,176 @@ describe('POST /rent/reminders', () => {
 
     const audit = await prisma.auditLog.findFirst({
       where: { accountId, action: 'rent.reminder_sent', entityId: okafor!.rentPaymentId },
+      orderBy: { createdAt: 'desc' },
     });
     expect(audit).not.toBeNull();
+    expect(JSON.parse(audit!.detailJson!)).toMatchObject({
+      deliveredVia: 'mailto',
+      to: okaforTenant.email,
+    });
+  });
+
+  it("actor 'system' composes only — the email adapter is never called", async () => {
+    const accountId = await getDemoAccountId();
+    const tracker = await rentService.getMonthStatus(accountId, currentPeriod());
+    const late = tracker.rows.find((r) => r.status === 'late');
+    expect(late).toBeDefined();
+
+    const { results } = await rentService.sendReminders(
+      accountId,
+      { rentPaymentIds: [late!.rentPaymentId] },
+      'system',
+    );
+    expect(results[0]).toMatchObject({
+      status: 'sent',
+      deliveredVia: 'mailto',
+      mailto: expect.stringMatching(/^mailto:/),
+    });
+    expect(sentEmails).toHaveLength(0);
+  });
+
+  it('an adapter send failure degrades the row to mailto without failing the batch', async () => {
+    const accountId = await getDemoAccountId();
+    // The mock adapter throws for addresses containing "fail".
+    const property = await prisma.property.create({
+      data: { accountId, addressLine1: '3 Fail Ln', city: 'Testville', state: 'NY', zip: '10001' },
+    });
+    const unit = await prisma.unit.create({ data: { propertyId: property.id, label: 'F-1' } });
+    const tenant = await prisma.tenant.create({
+      data: { accountId, fullName: 'Failing Fiona', email: 'fiona.fail@example.com' },
+    });
+    const lease = await prisma.lease.create({
+      data: {
+        unitId: unit.id,
+        rentCents: 100000,
+        dueDay: 1,
+        startDate: new Date('2026-01-01'),
+        endDate: new Date('2026-12-31'),
+        status: 'active',
+        leaseTenants: { create: { tenantId: tenant.id, isPrimary: true } },
+      },
+    });
+    const dueDate = new Date();
+    dueDate.setUTCDate(dueDate.getUTCDate() - 10);
+    const payment = await prisma.rentPayment.create({
+      data: { leaseId: lease.id, period: currentPeriod(), dueDate, amountCents: 100000, status: 'due' },
+    });
+
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/rent/reminders',
+        payload: { rentPaymentIds: [payment.id] },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = SendRemindersResponseSchema.parse(res.json());
+      expect(body.results[0]).toMatchObject({
+        status: 'sent',
+        deliveredVia: 'mailto',
+        to: 'fiona.fail@example.com',
+        mailto: expect.stringMatching(/^mailto:/),
+      });
+      expect(sentEmails).toHaveLength(0);
+    } finally {
+      await prisma.auditLog.deleteMany({ where: { accountId, entityId: payment.id } });
+      await prisma.property.delete({ where: { id: property.id } });
+      await prisma.tenant.delete({ where: { id: tenant.id } });
+    }
+  });
+});
+
+describe('POST /rent/reminders with the real email adapter configured (module-mocked factory)', () => {
+  afterEach(() => {
+    emailControl.configured = false;
+    emailControl.adapter = null;
+  });
+
+  it("a successful configured send reports deliveredVia 'email' in the row and the audit", async () => {
+    const accountId = await getDemoAccountId();
+    const tracker = await rentService.getMonthStatus(accountId, currentPeriod());
+    const okafor = tracker.rows.find((r) => r.tenantName === OKAFOR_NAME)!;
+    const okaforTenant = await prisma.tenant.findFirstOrThrow({ where: { id: okafor.tenantId } });
+    const sends: Array<{ to: string; subject: string; body: string }> = [];
+    emailControl.configured = true;
+    emailControl.adapter = {
+      send: async (msg) => {
+        sends.push(msg);
+        return { messageId: 'real_send_1' };
+      },
+    };
+
+    const { results } = await rentService.sendReminders(
+      accountId,
+      { rentPaymentIds: [okafor.rentPaymentId] },
+      'user',
+    );
+    expect(results[0]).toMatchObject({
+      rentPaymentId: okafor.rentPaymentId,
+      status: 'sent',
+      deliveredVia: 'email',
+      to: okaforTenant.email,
+    });
+    // The adapter received the tenant's real address, never a placeholder.
+    expect(sends).toHaveLength(1);
+    expect(sends[0]!.to).toBe(okaforTenant.email);
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { accountId, action: 'rent.reminder_sent', entityId: okafor.rentPaymentId },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(audit).not.toBeNull();
+    expect(JSON.parse(audit!.detailJson!)).toMatchObject({
+      deliveredVia: 'email',
+      to: okaforTenant.email,
+    });
+  });
+
+  it("a configured-adapter send failure degrades the row to 'mailto' without failing the batch", async () => {
+    const accountId = await getDemoAccountId();
+    const tracker = await rentService.getMonthStatus(accountId, currentPeriod());
+    const okafor = tracker.rows.find((r) => r.tenantName === OKAFOR_NAME)!;
+    emailControl.configured = true;
+    emailControl.adapter = {
+      send: async () => {
+        throw new Error('provider outage');
+      },
+    };
+
+    const { results } = await rentService.sendReminders(
+      accountId,
+      { rentPaymentIds: [okafor.rentPaymentId] },
+      'user',
+    );
+    expect(results[0]).toMatchObject({
+      status: 'sent',
+      deliveredVia: 'mailto',
+      mailto: expect.stringMatching(/^mailto:/),
+    });
+  });
+});
+
+describe('rentService.reminderDelivery (pure resolver)', () => {
+  it("actor 'system' is always compose-only — no autonomous sends", () => {
+    expect(rentService.reminderDelivery('system', 'tenant@example.com', true)).toBe('compose_only');
+    expect(rentService.reminderDelivery('system', 'tenant@example.com', false)).toBe(
+      'compose_only',
+    );
+    expect(rentService.reminderDelivery('system', null, true)).toBe('compose_only');
+  });
+
+  it('a human actor with a tenant email and a configured adapter is a real email send', () => {
+    expect(rentService.reminderDelivery('user', 'tenant@example.com', true)).toBe('email');
+    expect(
+      rentService.reminderDelivery('ai_suggested_user_confirmed', 'tenant@example.com', true),
+    ).toBe('email');
+  });
+
+  it('falls back to mailto without a tenant email or without configuration', () => {
+    expect(rentService.reminderDelivery('user', null, true)).toBe('mailto');
+    expect(rentService.reminderDelivery('user', 'tenant@example.com', false)).toBe('mailto');
+    expect(rentService.reminderDelivery('ai_suggested_user_confirmed', null, false)).toBe(
+      'mailto',
+    );
   });
 });
 
