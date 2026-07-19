@@ -679,7 +679,14 @@ export function RentTracker() {
                                             label: 'Remind',
                                             icon: <IconBell size={12} />,
                                             variant: 'secondary' as const,
-                                            busy: remind.isPending,
+                                            // Only the row whose reminder is in flight
+                                            // shows busy (bulk send marks all its rows).
+                                            busy:
+                                              remind.isPending &&
+                                              (remind.variables?.rentPaymentIds.includes(
+                                                row.rentPaymentId,
+                                              ) ??
+                                                false),
                                             onClick: () => remindOne(row),
                                           },
                                         ]
