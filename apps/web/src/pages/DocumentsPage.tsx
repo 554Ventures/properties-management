@@ -144,7 +144,7 @@ export function DocumentsPage() {
 
   const confirmDelete = () => {
     if (!deleting) return;
-    deleteDocument.mutate(deleting.id, {
+    deleteDocument.mutate({ id: deleting.id, entityType: deleting.entityType }, {
       onSuccess: () => {
         toast(`${deleting.name} deleted.`, 'positive');
         setDeleting(null);

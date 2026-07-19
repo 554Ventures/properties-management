@@ -3,12 +3,20 @@
 // remove/revoke with audit attribution. Runs in Supabase mode so real User
 // rows and roles exist (demo mode has neither). Provisioned accounts are
 // cleaned up in afterAll so later files see only seed data.
+import { mkdtempSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
+import FormData from 'form-data';
 import { SignJWT } from 'jose';
 import { buildApp } from '../app';
+import { iso } from '../lib/dates';
 import { prisma } from '../lib/prisma';
 import { resetAuthServiceCache } from '../services/auth.service';
+
+// Document-guard tests upload real bytes through the mock storage adapter.
+process.env.STORAGE_DIR = mkdtempSync(path.join(os.tmpdir(), 'hearth-team-test-'));
 
 const TEST_SECRET = 'test-jwt-secret-with-at-least-32-characters!';
 
@@ -44,6 +52,47 @@ const PROPERTY_PAYLOAD = {
   zip: '78701',
   units: [{ label: 'A' }],
 };
+
+const PDF_BYTES = Buffer.from('%PDF-1.4\nHearth team-guard test payload\n%%EOF', 'utf-8');
+
+// Text fields MUST come before the file part: the POST route authorizes off
+// `file.fields`, which only contains parts parsed before the file (same
+// contract documents.test.ts and both clients rely on).
+async function uploadDocument(token: string, fields: Record<string, string>) {
+  const form = new FormData();
+  for (const [key, value] of Object.entries(fields)) form.append(key, value);
+  form.append('file', PDF_BYTES, { filename: 'guard.pdf', contentType: 'application/pdf' });
+  return app.inject({
+    method: 'POST',
+    url: '/api/v1/documents',
+    payload: form.getBuffer(),
+    headers: { ...form.getHeaders(), ...auth(token) },
+  });
+}
+
+/** Owner-side setup for the document-guard tests: a property + a transaction. */
+async function createDocumentTargets(ownerToken: string) {
+  const property = await app.inject({
+    method: 'POST',
+    url: '/api/v1/properties',
+    headers: auth(ownerToken),
+    payload: PROPERTY_PAYLOAD,
+  });
+  expect(property.statusCode).toBe(201);
+  const txn = await app.inject({
+    method: 'POST',
+    url: '/api/v1/transactions',
+    headers: auth(ownerToken),
+    payload: {
+      date: iso(new Date()),
+      amountCents: 4200,
+      type: 'expense',
+      description: 'doc guard target',
+    },
+  });
+  expect(txn.statusCode).toBe(201);
+  return { propertyId: property.json().id as string, txnId: txn.json().id as string };
+}
 
 let app: FastifyInstance;
 
@@ -303,5 +352,142 @@ describe('remove & revoke are audited', () => {
       where: { accountId: ownerUser.accountId, action: 'invite.revoked', entityId: inviteId },
     });
     expect(revokeAudit?.actor).toBe('user');
+  });
+});
+
+describe('document write guards (area follows the attached entityType)', () => {
+  it("403s a member without the area on POST/PATCH/DELETE; reads stay open", async () => {
+    const ownerToken = await provision('team-owner-5', 'owner5@teamtest.example');
+    const { propertyId } = await createDocumentTargets(ownerToken);
+
+    // Owner uploads freely (owner bypass) — and this doc becomes the target
+    // for the member's denied PATCH/DELETE below.
+    const ownerUpload = await uploadDocument(ownerToken, {
+      entityType: 'property',
+      entityId: propertyId,
+      type: 'other',
+      name: 'guard-target.pdf',
+    });
+    expect(ownerUpload.statusCode).toBe(201);
+    const docId = ownerUpload.json().id as string;
+
+    // Member holds only 'rent' — no document-relevant area at all.
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/team/invites',
+      headers: auth(ownerToken),
+      payload: { email: 'member7@teamtest.example', permissions: ['rent'] },
+    });
+    const memberToken = await provision('team-member-7', 'member7@teamtest.example');
+
+    const post = await uploadDocument(memberToken, {
+      entityType: 'property',
+      entityId: propertyId,
+      type: 'other',
+    });
+    expect(post.statusCode).toBe(403);
+    expect(post.json().error.code).toBe('forbidden');
+
+    const patch = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/documents/${docId}`,
+      headers: auth(memberToken),
+      payload: { name: 'renamed.pdf' },
+    });
+    expect(patch.statusCode).toBe(403);
+    expect(patch.json().error.code).toBe('forbidden');
+
+    const del = await app.inject({
+      method: 'DELETE',
+      url: `/api/v1/documents/${docId}`,
+      headers: auth(memberToken),
+    });
+    expect(del.statusCode).toBe(403);
+    expect(del.json().error.code).toBe('forbidden');
+
+    // Reads are never guarded — list and download both work.
+    const list = await app.inject({ url: '/api/v1/documents', headers: auth(memberToken) });
+    expect(list.statusCode).toBe(200);
+    expect(list.json().documents.map((d: { id: string }) => d.id)).toContain(docId);
+    const download = await app.inject({
+      url: `/api/v1/documents/${docId}/download`,
+      headers: auth(memberToken),
+    });
+    expect(download.statusCode).toBe(200);
+
+    // The doc survived every denied write untouched.
+    const still = await prisma.document.findUniqueOrThrow({ where: { id: docId } });
+    expect(still.name).toBe('guard-target.pdf');
+  });
+
+  it("maps the area per entityType: 'money' covers transaction docs but not property docs", async () => {
+    const ownerToken = await provision('team-owner-6', 'owner6@teamtest.example');
+    const { propertyId, txnId } = await createDocumentTargets(ownerToken);
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/team/invites',
+      headers: auth(ownerToken),
+      payload: { email: 'member8@teamtest.example', permissions: ['money'] },
+    });
+    const memberToken = await provision('team-member-8', 'member8@teamtest.example');
+
+    const toTransaction = await uploadDocument(memberToken, {
+      entityType: 'transaction',
+      entityId: txnId,
+      type: 'receipt',
+    });
+    expect(toTransaction.statusCode).toBe(201);
+
+    const toProperty = await uploadDocument(memberToken, {
+      entityType: 'property',
+      entityId: propertyId,
+      type: 'other',
+    });
+    expect(toProperty.statusCode).toBe(403);
+    expect(toProperty.json().error.code).toBe('forbidden');
+  });
+
+  it("404s (never 403s) a member touching another account's document", async () => {
+    // The preHandler must fall through when the id isn't in the caller's
+    // account so the service's scoped lookup 404s — a 403 would leak that
+    // the id exists elsewhere.
+    const foreignOwner = await provision('team-owner-7', 'owner7@teamtest.example');
+    const targets = await createDocumentTargets(foreignOwner);
+    const foreignUpload = await uploadDocument(foreignOwner, {
+      entityType: 'property',
+      entityId: targets.propertyId,
+      type: 'other',
+      name: 'foreign.pdf',
+    });
+    expect(foreignUpload.statusCode).toBe(201);
+    const foreignDocId = foreignUpload.json().id as string;
+
+    // A member of a different account, holding every document-relevant area.
+    const ownerToken = await provision('team-owner-8', 'owner8@teamtest.example');
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/team/invites',
+      headers: auth(ownerToken),
+      payload: { email: 'member9@teamtest.example', permissions: ['money', 'properties', 'tenants'] },
+    });
+    const memberToken = await provision('team-member-9', 'member9@teamtest.example');
+
+    const patch = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/documents/${foreignDocId}`,
+      headers: auth(memberToken),
+      payload: { name: 'stolen.pdf' },
+    });
+    expect(patch.statusCode).toBe(404);
+
+    const del = await app.inject({
+      method: 'DELETE',
+      url: `/api/v1/documents/${foreignDocId}`,
+      headers: auth(memberToken),
+    });
+    expect(del.statusCode).toBe(404);
+
+    const still = await prisma.document.findUniqueOrThrow({ where: { id: foreignDocId } });
+    expect(still.name).toBe('foreign.pdf');
   });
 });

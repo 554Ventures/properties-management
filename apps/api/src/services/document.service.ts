@@ -82,6 +82,18 @@ export async function assertEntityOwned(
   if (!found) throw new NotFoundError(entityType, entityId);
 }
 
+/** entityType of an owned document, or null when it isn't ours / doesn't exist. */
+export async function entityTypeOf(
+  accountId: string,
+  id: string,
+): Promise<DocumentEntityType | null> {
+  const row = await prisma.document.findFirst({
+    where: { id, accountId },
+    select: { entityType: true },
+  });
+  return row ? (row.entityType as DocumentEntityType) : null;
+}
+
 export async function create(
   accountId: string,
   input: {

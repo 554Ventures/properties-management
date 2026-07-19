@@ -10,6 +10,13 @@ export interface FocusTrapOptions {
   trapTab?: boolean;
 }
 
+// Stack of active traps. With stacked dialogs (e.g. a confirm dialog above an
+// edit modal) every trap has its own capture-phase keydown listener on
+// `document`, and stopPropagation() can't stop sibling listeners on the same
+// node — so each trap checks it's topmost before handling Escape or Tab,
+// otherwise one Escape would close the whole stack at once.
+const trapStack: symbol[] = [];
+
 /**
  * Focus management for Modal/Drawer: moves focus into the container on open,
  * closes on Escape, and restores focus to the opener on close. By default it
@@ -47,7 +54,13 @@ export function useFocusTrap(
     const first = container.querySelector<HTMLElement>(FOCUSABLE);
     (first ?? container).focus();
 
+    const token = Symbol('focus-trap');
+    trapStack.push(token);
+
     const onKeyDown = (event: KeyboardEvent) => {
+      // Only the topmost trap handles keys — a lower trap ignoring Escape/Tab
+      // is what keeps a stacked dialog's Escape from closing its parent too.
+      if (trapStack[trapStack.length - 1] !== token) return;
       if (event.key === 'Escape') {
         event.stopPropagation();
         onCloseRef.current();
@@ -81,6 +94,9 @@ export function useFocusTrap(
     if (didLockScroll) document.body.style.overflow = 'hidden';
 
     return () => {
+      // indexOf (not pop): traps can unmount out of stack order.
+      const index = trapStack.indexOf(token);
+      if (index !== -1) trapStack.splice(index, 1);
       document.removeEventListener('keydown', onKeyDown, true);
       if (didLockScroll) document.body.style.overflow = previousOverflow;
       restoreRef.current?.focus();

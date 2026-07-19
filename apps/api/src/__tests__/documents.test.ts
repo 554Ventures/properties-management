@@ -442,6 +442,44 @@ describe('hostile filenames', () => {
   });
 });
 
+describe('documentCount on GET /transactions', () => {
+  it('is absent on a fresh transaction, counts attached docs, and tracks deletes', async () => {
+    const txn = await createTestTransaction('ZZDOC count target');
+
+    const listItem = async () => {
+      const res = await app.inject({ url: '/api/v1/transactions?q=ZZDOC%20count%20target' });
+      expect(res.statusCode).toBe(200);
+      const item = res.json().items.find((t: { id: string }) => t.id === txn.id);
+      expect(item).toBeDefined();
+      return TransactionSchema.parse(item);
+    };
+
+    // Fresh transaction → the field is omitted, not 0.
+    expect((await listItem()).documentCount).toBeUndefined();
+
+    const first = await upload({
+      entityType: 'transaction',
+      entityId: txn.id,
+      type: 'receipt',
+      name: 'ZZDOC count-1.pdf',
+    });
+    const firstDoc = DocumentSchema.parse(first.json());
+    createdDocIds.push(firstDoc.id);
+    const second = await upload({
+      entityType: 'transaction',
+      entityId: txn.id,
+      type: 'other',
+      name: 'ZZDOC count-2.pdf',
+    });
+    createdDocIds.push(DocumentSchema.parse(second.json()).id);
+    expect((await listItem()).documentCount).toBe(2);
+
+    const deleted = await app.inject({ method: 'DELETE', url: `/api/v1/documents/${firstDoc.id}` });
+    expect(deleted.statusCode).toBe(204);
+    expect((await listItem()).documentCount).toBe(1);
+  });
+});
+
 describe('receipt flow (transaction + type receipt)', () => {
   it('sets receiptUrl on upload and clears it on delete', async () => {
     const { accountId } = await seededEntities();

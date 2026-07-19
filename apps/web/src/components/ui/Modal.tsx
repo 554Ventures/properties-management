@@ -40,7 +40,11 @@ export function Modal({ open, onClose, title, children, footer, size = 'md' }: M
           sizeClasses[size],
         )}
       >
-        <header className="flex items-center justify-between gap-4 border-b border-border px-6 py-4">
+        {/* div, not <header>/<footer>: those map to banner/contentinfo
+            landmarks, and two stacked dialogs (e.g. upload over edit) would be
+            duplicate banners — an axe violation. A dialog title bar isn't a
+            page landmark. */}
+        <div className="flex items-center justify-between gap-4 border-b border-border px-6 py-4">
           <h2 id={titleId} className="text-base font-semibold text-ink">
             {title}
           </h2>
@@ -52,12 +56,10 @@ export function Modal({ open, onClose, title, children, footer, size = 'md' }: M
           >
             <IconX />
           </button>
-        </header>
+        </div>
         <div className="overflow-y-auto px-6 py-4">{children}</div>
         {footer && (
-          <footer className="flex justify-end gap-3 border-t border-border px-6 py-4">
-            {footer}
-          </footer>
+          <div className="flex justify-end gap-3 border-t border-border px-6 py-4">{footer}</div>
         )}
       </div>
     </div>,

@@ -3,7 +3,9 @@ import {
   DocumentListQuerySchema,
   UpdateDocumentInputSchema,
 } from '@hearth/shared';
-import type { FastifyInstance } from 'fastify';
+import type { DocumentEntityType, MemberPermission } from '@hearth/shared';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { assertPermission } from '../lib/authz';
 import { BadRequestError } from '../lib/errors';
 import { UnverifiableFileTypeError, verifyFileContentType } from '../lib/file-sniff';
 import { coerceNumbers, parseBody, parseQuery } from '../plugins/zod-validation';
@@ -21,6 +23,30 @@ const ALLOWED_MIMETYPES = new Set([
   'image/gif',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 ]);
+
+// Document writes are gated by the area of the entity they attach to — the
+// member permission model has no 'documents' area of its own. Reads (list/
+// download) stay open, like every other read route.
+const DOCUMENT_WRITE_AREA: Record<DocumentEntityType, MemberPermission> = {
+  property: 'properties',
+  unit: 'properties',
+  lease: 'properties',
+  tenant: 'tenants',
+  transaction: 'money',
+};
+
+// PATCH/DELETE guard: the area is only known after looking the document up.
+// Demo mode and owners skip the extra query; a missing or cross-account id
+// falls through unguarded so the service 404s (a 403 would leak that the
+// document exists in another account).
+function requireDocumentPermission() {
+  return async (req: FastifyRequest<{ Params: { id: string } }>) => {
+    if (req.userId === null || req.userRole === 'owner') return;
+    const entityType = await documentService.entityTypeOf(req.accountId, req.params.id);
+    if (entityType === null) return;
+    assertPermission(req, DOCUMENT_WRITE_AREA[entityType]);
+  };
+}
 
 // Per-account limit — uploads move real bytes into storage (mirrors the
 // receipt-scan limit in routes/transactions.ts).
@@ -53,6 +79,16 @@ export async function documentsRoutes(app: FastifyInstance): Promise<void> {
         'Unsupported file type — upload a PDF, image (JPEG/PNG/WebP/GIF), or Word document.',
       );
     }
+    // Text fields ride alongside the file part; each is a { value } object.
+    // They arrive BEFORE the file part (both clients build FormData that way),
+    // so entityType is known here — authorize before buffering up to 10 MB.
+    const rawFields: Record<string, unknown> = {};
+    for (const [key, field] of Object.entries(file.fields)) {
+      const f = Array.isArray(field) ? field[0] : field;
+      if (f && 'value' in f) rawFields[key] = f.value;
+    }
+    const fields = parseBody(CreateDocumentFieldsSchema, rawFields);
+    assertPermission(req, DOCUMENT_WRITE_AREA[fields.entityType]);
     let buffer: Buffer;
     try {
       buffer = await file.toBuffer();
@@ -82,13 +118,6 @@ export async function documentsRoutes(app: FastifyInstance): Promise<void> {
       }
       throw err;
     }
-    // Text fields ride alongside the file part; each is a { value } object.
-    const rawFields: Record<string, unknown> = {};
-    for (const [key, field] of Object.entries(file.fields)) {
-      const f = Array.isArray(field) ? field[0] : field;
-      if (f && 'value' in f) rawFields[key] = f.value;
-    }
-    const fields = parseBody(CreateDocumentFieldsSchema, rawFields);
     const document = await documentService.create(req.accountId, {
       entityType: fields.entityType,
       entityId: fields.entityId,
@@ -100,6 +129,8 @@ export async function documentsRoutes(app: FastifyInstance): Promise<void> {
     return reply.code(201).send(document);
   });
 
+  // Reads (list + download) are deliberately unguarded — any member can view
+  // the whole account (repo-wide rule; see lib/authz.ts).
   app.get('/documents', async (req) => {
     const q = parseQuery(
       DocumentListQuerySchema,
@@ -122,13 +153,21 @@ export async function documentsRoutes(app: FastifyInstance): Promise<void> {
       .send(buffer);
   });
 
-  app.patch<{ Params: { id: string } }>('/documents/:id', async (req) => {
-    const input = parseBody(UpdateDocumentInputSchema, req.body);
-    return documentService.update(req.accountId, req.params.id, input);
-  });
+  app.patch<{ Params: { id: string } }>(
+    '/documents/:id',
+    { preHandler: requireDocumentPermission() },
+    async (req) => {
+      const input = parseBody(UpdateDocumentInputSchema, req.body);
+      return documentService.update(req.accountId, req.params.id, input);
+    },
+  );
 
-  app.delete<{ Params: { id: string } }>('/documents/:id', async (req, reply) => {
-    await documentService.remove(req.accountId, req.params.id);
-    return reply.code(204).send();
-  });
+  app.delete<{ Params: { id: string } }>(
+    '/documents/:id',
+    { preHandler: requireDocumentPermission() },
+    async (req, reply) => {
+      await documentService.remove(req.accountId, req.params.id);
+      return reply.code(204).send();
+    },
+  );
 }

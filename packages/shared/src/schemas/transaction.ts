@@ -31,6 +31,11 @@ export const TransactionSchema = z.object({
   // date/type edits and deletion are restricted. Populated by GET
   // /transactions only; optional so other producers stay unchanged.
   rentLinked: z.boolean().optional(),
+  // Number of documents attached to this transaction (exact
+  // entityType='transaction' matches — derived context never counts in
+  // reverse). Populated by GET /transactions only; omitted when zero so
+  // other producers stay unchanged.
+  documentCount: z.number().int().positive().optional(),
 });
 
 // POST /transactions — if categoryId is omitted the response carries

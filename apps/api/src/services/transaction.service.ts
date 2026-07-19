@@ -148,11 +148,19 @@ export async function list(
 
   const hasMore = !useOffset && rows.length > limit;
   const items = hasMore ? rows.slice(0, limit) : rows;
-  const rentLinkedIds = await rentLinkedTransactionIds(items.map((r) => r.id));
-  const toItem = (r: DbTransaction): Transaction => ({
-    ...toApiTransaction(r),
-    ...(rentLinkedIds.has(r.id) ? { rentLinked: true } : {}),
-  });
+  const ids = items.map((r) => r.id);
+  const [rentLinkedIds, docCounts] = await Promise.all([
+    rentLinkedTransactionIds(ids),
+    documentCountsByTransactionId(accountId, ids),
+  ]);
+  const toItem = (r: DbTransaction): Transaction => {
+    const documentCount = docCounts.get(r.id) ?? 0;
+    return {
+      ...toApiTransaction(r),
+      ...(rentLinkedIds.has(r.id) ? { rentLinked: true } : {}),
+      ...(documentCount > 0 ? { documentCount } : {}),
+    };
+  };
 
   if (useOffset) {
     return { items: items.map(toItem), nextCursor: null, total };
@@ -182,6 +190,20 @@ async function rentLinkedTransactionIds(ids: string[]): Promise<Set<string>> {
     ...deposits.map((d) => d.transactionId),
     ...legacy.map((p) => p.transactionId as string),
   ]);
+}
+
+/** Attached-document counts for a page of transactions (one groupBy). */
+async function documentCountsByTransactionId(
+  accountId: string,
+  ids: string[],
+): Promise<Map<string, number>> {
+  if (ids.length === 0) return new Map();
+  const groups = await prisma.document.groupBy({
+    by: ['entityId'],
+    where: { accountId, entityType: 'transaction', entityId: { in: ids } },
+    _count: true,
+  });
+  return new Map(groups.map((g) => [g.entityId, g._count]));
 }
 
 // ── AI category suggestion ───────────────────────────────────────────────────

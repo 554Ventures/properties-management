@@ -13,6 +13,7 @@ import {
   usePropertyDetail,
   useUpdateTransaction,
 } from '../../api/queries';
+import { DocumentsCard } from '../documents/DocumentsCard';
 import { Button } from '../ui/Button';
 import { FormField, Input } from '../ui/FormField';
 import { Modal } from '../ui/Modal';
@@ -227,6 +228,17 @@ export function TransactionEditModal({ open, onClose, transaction }: Transaction
             {transaction?.type === 'income' && <option value="refund">Refund</option>}
           </Select>
         </FormField>
+        {/* Attachments (receipts, invoices) — same card as the detail pages,
+            embedded without Card chrome; a receipt-typed upload here also sets
+            the row's receiptUrl server-side. */}
+        {transaction && (
+          <DocumentsCard
+            embedded
+            headingLevel={3}
+            filter={{ entityType: 'transaction', entityId: transaction.id }}
+            uploadTarget={{ entityType: 'transaction', entityId: transaction.id }}
+          />
+        )}
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>
             Cancel

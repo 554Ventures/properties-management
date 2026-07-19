@@ -33,6 +33,7 @@ import type {
   DashboardKpisResponse,
   DismissAllReviewResponse,
   Document,
+  DocumentEntityType,
   DocumentListQuery,
   DocumentListResponse,
   EsignEnvelopeResponse,
@@ -719,8 +720,15 @@ export function useUpdateDocument() {
 export function useDeleteDocument() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.delete(`/documents/${id}`),
-    onSuccess: () => invalidateDocuments(qc),
+    mutationFn: ({ id }: { id: string; entityType?: DocumentEntityType }) =>
+      api.delete(`/documents/${id}`),
+    onSuccess: (_res, { entityType }) => {
+      invalidateDocuments(qc);
+      // Deleting a transaction doc clears the row's receiptUrl/documentCount.
+      if (entityType === 'transaction') {
+        void qc.invalidateQueries({ queryKey: ['transactions'] });
+      }
+    },
   });
 }
 

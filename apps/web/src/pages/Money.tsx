@@ -47,6 +47,7 @@ import { useToast } from '../components/ui/Toast';
 import {
   IconDollar,
   IconDownload,
+  IconPaperclip,
   IconPencil,
   IconPlus,
   IconTrash,
@@ -250,6 +251,14 @@ export function Money() {
           <span className="font-medium text-ink">{txn.description}</span>
           {txn.rentLinked && (
             <span className="ml-2 text-xs text-ink-muted">· applied to rent</span>
+          )}
+          {txn.documentCount !== undefined && (
+            <span className="ml-2 whitespace-nowrap text-xs text-ink-muted">
+              · <IconPaperclip size={12} className="inline align-[-1px]" /> {txn.documentCount}
+              <span className="sr-only">
+                {txn.documentCount === 1 ? ' attachment' : ' attachments'}
+              </span>
+            </span>
           )}
           {txn.classification && (
             <span className="ml-2 text-xs text-ink-muted">

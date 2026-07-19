@@ -20,6 +20,10 @@ export interface DocumentsCardProps {
   uploadTarget: DocumentUploadTarget;
   /** E-sign documents (external links) rendered ahead of the uploaded set. */
   prependedDocs?: TenantDocument[];
+  /** Render as a plain <section> (no Card chrome) for embedding in a modal. */
+  embedded?: boolean;
+  /** h3 when embedded under a modal's h2 title. Default 2. */
+  headingLevel?: 2 | 3;
 }
 
 export function DocumentsCard({
@@ -27,6 +31,8 @@ export function DocumentsCard({
   filter,
   uploadTarget,
   prependedDocs = [],
+  embedded = false,
+  headingLevel = 2,
 }: DocumentsCardProps) {
   const documents = useDocuments(filter);
   const deleteDocument = useDeleteDocument();
@@ -47,7 +53,7 @@ export function DocumentsCard({
 
   const confirmDelete = () => {
     if (!deleting) return;
-    deleteDocument.mutate(deleting.id, {
+    deleteDocument.mutate({ id: deleting.id, entityType: deleting.entityType }, {
       onSuccess: () => {
         toast(`${deleting.name} deleted.`, 'positive');
         setDeleting(null);
@@ -57,10 +63,15 @@ export function DocumentsCard({
     });
   };
 
+  // Embedded (inside a modal, whose title is the h2): plain <section> + h3
+  // instead of Card chrome; list/upload/download/delete are identical.
+  const Wrapper = embedded ? 'section' : Card;
+  const Heading = headingLevel === 3 ? 'h3' : 'h2';
+
   return (
-    <Card>
+    <Wrapper>
       <div className="mb-2 flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold text-ink">{title}</h2>
+        <Heading className="text-sm font-semibold text-ink">{title}</Heading>
         <Button variant="secondary" size="sm" onClick={() => setUploadOpen(true)}>
           <IconUpload size={14} />
           Upload
@@ -143,6 +154,6 @@ export function DocumentsCard({
           </>
         }
       />
-    </Card>
+    </Wrapper>
   );
 }

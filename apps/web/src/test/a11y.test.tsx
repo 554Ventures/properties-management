@@ -4,6 +4,7 @@ import type {
   ActivityItem,
   BankDiscrepancyListResponse,
   DashboardKpisResponse,
+  DocumentListResponse,
   IncomeExpenseSeriesResponse,
   Insight,
   PropertyWithStats,
@@ -431,42 +432,33 @@ describe('CRUD modal accessibility', () => {
     await expectNoModalViolations();
   });
 
-  it('TransactionEditModal has no axe violations', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((input: RequestInfo | URL) => {
-        const path = String(input).replace(/^https?:\/\/[^/]+/, '').split('?')[0] ?? '';
-        if (path === '/api/v1/properties') return fixtureFetch(input);
-        return Promise.resolve(
-          new Response(JSON.stringify([]), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          }),
-        );
-      }),
-    );
+  it('TransactionEditModal renders the embedded Documents section and passes axe, incl. the stacked upload dialog', async () => {
+    vi.stubGlobal('fetch', vi.fn(txnModalFetch));
     render(
       <Providers>
         <TransactionEditModal open onClose={() => {}} transaction={importedTransaction} />
       </Providers>,
     );
+    const dialog = await screen.findByRole('dialog');
+    // Embedded DocumentsCard: h3 under the modal's own h2 title, listing the
+    // transaction's attachment from the /documents fixture.
+    await within(dialog).findByRole('heading', { level: 3, name: 'Documents' });
+    await within(dialog).findByText('hardware-receipt.pdf');
     await expectNoModalViolations();
-  });
+
+    // Stack the upload dialog on top (nested focus trap) and audit it too.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Upload' }));
+    const uploadDialog = await screen.findByRole('dialog', { name: 'Upload document' });
+    const results = await axe.run(uploadDialog, {
+      rules: { 'color-contrast': { enabled: false } },
+    });
+    expect(
+      results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`),
+    ).toEqual([]);
+  }, 20_000);
 
   it('TransactionEditModal disables amount/date/category/treatment for a rent-linked row (property/unit stay editable), with a visible hint and no axe violations', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((input: RequestInfo | URL) => {
-        const path = String(input).replace(/^https?:\/\/[^/]+/, '').split('?')[0] ?? '';
-        if (path === '/api/v1/properties') return fixtureFetch(input);
-        return Promise.resolve(
-          new Response(JSON.stringify([]), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          }),
-        );
-      }),
-    );
+    vi.stubGlobal('fetch', vi.fn(txnModalFetch));
     render(
       <Providers>
         <TransactionEditModal open onClose={() => {}} transaction={rentLinkedTransaction} />
@@ -558,6 +550,40 @@ const rentLinkedTransaction: Transaction = {
   status: 'confirmed',
   rentLinked: true,
 };
+
+// The edit modal's embedded DocumentsCard fetches GET /documents for the
+// transaction — answer with one attached receipt so the list path renders.
+const txnDocuments: DocumentListResponse = {
+  documents: [
+    {
+      id: 'd1',
+      accountId: 'acc1',
+      entityType: 'transaction',
+      entityId: 'tx-income',
+      type: 'receipt',
+      name: 'hardware-receipt.pdf',
+      mimeType: 'application/pdf',
+      sizeBytes: 48213,
+      createdAt: '2026-07-04T00:00:00.000Z',
+      entityLabel: 'ACH CREDIT — RENT T OKAFOR',
+      propertyId: null,
+      tenantId: null,
+    },
+  ],
+  total: 1,
+};
+
+function txnModalFetch(input: RequestInfo | URL): Promise<Response> {
+  const path = String(input).replace(/^https?:\/\/[^/]+/, '').split('?')[0] ?? '';
+  if (path === '/api/v1/properties') return fixtureFetch(input);
+  const body = path === '/api/v1/documents' ? txnDocuments : [];
+  return Promise.resolve(
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }),
+  );
+}
 
 const reviewQueue: ReviewQueueResponse = {
   items: [

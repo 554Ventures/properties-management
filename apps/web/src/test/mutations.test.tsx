@@ -19,6 +19,7 @@ import {
   useCreateTenant,
   useCreateTransaction,
   useCreateUnit,
+  useDeleteDocument,
   useDeleteTransaction,
   useDismissAllReview,
   useDismissBankDiscrepancy,
@@ -507,6 +508,47 @@ describe('transaction mutations', () => {
     expect(url).toBe('/api/v1/transactions/bank-discrepancies/bd1/dismiss');
     expect(init?.method).toBe('POST');
     expect(keys).toEqual(expect.arrayContaining(FINANCIAL_KEYS));
+  });
+});
+
+describe('document mutations', () => {
+  it('useDeleteDocument DELETEs /documents/:id and invalidates only documents for a non-transaction doc', async () => {
+    const fetchMock = stubFetch(() => new Response(null, { status: 204 }));
+    const { keys, wrapper } = setup();
+
+    const { result } = renderHook(() => useDeleteDocument(), { wrapper });
+    result.current.mutate({ id: 'd1', entityType: 'property' });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/v1/documents/d1');
+    expect(init?.method).toBe('DELETE');
+    expect(keys).toContain(JSON.stringify(['documents']));
+    expect(keys).not.toContain(JSON.stringify(['transactions']));
+  });
+
+  it('useDeleteDocument also invalidates transactions for a transaction doc (receiptUrl/documentCount go stale otherwise)', async () => {
+    stubFetch(() => new Response(null, { status: 204 }));
+    const { keys, wrapper } = setup();
+
+    const { result } = renderHook(() => useDeleteDocument(), { wrapper });
+    result.current.mutate({ id: 'd1', entityType: 'transaction' });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(keys).toContain(JSON.stringify(['documents']));
+    expect(keys).toContain(JSON.stringify(['transactions']));
+  });
+
+  it('useDeleteDocument with entityType omitted invalidates only documents', async () => {
+    stubFetch(() => new Response(null, { status: 204 }));
+    const { keys, wrapper } = setup();
+
+    const { result } = renderHook(() => useDeleteDocument(), { wrapper });
+    result.current.mutate({ id: 'd1' });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(keys).toContain(JSON.stringify(['documents']));
+    expect(keys).not.toContain(JSON.stringify(['transactions']));
   });
 });
 
