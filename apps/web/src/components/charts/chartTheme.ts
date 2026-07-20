@@ -19,7 +19,7 @@ export type ChartRole =
 
 const FALLBACKS: Record<ChartRole, string> = {
   positive: '#15803d',
-  warning: '#c05a10',
+  warning: '#ae890e',
   neutral: '#64748b',
   ai: '#7c3aed',
   'cat-1': '#2a78d6',
