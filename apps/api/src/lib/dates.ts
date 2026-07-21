@@ -245,6 +245,19 @@ export function dayOfMonthInTz(d: Date, tz: string): number {
   return wallClockParts(tz, d).day;
 }
 
+/** UTC instant of the Monday 00:00 (local) on/before instant `d` in `tz` —
+ *  the start of the Mon-based week containing `d` (weekly brief, W1). The
+ *  weekday derives from the local day ordinal (epoch day 0 = Thursday, same
+ *  technique as businessDaysBetweenInTz) so DST can't skew it; the day
+ *  subtraction may underflow the month — localMidnightUtc normalizes. */
+export function weekStartInTz(d: Date, tz: string): Date {
+  const p = wallClockParts(tz, d);
+  const ord = Date.UTC(p.year, p.month - 1, p.day) / DAY_MS;
+  const weekday = (ord + 4) % 7; // 0=Sun..6=Sat
+  const daysSinceMonday = (weekday + 6) % 7; // Mon=0 … Sun=6
+  return localMidnightUtc(p.year, p.month, p.day - daysSinceMonday, tz);
+}
+
 /** Calendar-year range [local Jan 1, local Jan 1 next year) in `tz`. */
 export function yearRangeInTz(year: number, tz: string): { from: Date; to: Date } {
   return { from: localMidnightUtc(year, 1, 1, tz), to: localMidnightUtc(year + 1, 1, 1, tz) };

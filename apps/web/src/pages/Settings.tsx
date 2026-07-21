@@ -13,6 +13,8 @@ import type {
   Integration,
   IntegrationType,
   MemberPermission,
+  NotificationChannel,
+  NotificationPrefs,
 } from '@hearth/shared';
 import { MemberPermissionSchema } from '@hearth/shared';
 import {
@@ -22,12 +24,14 @@ import {
   useExchangePlaidPublicToken,
   useIntegrations,
   useInviteMember,
+  useNotificationPrefs,
   usePushDevices,
   useRemoveMember,
   useRevokeInvite,
   useSettings,
   useTeam,
   useUpdateMember,
+  useUpdateNotificationPrefs,
   useUpdateSettings,
 } from '../api/queries';
 import { PageHeader } from '../components/shell/PageHeader';
@@ -85,17 +89,21 @@ export function Settings() {
       />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <section aria-label="Account">
-          {settings.isPending ? (
-            <Card>
-              <Skeleton className="h-64 w-full" />
-            </Card>
-          ) : settings.isError ? (
-            <ErrorNotice error={settings.error} onRetry={() => void settings.refetch()} />
-          ) : (
-            <AccountForm account={settings.data} />
-          )}
-        </section>
+        <div className="flex flex-col gap-6">
+          <section aria-label="Account">
+            {settings.isPending ? (
+              <Card>
+                <Skeleton className="h-64 w-full" />
+              </Card>
+            ) : settings.isError ? (
+              <ErrorNotice error={settings.error} onRetry={() => void settings.refetch()} />
+            ) : (
+              <AccountForm account={settings.data} />
+            )}
+          </section>
+
+          <NotificationsSection />
+        </div>
 
         <div className="flex flex-col gap-6">
           <section id="integrations" aria-label="Integrations">
@@ -159,6 +167,110 @@ export function Settings() {
           <SessionSection />
         </div>
       </div>
+    </div>
+  );
+}
+
+const NOTIFICATION_CATEGORIES: {
+  key: keyof NotificationPrefs;
+  label: string;
+  hint: string;
+}[] = [
+  {
+    key: 'warning_insights',
+    label: 'Warnings',
+    hint: 'Late rent and other things that need your attention.',
+  },
+  {
+    key: 'weekly_brief',
+    label: 'Weekly brief',
+    hint: 'The AI weekly digest: what changed and what to look at.',
+  },
+  {
+    key: 'monthly_review',
+    label: 'Monthly review',
+    hint: 'When your monthly review report is ready.',
+  },
+];
+
+const NOTIFICATION_CHANNEL_LABELS: Record<NotificationChannel, string> = {
+  push: 'Push',
+  email: 'Email',
+};
+
+/** Per-user notification delivery preferences (F2). Deliberately visible to
+ *  every member, with no permission gating: the endpoints are self-service —
+ *  the server scopes reads/writes to the signed-in user's own row (demo mode
+ *  uses the account-level row), so there is nothing cross-member to protect. */
+function NotificationsSection() {
+  const prefs = useNotificationPrefs();
+
+  return (
+    <section aria-label="Notifications">
+      <Card>
+        <h2 className="mb-3 text-sm font-semibold text-ink">Notifications</h2>
+        {prefs.isPending ? (
+          <Skeleton className="h-40 w-full" />
+        ) : prefs.isError ? (
+          <ErrorNotice error={prefs.error} onRetry={() => void prefs.refetch()} />
+        ) : (
+          <NotificationPrefsForm prefs={prefs.data} />
+        )}
+      </Card>
+    </section>
+  );
+}
+
+/** Channel toggles per category; every change saves immediately (full-object
+ *  PUT — the shared contract is a full replace, not a patch). */
+function NotificationPrefsForm({ prefs }: { prefs: NotificationPrefs }) {
+  const update = useUpdateNotificationPrefs();
+  const { toast } = useToast();
+
+  const toggle = (
+    category: keyof NotificationPrefs,
+    channel: NotificationChannel,
+    enabled: boolean,
+  ) => {
+    update.mutate(
+      { ...prefs, [category]: { ...prefs[category], [channel]: enabled } },
+      {
+        onSuccess: () => toast('Notification preferences saved.', 'positive'),
+        onError: (err) =>
+          toast(
+            err instanceof Error
+              ? err.message
+              : 'Could not save notification preferences. Try again.',
+            'danger',
+          ),
+      },
+    );
+  };
+
+  return (
+    <div className="flex flex-col gap-4">
+      {NOTIFICATION_CATEGORIES.map(({ key, label, hint }) => (
+        <fieldset key={key}>
+          <legend className="text-sm font-medium text-ink">{label}</legend>
+          <p className="mt-0.5 text-xs text-ink-muted">{hint}</p>
+          <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1.5">
+            {(Object.keys(NOTIFICATION_CHANNEL_LABELS) as NotificationChannel[]).map((channel) => (
+              <label key={channel} className="flex items-center gap-1.5 text-sm text-ink">
+                <input
+                  type="checkbox"
+                  checked={prefs[key][channel]}
+                  disabled={update.isPending}
+                  onChange={(e) => toggle(key, channel, e.target.checked)}
+                />
+                {NOTIFICATION_CHANNEL_LABELS[channel]}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+      ))}
+      <p className="text-xs text-ink-muted">
+        Email notifications go to your sign-in email address.
+      </p>
     </div>
   );
 }

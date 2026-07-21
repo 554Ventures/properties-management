@@ -415,6 +415,72 @@ function ScheduleELines({ data }: { data: Obj }) {
   );
 }
 
+// ── weekly brief (W1) ────────────────────────────────────────────────────────
+
+/** Archived weekly-brief view: headline + summary paragraphs + the action
+ * items as plain text (the live buttons belong to the dashboard card only),
+ * mirroring the monthly review's lead-paragraph presentation. The viewer
+ * wraps this in AiSurface (same as monthly_review) — content is AI-authored. */
+function WeeklyBriefBody({ data }: { data: Obj }) {
+  const headline = typeof data.headline === 'string' ? data.headline : null;
+  const summary = typeof data.summary === 'string' ? data.summary : '';
+  const paragraphs = summary.split('\n\n').filter((p) => p.trim().length > 0);
+  const items = rowsAt(data, 'items')
+    .map((item) => (typeof item.text === 'string' ? item.text : null))
+    .filter((text): text is string => text !== null);
+  const stats = objAt(data, 'stats');
+  const tiles = [
+    moneyTile('Rent collected', numAt(stats, 'rentCollectedCents')),
+    moneyTile('Outstanding', numAt(stats, 'rentOutstandingCents')),
+    countTile('Late charges', numAt(stats, 'lateCount')),
+    countTile('Awaiting review', numAt(stats, 'pendingReviewCount')),
+  ].filter((t): t is Tile => t !== null);
+
+  return (
+    <div className="flex flex-col gap-6">
+      {headline && (
+        <Card>
+          <p className="text-base leading-relaxed text-ink sm:text-lg">{headline}</p>
+        </Card>
+      )}
+
+      {tiles.length > 0 && (
+        <section
+          aria-label="Report highlights"
+          className="grid grid-cols-1 gap-4 sm:grid-cols-[repeat(auto-fit,minmax(11rem,1fr))]"
+        >
+          {tiles.map((tile) => (
+            <KpiTile key={tile.label} label={tile.label} value={tile.value} ariaLabel={tile.ariaLabel} tone={tile.tone} />
+          ))}
+        </section>
+      )}
+
+      {paragraphs.length > 0 && (
+        <Card>
+          <div className="flex flex-col gap-2.5">
+            {paragraphs.map((p, i) => (
+              <p key={i} className="text-sm leading-relaxed text-ink">
+                {p}
+              </p>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {items.length > 0 && (
+        <Card>
+          <h2 className="text-sm font-semibold text-ink">This week&rsquo;s action items</h2>
+          <ul className="mt-1.5 list-disc space-y-1 pl-4 text-sm leading-relaxed text-ink">
+            {items.map((text, i) => (
+              <li key={i}>{text}</li>
+            ))}
+          </ul>
+        </Card>
+      )}
+    </div>
+  );
+}
+
 // ── the body ─────────────────────────────────────────────────────────────────
 
 export interface ReportBodyProps {
@@ -425,6 +491,13 @@ export interface ReportBodyProps {
 
 export function ReportBody({ type, data, title }: ReportBodyProps) {
   const snapshot = isObj(data) ? data : {};
+
+  // The weekly brief is narrative-first, not a ledger snapshot — its own
+  // renderer instead of the tiles/table pipeline (which would otherwise dump
+  // the ride-along `table` of item texts as a detail table).
+  if (type === 'weekly_brief') {
+    return <WeeklyBriefBody data={snapshot} />;
+  }
   const tiles = buildTiles(type, snapshot);
   const table = extractSnapshotTable(snapshot);
   const bottomLine = typeof snapshot.bottomLine === 'string' ? snapshot.bottomLine : null;

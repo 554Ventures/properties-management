@@ -224,4 +224,60 @@ describe('ReportBody', () => {
     const results = await axe.run(container);
     expect(results.violations).toEqual([]);
   });
+
+  it('renders the weekly brief as narrative + static item list with formatted dollars (never raw cents)', async () => {
+    const { container } = render(
+      <main>
+        <h1>Weekly brief — Jul 13 – Jul 19, 2026</h1>
+        <ReportBody
+          type="weekly_brief"
+          data={{
+            weekStart: '2026-07-13T04:00:00.000Z',
+            weekEnd: '2026-07-20T04:00:00.000Z',
+            weekLabel: 'Jul 13 – Jul 19, 2026',
+            headline: '1 tenant is behind on rent — $1,150 outstanding',
+            summary:
+              "You've collected $12,545 in rent for July so far.\n\n6 transactions were recorded this week.",
+            items: [
+              { text: 'T. Okafor is 6 days late — $1,150 still owed.', action: null },
+              { text: '3 imported transactions are waiting in the review queue.', action: null },
+            ],
+            stats: {
+              rentCollectedCents: 1254500,
+              rentOutstandingCents: 115000,
+              lateCount: 1,
+              newTransactionCount: 6,
+              pendingReviewCount: 3,
+              leasesEndingSoonCount: 0,
+            },
+            // The ride-along export table must NOT render as a detail table.
+            table: {
+              columns: [{ key: 'item', label: 'Item' }],
+              rows: [{ item: 'T. Okafor is 6 days late — $1,150 still owed.' }],
+            },
+          }}
+          title="Weekly brief — Jul 13 – Jul 19, 2026"
+        />
+      </main>,
+    );
+
+    expect(screen.getByText('1 tenant is behind on rent — $1,150 outstanding')).toBeVisible();
+    // Both summary paragraphs, split on the \n\n contract.
+    expect(screen.getByText(/You've collected \$12,545 in rent/)).toBeVisible();
+    expect(screen.getByText('6 transactions were recorded this week.')).toBeVisible();
+    // Items are a plain list in the archived view (no action buttons here).
+    expect(screen.getByRole('heading', { name: 'This week’s action items' })).toBeInTheDocument();
+    expect(screen.getAllByRole('listitem')).toHaveLength(2);
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    // Stats tiles format cents at the edge; raw cent figures never render.
+    expect(screen.getByRole('group', { name: 'Rent collected, $12,545.00' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Outstanding, $1,150.00' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Late charges, 1' })).toBeInTheDocument();
+    expect(container.textContent).not.toContain('1254500');
+    // No table dump — the item list is the only detail surface.
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+
+    const results = await axe.run(container);
+    expect(results.violations).toEqual([]);
+  });
 });

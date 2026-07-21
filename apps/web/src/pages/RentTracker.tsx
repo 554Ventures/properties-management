@@ -194,12 +194,26 @@ export function RentTracker() {
       ? Math.round((tracker.data.paidUnits / tracker.data.totalUnits) * 100)
       : 0;
 
+  // "2 sent, 1 composed for manual send" — a row only counts as *sent* when
+  // the server really emailed it (deliveredVia 'email', F1); mailto rows were
+  // only composed and still need the user's own mail app.
   const summarizeReminders = (results: SendRemindersResponse['results']) => {
-    const sent = results.filter((r) => r.status === 'sent').length;
-    const skipped = results.length - sent;
+    const sentRows = results.filter((r) => r.status === 'sent');
+    const emailed = sentRows.filter((r) => r.deliveredVia === 'email').length;
+    const composed = sentRows.length - emailed;
+    const skipped = results.length - sentRows.length;
+    const parts: string[] = [];
+    if (emailed > 0) parts.push(`${emailed} reminder${emailed === 1 ? '' : 's'} sent`);
+    if (composed > 0)
+      parts.push(
+        emailed > 0
+          ? `${composed} composed for manual send`
+          : `${composed} reminder${composed === 1 ? '' : 's'} composed`,
+      );
+    if (parts.length === 0) parts.push('0 reminders composed');
     toast(
-      `${sent} reminder${sent === 1 ? '' : 's'} composed${skipped > 0 ? `, ${skipped} skipped` : ''}.`,
-      sent > 0 ? 'positive' : 'neutral',
+      `${parts.join(', ')}${skipped > 0 ? `, ${skipped} skipped` : ''}.`,
+      sentRows.length > 0 ? 'positive' : 'neutral',
     );
   };
 
@@ -212,7 +226,13 @@ export function RentTracker() {
           const result = res.results.find((r) => r.status === 'sent');
           if (result?.mailto) {
             setComposedReminders([
-              { tenantName: row.tenantName, mailto: result.mailto, subject: result.subject },
+              {
+                tenantName: row.tenantName,
+                mailto: result.mailto,
+                subject: result.subject,
+                deliveredVia: result.deliveredVia,
+                to: result.to,
+              },
             ]);
           }
         },
@@ -231,7 +251,17 @@ export function RentTracker() {
           const composed = res.results.flatMap((r) => {
             if (r.status !== 'sent' || !r.mailto) return [];
             const row = lateRows.find((lr) => lr.rentPaymentId === r.rentPaymentId);
-            return row ? [{ tenantName: row.tenantName, mailto: r.mailto, subject: r.subject }] : [];
+            return row
+              ? [
+                  {
+                    tenantName: row.tenantName,
+                    mailto: r.mailto,
+                    subject: r.subject,
+                    deliveredVia: r.deliveredVia,
+                    to: r.to,
+                  },
+                ]
+              : [];
           });
           if (composed.length > 0) setComposedReminders(composed);
         },

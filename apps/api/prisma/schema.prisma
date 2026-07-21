@@ -48,6 +48,10 @@ model Account {
   // elapsed. Clearing this field (a "cancel deletion" action) recovers the
   // account with no data loss during the grace window.
   deletionRequestedAt DateTime?
+  // NotificationPrefs (@hearth/shared) — sparse overrides merged over
+  // DEFAULT_NOTIFICATION_PREFS. Used only in demo mode (no User rows);
+  // Supabase-mode prefs live per User.
+  notificationPrefsJson String  @default("{}")
   createdAt           DateTime  @default(now())
 
   properties   Property[]
@@ -98,6 +102,9 @@ model User {
   // ignore this field). Read live on every request so a revoked grant applies
   // immediately.
   permissionsJson String   @default("[]")
+  // NotificationPrefs (@hearth/shared) — sparse overrides merged over
+  // DEFAULT_NOTIFICATION_PREFS (notification.service).
+  notificationPrefsJson String @default("{}")
   createdAt      DateTime @default(now())
   // Consent capture (docs/SECURITY_PRIVACY_AUDIT.md §B5): recorded when this
   // identity accepts the Privacy Policy + Terms of Service at signup.
@@ -423,6 +430,11 @@ model Report {
 
   account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
+  // Scheduler-generated types (weekly_brief, monthly_review) are additionally
+  // unique per (accountId, type, periodStart) via a PARTIAL unique index —
+  // "Report_scheduler_period_key" in migration report_period_unique — which
+  // Prisma's schema language can't express. Ordinary report types stay freely
+  // re-generatable for the same period (each generation is a new snapshot).
   @@index([accountId, type])
 }
 
@@ -504,13 +516,18 @@ model Integration {
   @@index([accountId])
 }
 
-// A device registered for push notifications (Phase 2 iOS shell). No userId —
-// account is the tenancy boundary, matching every other model. Tokens are
-// APNs device tokens; re-registering an existing token reassigns it to the
-// authenticated account and bumps lastSeenAt (upsert in push.service).
+// A device registered for push notifications (Phase 2 iOS shell). Account is
+// the tenancy boundary, matching every other model. Tokens are APNs device
+// tokens; re-registering an existing token reassigns it to the authenticated
+// account and bumps lastSeenAt (upsert in push.service).
 model PushDevice {
   id         String   @id @default(cuid())
   accountId  String
+  // Owning User when known (stamped at registration; the app re-registers on
+  // every launch so rows self-heal). Null = demo/legacy row — treated as the
+  // owner's device for per-user notification routing. Plain string, no FK
+  // (matches the Document.entityId precedent).
+  userId     String?
   platform   String   // PushPlatform (@hearth/shared): ios
   token      String   @unique // APNs device token
   createdAt  DateTime @default(now())

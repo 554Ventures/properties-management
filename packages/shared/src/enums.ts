@@ -60,8 +60,21 @@ export const ReportTypeSchema = z.enum([
   'tax_package',
   'stress_test',
   'monthly_review',
+  'weekly_brief',
 ]);
 export type ReportType = z.infer<typeof ReportTypeSchema>;
+
+// Notification routing (schemas/notification.ts): each category can be
+// delivered per channel according to the recipient's NotificationPrefs.
+export const NotificationCategorySchema = z.enum([
+  'warning_insights',
+  'weekly_brief',
+  'monthly_review',
+]);
+export type NotificationCategory = z.infer<typeof NotificationCategorySchema>;
+
+export const NotificationChannelSchema = z.enum(['push', 'email']);
+export type NotificationChannel = z.infer<typeof NotificationChannelSchema>;
 
 export const InsightScopeSchema = z.enum(['portfolio', 'property', 'tenant']);
 export type InsightScope = z.infer<typeof InsightScopeSchema>;

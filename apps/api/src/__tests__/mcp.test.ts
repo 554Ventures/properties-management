@@ -13,6 +13,7 @@ import {
   PAID_UNITS,
   TOTAL_UNITS,
 } from '../../prisma/seed-constants';
+import { resetMockEmail, sentEmails } from '../integrations/mock/mock-email';
 import { prisma } from '../lib/prisma';
 import { createMcpServer } from '../mcp/index';
 import { getDemoAccountId } from '../plugins/auth';
@@ -131,6 +132,31 @@ describe('MCP server', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.action).toBe('insight.dismissed');
     expect(rows[0]!.actor).toBe('system');
+  });
+
+  it('send_rent_reminders over MCP (actor system) composes only — records no email', async () => {
+    const accountId = await getDemoAccountId();
+    const client = await connectClient(true);
+    const tracker = await callToolJson(client, 'get_rent_status');
+    const late = tracker.rows.find((r: { status: string }) => r.status === 'late');
+    expect(late).toBeDefined();
+
+    resetMockEmail();
+    const { results } = await callToolJson(client, 'send_rent_reminders', {
+      rentPaymentIds: [late.rentPaymentId],
+    });
+    expect(results[0]).toMatchObject({
+      status: 'sent',
+      deliveredVia: 'mailto',
+    });
+    // 'system' actor = compose-only: the email adapter must never be called.
+    expect(sentEmails).toHaveLength(0);
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { accountId, action: 'rent.reminder_sent', entityId: late.rentPaymentId },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(audit?.actor).toBe('system');
   });
 
   it('email_report writes exactly one report.emailed audit row as system', async () => {

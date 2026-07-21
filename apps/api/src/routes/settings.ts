@@ -1,6 +1,7 @@
 import {
   ExchangePublicTokenInputSchema,
   IntegrationTypeSchema,
+  NotificationPrefsSchema,
   RecordConsentInputSchema,
   StripeFcCompleteInputSchema,
   UpdateAccountSettingsInputSchema,
@@ -16,6 +17,7 @@ import { parseBody } from '../plugins/zod-validation';
 import * as accountService from '../services/account.service';
 import * as authService from '../services/auth.service';
 import * as integrationService from '../services/integration.service';
+import * as notificationService from '../services/notification.service';
 
 function toApiAccount(a: DbAccount): AccountSettings {
   return {
@@ -74,6 +76,19 @@ export async function settingsRoutes(app: FastifyInstance): Promise<void> {
     const input = parseBody(RecordConsentInputSchema, req.body);
     const status = await authService.recordPolicyConsent(req.userId, input.policyVersion);
     return reply.code(201).send(status);
+  });
+
+  // Notification prefs are deliberately UNGUARDED (no requirePermission /
+  // requireOwner): they're self-service — every member reads and writes only
+  // their own row (req.userId scopes the write; null = demo mode's
+  // account-level row), so there is nothing cross-member to protect.
+  app.get('/settings/notifications', async (req) =>
+    notificationService.getPrefs(req.accountId, req.userId),
+  );
+
+  app.put('/settings/notifications', async (req) => {
+    const input = parseBody(NotificationPrefsSchema, req.body);
+    return notificationService.updatePrefs(req.accountId, req.userId, input);
   });
 
   app.get('/integrations', async (req) => integrationService.list(req.accountId));

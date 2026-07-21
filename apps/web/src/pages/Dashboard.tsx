@@ -14,6 +14,7 @@ import {
   useProperties,
 } from '../api/queries';
 import { InsightDeck } from '../components/ai/InsightDeck';
+import { WeeklyBriefCard } from '../components/ai/WeeklyBriefCard';
 import { OnboardingBanner } from '../components/onboarding/OnboardingBanner';
 import { BarChart } from '../components/charts/BarChart';
 import { ChartContainer } from '../components/charts/ChartContainer';
@@ -167,6 +168,10 @@ export function Dashboard() {
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="flex flex-col gap-6 lg:col-span-2">
+          {/* The weekly AI brief (W1) — renders nothing until the first brief
+              exists, so the column stays quiet on fresh accounts. */}
+          <WeeklyBriefCard />
+
           {/* The AI insight deck — every active insight, sharing the charts'
               column width. Announced politely as cards surface. */}
           <LiveRegion>

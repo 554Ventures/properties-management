@@ -33,6 +33,13 @@ const library: ReportTypeInfo[] = [
     maturity: 'full',
     supportedFilters: ['property'],
   },
+  {
+    type: 'weekly_brief',
+    name: 'Weekly Brief',
+    description: 'AI weekly digest: what changed this week and what needs attention.',
+    maturity: 'full',
+    supportedFilters: ['dateRange'],
+  },
 ];
 
 function report(overrides: Partial<Report> & Pick<Report, 'id' | 'type' | 'title'>): Report {
@@ -52,6 +59,7 @@ const reports: Report[] = [
   report({ id: 'r2', type: 'rent_roll', title: 'Rent Roll — 2026', taxYear: null, propertyId: 'p1' }),
   report({ id: 'r3', type: 'pnl', title: 'Profit & Loss — 2025', taxYear: 2025 }),
   report({ id: 'r4', type: 'monthly_review', title: 'Monthly Review — June 2026', taxYear: null }),
+  report({ id: 'r5', type: 'weekly_brief', title: 'Weekly brief — Jul 6 – Jul 12, 2026', taxYear: null }),
 ];
 
 const properties = [
@@ -128,7 +136,7 @@ describe('Reports generated table', () => {
 
     expect(await screen.findByRole('link', { name: 'Profit & Loss — 2026' })).toBeInTheDocument();
     // Scope column: portfolio-wide vs. the property's nickname.
-    expect(screen.getAllByRole('cell', { name: 'Whole portfolio' })).toHaveLength(3);
+    expect(screen.getAllByRole('cell', { name: 'Whole portfolio' })).toHaveLength(4);
     expect(screen.getByRole('cell', { name: '88 Oak Ave' })).toBeInTheDocument();
     // Sortable headers carry aria-sort.
     expect(screen.getByRole('columnheader', { name: /Generated/ })).toHaveAttribute(
@@ -162,7 +170,7 @@ describe('Reports generated table', () => {
     expect(screen.queryByRole('link', { name: 'Profit & Loss — 2026' })).not.toBeInTheDocument();
   });
 
-  it('marks monthly reviews as AI-generated in the report list', async () => {
+  it('marks monthly reviews and weekly briefs as AI-generated in the report list', async () => {
     vi.stubGlobal('fetch', vi.fn(fixtureFetch));
     renderPage();
 
@@ -170,6 +178,9 @@ describe('Reports generated table', () => {
     // never color alone).
     expect(
       await screen.findByRole('link', { name: /Monthly Review — June 2026.*AI-generated/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('link', { name: /Weekly brief — Jul 6 – Jul 12, 2026.*AI-generated/ }),
     ).toBeInTheDocument();
   });
 
@@ -270,6 +281,84 @@ describe('ReportViewer monthly review', () => {
 
     expect(await screen.findByText(/June netted \$2,140/)).toBeInTheDocument();
     // The ✦ AI badge marks the review as AI-authored (binding AiSurface rule).
+    expect(screen.getByText('AI')).toBeInTheDocument();
+
+    const results = await axe.run(container);
+    expect(results.violations).toEqual([]);
+  });
+});
+
+describe('ReportViewer weekly brief', () => {
+  const brief = {
+    ...report({
+      id: 'rwb',
+      type: 'weekly_brief',
+      title: 'Weekly brief — Jul 6 – Jul 12, 2026',
+      taxYear: null,
+    }),
+    data: {
+      weekStart: '2026-07-06T04:00:00.000Z',
+      weekEnd: '2026-07-13T04:00:00.000Z',
+      weekLabel: 'Jul 6 – Jul 12, 2026',
+      headline: '1 tenant is behind on rent — $1,150 outstanding',
+      summary: "You've collected $12,545 in rent for July so far.",
+      items: [{ text: 'T. Okafor is 6 days late — $1,150 still owed.', action: null }],
+      stats: {
+        rentCollectedCents: 1254500,
+        rentOutstandingCents: 115000,
+        lateCount: 1,
+        newTransactionCount: 6,
+        pendingReviewCount: 3,
+        leasesEndingSoonCount: 0,
+      },
+    },
+  };
+
+  it('wraps the AI-authored brief in AiSurface with the AI badge, passing axe', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const path = String(input).replace(/^https?:\/\/[^/]+/, '').split('?')[0] ?? '';
+        return Promise.resolve(
+          new Response(
+            JSON.stringify(
+              path === '/api/v1/reports/rwb'
+                ? brief
+                : { error: { code: 'not_found', message: `No fixture for ${path}` } },
+            ),
+            {
+              status: path === '/api/v1/reports/rwb' ? 200 : 404,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          ),
+        );
+      }),
+    );
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { container } = render(
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <MemoryRouter initialEntries={['/reports/rwb']}>
+            <Routes>
+              <Route
+                path="/reports/:id"
+                element={
+                  <main>
+                    <ReportViewer />
+                  </main>
+                }
+              />
+            </Routes>
+          </MemoryRouter>
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+
+    expect(
+      await screen.findByText('1 tenant is behind on rent — $1,150 outstanding'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('T. Okafor is 6 days late — $1,150 still owed.')).toBeInTheDocument();
+    // The ✦ AI badge marks the brief as AI-authored (binding AiSurface rule).
     expect(screen.getByText('AI')).toBeInTheDocument();
 
     const results = await axe.run(container);

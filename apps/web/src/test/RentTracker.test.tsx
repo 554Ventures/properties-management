@@ -786,3 +786,141 @@ describe('RentTracker unlinked rent deposits', () => {
     });
   });
 });
+
+describe('RentTracker reminder send flow (F1)', () => {
+  it('a server-side send (deliveredVia email) shows "Sent to X" icon + text with the mailto demoted to a copy link', async () => {
+    stubDesktopViewport();
+    vi.stubGlobal(
+      'fetch',
+      makeFetch([
+        ...baseRoutes,
+        {
+          method: 'POST',
+          path: '/api/v1/rent/reminders',
+          body: {
+            results: [
+              {
+                rentPaymentId: 'rp-late-no-fee',
+                status: 'sent',
+                mailto: 'mailto:okafor%40example.com?subject=Rent',
+                subject: 'Quick reminder — July rent',
+                deliveredVia: 'email',
+                to: 'okafor@example.com',
+              },
+            ],
+          },
+        },
+      ]),
+    );
+    renderRentTracker();
+
+    await screen.findByText('T. Okafor');
+    const row = screen.getByText('T. Okafor').closest('tr') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: /Remind — T\. Okafor/ }));
+
+    // Toast reflects a real send, not a composed draft.
+    expect(await screen.findByText('1 reminder sent.')).toBeInTheDocument();
+
+    const dialog = await screen.findByRole('dialog', { name: 'Reminder sent' });
+    // Icon + text (StatusBadge), never color alone.
+    const badge = within(dialog).getByText('Sent to okafor@example.com');
+    expect(badge.closest('span')?.querySelector('svg')).toBeInTheDocument();
+    // The mailto link is demoted to a secondary copy, not the primary CTA.
+    expect(within(dialog).getByRole('link', { name: 'Open a copy' })).toHaveAttribute(
+      'href',
+      'mailto:okafor%40example.com?subject=Rent',
+    );
+    expect(within(dialog).queryByRole('link', { name: 'Open email' })).not.toBeInTheDocument();
+  });
+
+  it('a mailto fallback (no server send) keeps the "Open email" primary link and the composed copy', async () => {
+    stubDesktopViewport();
+    vi.stubGlobal(
+      'fetch',
+      makeFetch([
+        ...baseRoutes,
+        {
+          method: 'POST',
+          path: '/api/v1/rent/reminders',
+          body: {
+            results: [
+              {
+                rentPaymentId: 'rp-late-no-fee',
+                status: 'sent',
+                mailto: 'mailto:okafor%40example.com?subject=Rent',
+                subject: 'Quick reminder — July rent',
+                deliveredVia: 'mailto',
+                to: 'okafor@example.com',
+              },
+            ],
+          },
+        },
+      ]),
+    );
+    renderRentTracker();
+
+    await screen.findByText('T. Okafor');
+    const row = screen.getByText('T. Okafor').closest('tr') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: /Remind — T\. Okafor/ }));
+
+    expect(await screen.findByText('1 reminder composed.')).toBeInTheDocument();
+
+    const dialog = await screen.findByRole('dialog', { name: 'Reminder composed' });
+    expect(within(dialog).getByRole('link', { name: 'Open email' })).toHaveAttribute(
+      'href',
+      'mailto:okafor%40example.com?subject=Rent',
+    );
+    expect(within(dialog).queryByText(/Sent to/)).not.toBeInTheDocument();
+  });
+
+  it('a mixed bulk result summarizes sent vs composed-for-manual-send in one toast', async () => {
+    stubDesktopViewport();
+    vi.stubGlobal(
+      'fetch',
+      makeFetch([
+        ...baseRoutes,
+        {
+          method: 'POST',
+          path: '/api/v1/rent/reminders',
+          body: {
+            results: [
+              {
+                rentPaymentId: 'rp-late-no-fee',
+                status: 'sent',
+                mailto: 'mailto:okafor%40example.com',
+                subject: 'Reminder',
+                deliveredVia: 'email',
+                to: 'okafor@example.com',
+              },
+              {
+                rentPaymentId: 'rp-late-fee',
+                status: 'sent',
+                mailto: 'mailto:tenant%40example.com',
+                subject: 'Reminder',
+                deliveredVia: 'mailto',
+                to: 'tenant@example.com',
+              },
+              { rentPaymentId: 'rp-partial-fee', status: 'skipped', reason: 'already reminded' },
+            ],
+          },
+        },
+      ]),
+    );
+    renderRentTracker();
+
+    await screen.findByText('T. Okafor');
+    fireEvent.click(screen.getByRole('button', { name: /Remind all late/ }));
+    const confirm = await screen.findByRole('dialog', {
+      name: 'Send reminders to all late tenants?',
+    });
+    fireEvent.click(within(confirm).getByRole('button', { name: /Send 3 reminders/ }));
+
+    expect(
+      await screen.findByText('1 reminder sent, 1 composed for manual send, 1 skipped.'),
+    ).toBeInTheDocument();
+    // The shared modal shows both shapes side by side.
+    const dialog = await screen.findByRole('dialog', { name: 'Reminders sent' });
+    expect(within(dialog).getByText('Sent to okafor@example.com')).toBeInTheDocument();
+    expect(within(dialog).getByRole('link', { name: 'Open email' })).toBeInTheDocument();
+  });
+});

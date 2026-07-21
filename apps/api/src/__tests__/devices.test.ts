@@ -272,17 +272,18 @@ describe('trigger: daily jobs push fresh warning insights', () => {
       expect(push!.message.deepLink).toBe(`/rent?period=${currentPeriod()}`);
     } finally {
       // Restore the pristine seed: drop the synthetic insights + portfolio
-      // rows and any monthly-review report the run snapshotted. The daily run
-      // also flags the brand-new empty property as underperforming (tenantId
-      // null, and deleting the property only SetNulls propertyId), so match
-      // on either fixture id before the property row goes away.
+      // rows and any monthly-review/weekly-brief report the run snapshotted.
+      // The daily run also flags the brand-new empty property as
+      // underperforming (tenantId null, and deleting the property only
+      // SetNulls propertyId), so match on either fixture id before the
+      // property row goes away.
       await prisma.insight.deleteMany({
         where: { accountId, OR: [{ tenantId: tenant.id }, { propertyId: property.id }] },
       });
       await prisma.property.delete({ where: { id: property.id } });
       await prisma.tenant.delete({ where: { id: tenant.id } });
       await prisma.report.deleteMany({
-        where: { id: { notIn: [...reportsBefore] }, type: 'monthly_review' },
+        where: { id: { notIn: [...reportsBefore] }, type: { in: ['monthly_review', 'weekly_brief'] } },
       });
       await prisma.pushDevice.deleteMany({ where: { token } });
     }

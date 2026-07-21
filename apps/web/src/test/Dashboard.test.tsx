@@ -15,6 +15,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ToastProvider } from '../components/ui/Toast';
 import { Dashboard } from '../pages/Dashboard';
 
 const kpis: DashboardKpisResponse = {
@@ -88,9 +89,12 @@ function renderDashboard() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
-        <Dashboard />
-      </MemoryRouter>
+      {/* ToastProvider matches the app shell — WeeklyBriefCard uses useToast. */}
+      <ToastProvider>
+        <MemoryRouter>
+          <Dashboard />
+        </MemoryRouter>
+      </ToastProvider>
     </QueryClientProvider>,
   );
 }

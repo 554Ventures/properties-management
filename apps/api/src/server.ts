@@ -34,6 +34,9 @@ if (!process.env.HEARTH_DISABLE_SCHEDULER) {
       if (result.monthlyReviewsCreated > 0) {
         app.log.info(`generated ${result.monthlyReviewsCreated} monthly review(s)`);
       }
+      if (result.weeklyBriefsCreated > 0) {
+        app.log.info(`generated ${result.weeklyBriefsCreated} weekly brief(s)`);
+      }
       if (result.insightsCreated > 0) {
         app.log.info(`generated ${result.insightsCreated} new insight(s)`);
       }

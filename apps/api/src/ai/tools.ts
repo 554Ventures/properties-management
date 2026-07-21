@@ -344,7 +344,7 @@ export const serviceTools: ServiceToolDef[] = [
   {
     name: 'send_rent_reminders',
     description:
-      'WRITES: composes a rent reminder email for the tenant behind each given rentPaymentId and marks it reminded — returns a mailto: link for the landlord to review and send from their own mail client (no email is sent server-side). Already-paid rows are skipped.',
+      'WRITES: composes a rent reminder email for the tenant behind each given rentPaymentId and marks it reminded. Invoked from chat/MCP this composes ONLY — it returns a mailto: link for the landlord to review and send from their own mail client; no email is ever sent server-side by the model itself. A real server-side send happens only when the user triggers it (the Rent page button or clicking an action card, which calls the REST route). Already-paid rows are skipped.',
     inputSchema: SendRemindersInputSchema,
     write: true,
     execute: (accountId, input, actor) =>

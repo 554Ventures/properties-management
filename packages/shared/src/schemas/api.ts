@@ -60,6 +60,12 @@ export * from './report';
 // Insights
 export * from './insight';
 
+// Weekly AI brief (weekly_brief report data + latest endpoint)
+export * from './weekly-brief';
+
+// Notification preferences (per-user delivery toggles for scheduler pushes/emails)
+export * from './notification';
+
 // Dashboard (KPIs, cashflow series, activity, daily insight)
 export * from './dashboard';
 

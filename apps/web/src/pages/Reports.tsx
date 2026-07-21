@@ -64,7 +64,7 @@ export function Reports() {
           className="font-medium text-ink transition-colors duration-fast hover:text-brand"
         >
           {report.title}
-          {report.type === 'monthly_review' && (
+          {(report.type === 'monthly_review' || report.type === 'weekly_brief') && (
             <span className="ml-1.5 inline-flex align-middle text-ink-ai">
               <IconSparkle size={12} />
               <span className="sr-only">AI-generated</span>

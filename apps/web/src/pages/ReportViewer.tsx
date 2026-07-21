@@ -67,10 +67,10 @@ export function ReportViewer() {
         }
       />
 
-      {/* The monthly review is AI-authored (Roost writes it up), so it renders
-          inside AiSurface; every other report is a deterministic ledger
-          snapshot and stays unwrapped. */}
-      {data.type === 'monthly_review' ? (
+      {/* The monthly review and weekly brief are AI-authored (Roost writes
+          them up), so they render inside AiSurface; every other report is a
+          deterministic ledger snapshot and stays unwrapped. */}
+      {data.type === 'monthly_review' || data.type === 'weekly_brief' ? (
         <AiSurface className="p-5">
           <ReportBody type={data.type} data={data.data} title={data.title} />
         </AiSurface>

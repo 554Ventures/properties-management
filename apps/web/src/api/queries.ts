@@ -55,6 +55,7 @@ import type {
   LinkTokenResponse,
   LogContractorJobInput,
   LogContractorJobResponse,
+  NotificationPrefs,
   OnboardingState,
   Property,
   PropertyDetailResponse,
@@ -95,6 +96,7 @@ import type {
   UpdateTenantInput,
   UpdateTransactionInput,
   UpdateUnitInput,
+  WeeklyBriefLatestResponse,
 } from '@hearth/shared';
 import { OnboardingStepIdSchema } from '@hearth/shared';
 import { api, toQuery } from './client';
@@ -876,6 +878,15 @@ export function useEmailReport() {
   });
 }
 
+/** Latest AI weekly brief (W1) — null until the first weekly job has run. */
+export function useLatestWeeklyBrief() {
+  return useQuery({
+    queryKey: ['reports', 'weekly-brief', 'latest'],
+    queryFn: () => api.get<WeeklyBriefLatestResponse>('/reports/weekly-brief/latest'),
+    staleTime: STALE_LONG, // a new brief appears at most once a week
+  });
+}
+
 // ----------------------------------------------------------------- insights
 
 export function useInsights(filters: { status?: InsightStatus; scope?: InsightScope } = {}) {
@@ -936,6 +947,33 @@ export function useUpdateSettings() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['settings'] });
       void qc.invalidateQueries({ queryKey: ['dashboard'] }); // tax rate affects set-aside
+    },
+  });
+}
+
+// Per-user notification prefs (F2): self-service — every member reads and
+// writes only their own row (the server scopes by the authenticated user;
+// demo mode uses the account-level row), so there is no permission gating.
+export function useNotificationPrefs() {
+  return useQuery({
+    queryKey: ['settings', 'notifications'],
+    queryFn: () => api.get<NotificationPrefs>('/settings/notifications'),
+    staleTime: STALE_LONG,
+  });
+}
+
+export function useUpdateNotificationPrefs() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: NotificationPrefs) =>
+      api.put<NotificationPrefs>('/settings/notifications', input),
+    onSuccess: (data) => {
+      // Seed the cache from the PUT response (the authoritative full prefs
+      // object) so the checkboxes reflect the save immediately and a rapid
+      // follow-up toggle builds its full-replace payload from fresh data —
+      // and return the invalidate promise so isPending covers the refetch.
+      qc.setQueryData(['settings', 'notifications'], data);
+      return qc.invalidateQueries({ queryKey: ['settings', 'notifications'] });
     },
   });
 }
