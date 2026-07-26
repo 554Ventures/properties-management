@@ -108,6 +108,37 @@ describe('schedule_e report', () => {
     expect(pdfText).toContain('($');
   });
 
+  it('income statement lists income above expenses with totals + net at the bottom', async () => {
+    const accountId = await getDemoAccountId();
+    const report = await reportService.generate(accountId, {
+      type: 'income_statement',
+      taxYear: new Date().getUTCFullYear(),
+    });
+    const detail = await reportService.getById(accountId, report.id);
+    const data = detail.data as {
+      totals: { incomeCents: number; expenseCents: number; netCents: number };
+      table: { rows: Array<{ type: string; categoryName: string; totalCents: number }> };
+    };
+
+    // Category lines: every income row precedes every expense row.
+    const typeSequence = data.table.rows
+      .map((r) => r.type)
+      .filter((t) => t === 'income' || t === 'expense');
+    expect(typeSequence).toContain('income');
+    expect(typeSequence).toContain('expense');
+    expect(typeSequence.indexOf('expense')).toBe(typeSequence.lastIndexOf('income') + 1);
+
+    // The table closes with Total income / Total expenses / Net, matching totals.
+    const tail = data.table.rows.slice(-3);
+    expect(tail.map((r) => r.categoryName)).toEqual(['Total income', 'Total expenses', 'Net']);
+    expect(tail[0]!.totalCents).toBe(data.totals.incomeCents);
+    expect(tail[1]!.totalCents).toBe(data.totals.expenseCents);
+    expect(tail[2]!.totalCents).toBe(data.totals.netCents);
+
+    await prisma.report.delete({ where: { id: report.id } });
+    await prisma.auditLog.deleteMany({ where: { accountId, entityId: report.id } });
+  });
+
   it('monthly review exists from seed and has real data', async () => {
     const accountId = await getDemoAccountId();
     const reviews = await reportService.listGenerated(accountId, { type: 'monthly_review' });
