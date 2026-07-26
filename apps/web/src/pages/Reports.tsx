@@ -1,9 +1,9 @@
-// Reports & Tax (PRD §5.6): library of the 13 report types with tax-year and
-// property filters, per-type Generate, generated reports in a searchable/
-// sortable/filterable table, and the "Ask AI to build a custom report" entry
-// (AiSurface card).
+// Reports & Tax (PRD §5.6): library of the 13 report types with period
+// (tax-year, single-month, or custom-range) and property filters, per-type
+// Generate, generated reports in a searchable/sortable/filterable table, and
+// the "Ask AI to build a custom report" entry (AiSurface card).
 import { useState } from 'react';
-import type { Report, ReportTypeInfo } from '@hearth/shared';
+import type { GenerateReportInput, Report, ReportTypeInfo } from '@hearth/shared';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   useGenerateReport,
@@ -17,6 +17,7 @@ import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { DataTable, type DataTableColumn } from '../components/ui/DataTable';
 import { ErrorNotice } from '../components/ui/ErrorNotice';
+import { Input } from '../components/ui/FormField';
 import { Select } from '../components/ui/Select';
 import { Skeleton } from '../components/ui/Skeleton';
 import { StatusBadge } from '../components/ui/StatusBadge';
@@ -25,6 +26,30 @@ import { useToast } from '../components/ui/Toast';
 import { formatDate, humanizeKey } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
 import { useChat } from '../state/chat';
+
+/** Previous calendar month as an <input type="month"> value (YYYY-MM). */
+function lastMonthValue(): string {
+  const d = new Date();
+  d.setDate(1);
+  d.setMonth(d.getMonth() - 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function monthStartIso(month: string): string {
+  const [y, m] = month.split('-').map(Number);
+  return new Date(Date.UTC(y!, m! - 1, 1)).toISOString();
+}
+
+function nextMonthStartIso(month: string): string {
+  const [y, m] = month.split('-').map(Number);
+  return new Date(Date.UTC(y!, m!, 1)).toISOString();
+}
+
+function dayAfterIso(date: string): string {
+  const d = new Date(`${date}T00:00:00.000Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString();
+}
 
 export function Reports() {
   usePageTitle('Reports & Tax');
@@ -38,6 +63,14 @@ export function Reports() {
 
   const thisYear = new Date().getFullYear();
   const [taxYear, setTaxYear] = useState(thisYear);
+  // Period selection (beta feedback): tax year stays the default; "Single
+  // month" and "Custom range" map onto the API's from/to range filter for
+  // every report type that supports it (taxYear wins server-side, so it is
+  // only sent in tax-year mode).
+  const [periodMode, setPeriodMode] = useState<'taxYear' | 'month' | 'custom'>('taxYear');
+  const [month, setMonth] = useState(lastMonthValue());
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
   const [propertyId, setPropertyId] = useState('');
   const [pendingType, setPendingType] = useState<string | null>(null);
 
@@ -50,6 +83,13 @@ export function Reports() {
   const reportType = (report: Report) => typeName.get(report.type) ?? humanizeKey(report.type);
   const reportScope = (report: Report) =>
     report.propertyId ? (propertyLabel.get(report.propertyId) ?? 'One property') : 'Whole portfolio';
+
+  // Types without from/to support (point-in-time or tax-year-only) generate
+  // with their default period — the filter row says so when a custom period
+  // is active rather than silently ignoring the selection.
+  const noRangeNames = (library.data ?? [])
+    .filter((info) => !info.supportedFilters.includes('dateRange'))
+    .map((info) => info.name);
 
   const reportColumns: DataTableColumn<Report>[] = [
     {
@@ -117,26 +157,54 @@ export function Reports() {
   ];
 
   const generateReport = (info: ReportTypeInfo) => {
+    const input: GenerateReportInput = {
+      type: info.type,
+      propertyId: info.supportedFilters.includes('property') && propertyId ? propertyId : undefined,
+    };
+    if (periodMode === 'taxYear' || !info.supportedFilters.includes('dateRange')) {
+      if (info.supportedFilters.includes('taxYear')) input.taxYear = taxYear;
+    } else if (periodMode === 'month') {
+      if (!month) {
+        toast('Pick a month first.', 'danger');
+        return;
+      }
+      if (info.type === 'monthly_review' || info.type === 'weekly_brief') {
+        // These derive their own period from a `from` anchor server-side;
+        // mid-month noon UTC lands in the picked month for any account tz.
+        input.from = `${month}-15T12:00:00.000Z`;
+      } else {
+        input.from = monthStartIso(month);
+        input.to = nextMonthStartIso(month); // exclusive end, matches the API
+      }
+    } else {
+      if (!fromDate || !toDate || fromDate > toDate) {
+        toast('Pick a valid from and to date first.', 'danger');
+        return;
+      }
+      if (info.type === 'monthly_review' || info.type === 'weekly_brief') {
+        input.from = `${fromDate}T12:00:00.000Z`;
+      } else {
+        input.from = `${fromDate}T00:00:00.000Z`;
+        input.to = dayAfterIso(toDate); // inclusive picker → exclusive API end
+      }
+    }
     setPendingType(info.type);
-    generate.mutate(
-      {
-        type: info.type,
-        taxYear: info.supportedFilters.includes('taxYear') ? taxYear : undefined,
-        propertyId:
-          info.supportedFilters.includes('property') && propertyId ? propertyId : undefined,
+    generate.mutate(input, {
+      onSuccess: (report) => {
+        setPendingType(null);
+        toast(`${report.title} generated.`, 'positive');
+        navigate(`/reports/${report.id}`);
       },
-      {
-        onSuccess: (report) => {
-          setPendingType(null);
-          toast(`${report.title} generated.`, 'positive');
-          navigate(`/reports/${report.id}`);
-        },
-        onError: () => {
-          setPendingType(null);
-          toast('Could not generate the report. Try again.', 'danger');
-        },
+      onError: (err) => {
+        setPendingType(null);
+        toast(
+          err instanceof Error && err.message
+            ? err.message
+            : 'Could not generate the report. Try again.',
+          'danger',
+        );
       },
-    );
+    });
   };
 
   return (
@@ -185,22 +253,77 @@ export function Reports() {
             <Card flush>
               <div className="grid grid-cols-1 gap-3 border-b border-border p-4 sm:grid-cols-2">
                 <div className="flex flex-col gap-1.5">
-                  <label htmlFor="report-tax-year" className="text-xs font-medium text-ink-muted">
-                    Tax year
+                  <label htmlFor="report-period-mode" className="text-xs font-medium text-ink-muted">
+                    Period
                   </label>
                   <Select
-                    id="report-tax-year"
-                    value={taxYear}
-                    onChange={(e) => setTaxYear(Number(e.target.value))}
+                    id="report-period-mode"
+                    value={periodMode}
+                    onChange={(e) => setPeriodMode(e.target.value as typeof periodMode)}
                   >
-                    {[thisYear, thisYear - 1, thisYear - 2].map((year) => (
-                      <option key={year} value={year}>
-                        {year}
-                        {year === thisYear ? ' (year to date)' : ''}
-                      </option>
-                    ))}
+                    <option value="taxYear">Tax year</option>
+                    <option value="month">Single month</option>
+                    <option value="custom">Custom range</option>
                   </Select>
                 </div>
+                {periodMode === 'taxYear' && (
+                  <div className="flex flex-col gap-1.5">
+                    <label htmlFor="report-tax-year" className="text-xs font-medium text-ink-muted">
+                      Tax year
+                    </label>
+                    <Select
+                      id="report-tax-year"
+                      value={taxYear}
+                      onChange={(e) => setTaxYear(Number(e.target.value))}
+                    >
+                      {[thisYear, thisYear - 1, thisYear - 2].map((year) => (
+                        <option key={year} value={year}>
+                          {year}
+                          {year === thisYear ? ' (year to date)' : ''}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                )}
+                {periodMode === 'month' && (
+                  <div className="flex flex-col gap-1.5">
+                    <label htmlFor="report-month" className="text-xs font-medium text-ink-muted">
+                      Month
+                    </label>
+                    <Input
+                      id="report-month"
+                      type="month"
+                      value={month}
+                      onChange={(e) => setMonth(e.target.value)}
+                    />
+                  </div>
+                )}
+                {periodMode === 'custom' && (
+                  <>
+                    <div className="flex flex-col gap-1.5">
+                      <label htmlFor="report-from" className="text-xs font-medium text-ink-muted">
+                        From
+                      </label>
+                      <Input
+                        id="report-from"
+                        type="date"
+                        value={fromDate}
+                        onChange={(e) => setFromDate(e.target.value)}
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <label htmlFor="report-to" className="text-xs font-medium text-ink-muted">
+                        To
+                      </label>
+                      <Input
+                        id="report-to"
+                        type="date"
+                        value={toDate}
+                        onChange={(e) => setToDate(e.target.value)}
+                      />
+                    </div>
+                  </>
+                )}
                 <div className="flex flex-col gap-1.5">
                   <label htmlFor="report-property" className="text-xs font-medium text-ink-muted">
                     Property
@@ -218,6 +341,13 @@ export function Reports() {
                     ))}
                   </Select>
                 </div>
+                {periodMode !== 'taxYear' && noRangeNames.length > 0 && (
+                  <p className="text-xs text-ink-muted sm:col-span-2">
+                    {noRangeNames.join(', ')} {noRangeNames.length === 1 ? 'uses' : 'use'} a fixed
+                    period and will generate with {noRangeNames.length === 1 ? 'its' : 'their'}{' '}
+                    default instead of this range.
+                  </p>
+                )}
               </div>
               {library.isPending ? (
                 <div className="p-4">

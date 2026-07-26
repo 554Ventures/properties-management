@@ -162,8 +162,11 @@ async function buildPnl(accountId: string, range: { from: Date; to: Date }, prop
     line.totalCents += b.amountCents;
     lines.set(key, line);
   }
+  // Statement convention: income section above expenses, largest lines first
+  // within each; the table closes with explicit totals and a net line.
   const rows = [...lines.values()].sort(
-    (a, b) => a.type.localeCompare(b.type) || b.totalCents - a.totalCents,
+    (a, b) =>
+      (a.type === b.type ? 0 : a.type === 'income' ? -1 : 1) || b.totalCents - a.totalCents,
   );
   return {
     lines: rows,
@@ -174,7 +177,12 @@ async function buildPnl(accountId: string, range: { from: Date; to: Date }, prop
         { key: 'categoryName', label: 'Category' },
         { key: 'totalCents', label: 'Total (cents)' },
       ],
-      rows,
+      rows: [
+        ...rows,
+        { type: '', categoryName: 'Total income', totalCents: incomeCents },
+        { type: '', categoryName: 'Total expenses', totalCents: expenseCents },
+        { type: '', categoryName: 'Net', totalCents: incomeCents - expenseCents },
+      ],
     } satisfies ReportTable,
   };
 }

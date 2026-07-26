@@ -16,6 +16,7 @@ import type {
   BankDiscrepancyListResponse,
   BankDiscrepancyResolution,
   Category,
+  CreateCategoryInput,
   ConfirmAllReviewResponse,
   ConfirmTransactionInput,
   Contractor,
@@ -741,6 +742,16 @@ export function useCategories() {
     queryKey: ['categories'],
     queryFn: () => api.get<Category[]>('/categories'),
     staleTime: STALE_LONG,
+  });
+}
+
+export function useCreateCategory() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateCategoryInput) => api.post<Category>('/categories', input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['categories'] });
+    },
   });
 }
 

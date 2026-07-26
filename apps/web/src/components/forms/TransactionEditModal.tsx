@@ -9,6 +9,7 @@ import { useEffect, useState } from 'react';
 import type { Transaction, TransactionClassification } from '@hearth/shared';
 import {
   useCategories,
+  useCreateCategory,
   useProperties,
   usePropertyDetail,
   useUpdateTransaction,
@@ -29,10 +30,14 @@ export interface TransactionEditModalProps {
 const RENT_LINKED_HINT =
   'This transaction backs a recorded rent payment — unlink the deposit on the Rent page to edit these.';
 
+// Sentinel option value: never a real category id (cuids don't start with "__").
+const NEW_CATEGORY = '__new__';
+
 export function TransactionEditModal({ open, onClose, transaction }: TransactionEditModalProps) {
   const update = useUpdateTransaction();
   const properties = useProperties();
   const categories = useCategories();
+  const createCategory = useCreateCategory();
   const { toast } = useToast();
   const [amount, setAmount] = useState('');
   const [date, setDate] = useState('');
@@ -42,6 +47,8 @@ export function TransactionEditModal({ open, onClose, transaction }: Transaction
   const [unitId, setUnitId] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [classification, setClassification] = useState<TransactionClassification | ''>('');
+  const [newCategoryOpen, setNewCategoryOpen] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
   const [errors, setErrors] = useState<{ amount?: string; description?: string }>({});
 
   const rentLinked = transaction?.rentLinked ?? false;
@@ -56,6 +63,8 @@ export function TransactionEditModal({ open, onClose, transaction }: Transaction
       setUnitId(transaction.unitId ?? '');
       setCategoryId(transaction.categoryId ?? '');
       setClassification(transaction.classification ?? '');
+      setNewCategoryOpen(false);
+      setNewCategoryName('');
       setErrors({});
     }
   }, [open, transaction]);
@@ -65,6 +74,30 @@ export function TransactionEditModal({ open, onClose, transaction }: Transaction
   // A refund nets against an EXPENSE category, so the picker flips type.
   const categoryType = classification === 'refund' ? 'expense' : transaction?.type;
   const categoryOptions = (categories.data ?? []).filter((c) => c.type === categoryType);
+
+  // "+ New category…" in the picker (beta feedback): creates it via
+  // POST /categories and selects it in place, no detour through settings.
+  const addCategory = () => {
+    const name = newCategoryName.trim();
+    if (!name) {
+      toast('Enter a category name.', 'danger');
+      return;
+    }
+    if (!categoryType) return;
+    createCategory.mutate(
+      { name, type: categoryType },
+      {
+        onSuccess: (created) => {
+          setCategoryId(created.id);
+          setNewCategoryOpen(false);
+          setNewCategoryName('');
+          toast(`Category “${created.name}” added.`, 'positive');
+        },
+        onError: (err) =>
+          toast(err instanceof Error ? err.message : 'Could not add the category.', 'danger'),
+      },
+    );
+  };
 
   const save = () => {
     if (!transaction) return;
@@ -199,15 +232,62 @@ export function TransactionEditModal({ open, onClose, transaction }: Transaction
           htmlFor="edit-txn-category"
           hint={rentLinked ? RENT_LINKED_HINT : undefined}
         >
-          <Select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} disabled={rentLinked}>
+          <Select
+            value={newCategoryOpen ? NEW_CATEGORY : categoryId}
+            onChange={(e) => {
+              if (e.target.value === NEW_CATEGORY) {
+                setNewCategoryOpen(true);
+              } else {
+                setNewCategoryOpen(false);
+                setCategoryId(e.target.value);
+              }
+            }}
+            disabled={rentLinked}
+          >
             <option value="">Keep current category</option>
             {categoryOptions.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name}
               </option>
             ))}
+            <option value={NEW_CATEGORY}>+ New category…</option>
           </Select>
         </FormField>
+        {newCategoryOpen && !rentLinked && (
+          <div className="flex flex-col gap-2 rounded-md border border-border bg-surface-sunken p-3">
+            <FormField
+              label="New category name"
+              htmlFor="edit-txn-new-category"
+              hint={`Added as an ${categoryType === 'income' ? 'income' : 'expense'} category and selected for this transaction.`}
+            >
+              <Input
+                value={newCategoryName}
+                onChange={(e) => setNewCategoryName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    addCategory();
+                  }
+                }}
+              />
+            </FormField>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setNewCategoryOpen(false);
+                  setNewCategoryName('');
+                }}
+              >
+                Cancel
+              </Button>
+              <Button size="sm" busy={createCategory.isPending} onClick={addCategory}>
+                Add category
+              </Button>
+            </div>
+          </div>
+        )}
         <FormField
           label="Treatment"
           htmlFor="edit-txn-classification"

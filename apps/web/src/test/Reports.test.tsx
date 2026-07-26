@@ -5,7 +5,7 @@
 // ARCHITECTURE §8).
 import type { Report, ReportTypeInfo } from '@hearth/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { MemoryRouter, Navigate, Route, Routes, useParams } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -189,6 +189,100 @@ describe('Reports generated table', () => {
     const { container } = renderPage();
     await screen.findByRole('link', { name: 'Profit & Loss — 2026' });
 
+    const results = await axe.run(container);
+    expect(results.violations).toEqual([]);
+  });
+});
+
+describe('report period selection', () => {
+  // Captures POST /reports/generate bodies while GETs fall through to fixtures.
+  function stubWithGenerateCapture(): Array<Record<string, unknown>> {
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === 'POST' && String(input).includes('/reports/generate')) {
+          bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+          return Promise.resolve(
+            new Response(
+              JSON.stringify(report({ id: 'r9', type: 'pnl', title: 'Profit & Loss — range' })),
+              { status: 201, headers: { 'Content-Type': 'application/json' } },
+            ),
+          );
+        }
+        return fixtureFetch(input);
+      }),
+    );
+    return bodies;
+  }
+
+  function clickGenerate(name: string) {
+    const item = screen.getByRole('heading', { name }).closest('li');
+    expect(item).not.toBeNull();
+    fireEvent.click(within(item!).getByRole('button', { name: 'Generate' }));
+  }
+
+  it('single-month mode sends a from/to range instead of a tax year', async () => {
+    const bodies = stubWithGenerateCapture();
+    renderPage();
+    await screen.findByRole('heading', { name: 'Profit & Loss' });
+
+    fireEvent.change(screen.getByLabelText('Period'), { target: { value: 'month' } });
+    // Tax-year select leaves the form; the fixed-period footnote names the
+    // types that can't take a range (Rent Roll in this fixture library).
+    expect(screen.queryByLabelText('Tax year')).not.toBeInTheDocument();
+    expect(screen.getByText(/Rent Roll uses a fixed period/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Month'), { target: { value: '2026-06' } });
+    clickGenerate('Profit & Loss');
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodies[0]).toMatchObject({
+      type: 'pnl',
+      from: '2026-06-01T00:00:00.000Z',
+      to: '2026-07-01T00:00:00.000Z',
+    });
+    expect(bodies[0]).not.toHaveProperty('taxYear');
+  });
+
+  it('custom range sends midnight-UTC from and an exclusive to (day after)', async () => {
+    const bodies = stubWithGenerateCapture();
+    renderPage();
+    await screen.findByRole('heading', { name: 'Profit & Loss' });
+
+    fireEvent.change(screen.getByLabelText('Period'), { target: { value: 'custom' } });
+    fireEvent.change(screen.getByLabelText('From'), { target: { value: '2026-03-01' } });
+    fireEvent.change(screen.getByLabelText('To'), { target: { value: '2026-05-31' } });
+    clickGenerate('Profit & Loss');
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodies[0]).toMatchObject({
+      type: 'pnl',
+      from: '2026-03-01T00:00:00.000Z',
+      to: '2026-06-01T00:00:00.000Z',
+    });
+  });
+
+  it('anchor-period types (weekly brief) get a mid-period from and no to', async () => {
+    const bodies = stubWithGenerateCapture();
+    renderPage();
+    await screen.findByRole('heading', { name: 'Weekly Brief' });
+
+    fireEvent.change(screen.getByLabelText('Period'), { target: { value: 'month' } });
+    fireEvent.change(screen.getByLabelText('Month'), { target: { value: '2026-06' } });
+    clickGenerate('Weekly Brief');
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodies[0]).toMatchObject({ type: 'weekly_brief', from: '2026-06-15T12:00:00.000Z' });
+    expect(bodies[0]).not.toHaveProperty('to');
+  });
+
+  it('has no axe violations with the custom-range fields shown', async () => {
+    vi.stubGlobal('fetch', vi.fn(fixtureFetch));
+    const { container } = renderPage();
+    await screen.findByRole('heading', { name: 'Profit & Loss' });
+
+    fireEvent.change(screen.getByLabelText('Period'), { target: { value: 'custom' } });
     const results = await axe.run(container);
     expect(results.violations).toEqual([]);
   });
