@@ -21,14 +21,14 @@ import {
   periodLabel,
 } from '../lib/dates';
 import { NotFoundError } from '../lib/errors';
-import { ordinaryExpense, pnlBucket } from '../lib/pnl';
+import { ordinaryExpense, pnlBucket, pnlCategoryLines } from '../lib/pnl';
 import { prisma } from '../lib/prisma';
 import { slugify } from '../lib/strings';
 import { accountTimezone } from './account.service';
 import { writeAudit, type AuditActor } from './audit.service';
 import * as contractorService from './contractor.service';
 import * as rentService from './rent.service';
-import { generateMonthlyReviewReport } from './report.service';
+import { expenseTotalsByCategory, generateMonthlyReviewReport } from './report.service';
 
 /** actionJson is written by generateInsights below, but rows predating the
  *  column (or a future shape change) must degrade to the legacy
@@ -283,39 +283,45 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
       status: 'confirmed',
       ...ordinaryExpense, // transfers/refunds never look like a spend spike
       date: { gte: mStart, lt: mEnd },
-      categoryId: { not: null },
+      // Categorized directly, or through a split line.
+      OR: [{ categoryId: { not: null } }, { splits: { some: {} } }],
     },
-    include: { category: true, property: true },
+    include: { category: true, property: true, splits: { include: { category: true } } },
   });
-  const trailingTotals = await prisma.transaction.groupBy({
-    by: ['categoryId'],
-    where: {
-      accountId,
-      status: 'confirmed',
-      ...ordinaryExpense,
-      date: { gte: trailingStart, lt: mStart },
-    },
-    _sum: { amountCents: true },
+  const trailingByCategory = await expenseTotalsByCategory(accountId, {
+    from: trailingStart,
+    to: mStart,
   });
-  const trailingByCategory = new Map(
-    trailingTotals.map((t) => [t.categoryId ?? '', t._sum.amountCents ?? 0]),
-  );
-  const byCategory = new Map<string, typeof currentExpenses>();
-  for (const t of currentExpenses) {
-    const list = byCategory.get(t.categoryId as string) ?? [];
-    list.push(t);
-    byCategory.set(t.categoryId as string, list);
+  // A split row spikes the categories it was split INTO, each for its own
+  // slice — so the entries are per category line, not per transaction.
+  interface SpendEntry {
+    amountCents: number;
+    categoryName: string;
+    property: (typeof currentExpenses)[number]['property'];
   }
-  for (const [categoryId, txns] of byCategory) {
-    const currentTotal = txns.reduce((sum, t) => sum + t.amountCents, 0);
+  const byCategory = new Map<string, SpendEntry[]>();
+  for (const t of currentExpenses) {
+    for (const cl of pnlCategoryLines(t)) {
+      if (!cl.categoryId) continue;
+      const list = byCategory.get(cl.categoryId) ?? [];
+      list.push({
+        amountCents: cl.amountCents,
+        categoryName: cl.category?.name ?? 'Uncategorized',
+        property: t.property,
+      });
+      byCategory.set(cl.categoryId, list);
+    }
+  }
+  for (const [categoryId, entries] of byCategory) {
+    const currentTotal = entries.reduce((sum, e) => sum + e.amountCents, 0);
     const trailingAvg = (trailingByCategory.get(categoryId) ?? 0) / 3;
     // No trailing history means no baseline to spike against — without this
     // guard any first-ever spend "spikes" (monthly review applies the same
     // avg > 0 rule; the two calculations must agree).
     if (trailingAvg > 0 && currentTotal > trailingAvg * SPIKE_RATIO) {
-      const top = [...txns].sort((a, b) => b.amountCents - a.amountCents)[0];
+      const top = [...entries].sort((a, b) => b.amountCents - a.amountCents)[0];
       if (!top) continue;
-      const categoryName = top.category?.name ?? 'Uncategorized';
+      const categoryName = top.categoryName;
       const propertyLabel = top.property
         ? (top.property.nickname ?? top.property.addressLine1)
         : 'the portfolio';

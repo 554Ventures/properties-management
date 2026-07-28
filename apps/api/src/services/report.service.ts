@@ -38,7 +38,7 @@ import {
 } from '../ai/weekly-brief';
 import { accountTimezone } from './account.service';
 import { writeAudit, type AuditActor } from './audit.service';
-import { ordinaryExpense, pnlBucket } from '../lib/pnl';
+import { ordinaryExpense, pnlBucket, pnlCategoryLines } from '../lib/pnl';
 import { deriveRentStatus, getMonthStatus } from './rent.service';
 
 // ── library ──────────────────────────────────────────────────────────────────
@@ -134,9 +134,34 @@ function confirmedWhere(
 async function fetchLedger(accountId: string, range: { from: Date; to: Date }, propertyId?: string) {
   return prisma.transaction.findMany({
     where: confirmedWhere(accountId, range, propertyId),
-    include: { category: true, property: true },
+    // Split lines carry their own category: every per-category rollup below
+    // goes through pnlCategoryLines, never `t.category` directly.
+    include: { category: true, property: true, splits: { include: { category: true } } },
     orderBy: [{ date: 'asc' }, { id: 'asc' }],
   });
+}
+
+/**
+ * Ordinary-expense spend per category over a range, split lines expanded
+ * (keyed by categoryId; '' = uncategorized). The spend-spike rules in this
+ * file and in insight.service must compute the same numbers — they share this.
+ */
+export async function expenseTotalsByCategory(
+  accountId: string,
+  range: { from: Date; to: Date },
+): Promise<Map<string, number>> {
+  const txns = await prisma.transaction.findMany({
+    where: { ...confirmedWhere(accountId, range), ...ordinaryExpense },
+    include: { splits: true },
+  });
+  const totals = new Map<string, number>();
+  for (const t of txns) {
+    for (const cl of pnlCategoryLines(t)) {
+      const key = cl.categoryId ?? '';
+      totals.set(key, (totals.get(key) ?? 0) + cl.amountCents);
+    }
+  }
+  return totals;
 }
 
 // ── builders (real computed data) ────────────────────────────────────────────
@@ -153,14 +178,15 @@ async function buildPnl(accountId: string, range: { from: Date; to: Date }, prop
     if (!b) continue;
     if (b.bucket === 'income') incomeCents += b.amountCents;
     else expenseCents += b.amountCents;
-    const key = `${b.bucket}:${t.category?.name ?? 'Uncategorized'}`;
-    const line = lines.get(key) ?? {
-      categoryName: t.category?.name ?? 'Uncategorized',
-      type: b.bucket,
-      totalCents: 0,
-    };
-    line.totalCents += b.amountCents;
-    lines.set(key, line);
+    // A split row contributes one line per split (they sum to its amount, so
+    // the totals above are unaffected).
+    for (const cl of pnlCategoryLines(t)) {
+      const name = cl.category?.name ?? 'Uncategorized';
+      const key = `${cl.bucket}:${name}`;
+      const line = lines.get(key) ?? { categoryName: name, type: cl.bucket, totalCents: 0 };
+      line.totalCents += cl.amountCents;
+      lines.set(key, line);
+    }
   }
   // Statement convention: income section above expenses, largest lines first
   // within each; the table closes with explicit totals and a net line.
@@ -282,7 +308,12 @@ async function buildGeneralLedger(
     description: t.description,
     vendor: t.vendor,
     propertyLabel: t.property ? (t.property.nickname ?? t.property.addressLine1) : null,
-    categoryName: t.category?.name ?? null,
+    // The ledger is one row per transaction: a split row names the split
+    // rather than fanning out into lines that would double its money.
+    categoryName:
+      t.splits.length > 0
+        ? `Split (${t.splits.length} categories)`
+        : (t.category?.name ?? null),
     type: t.type,
     classification: t.classification,
     amountCents: t.amountCents,
@@ -406,24 +437,23 @@ async function buildScheduleE(
       totalExpensesCents: 0,
       netCents: 0,
     };
-    const b = pnlBucket(t);
-    if (!b) {
-      // Transfers/owner contributions are not Schedule E income or expense.
-      rowsByProperty.set(key, row);
-      continue;
-    }
-    if (b.bucket === 'income') {
-      // Income maps through the category's IRS line like expenses do
-      // (uncategorized defaults to rents); a category mapped off Line 3
-      // stays out of "Rents received" instead of silently inflating it.
-      const line = t.category?.irsScheduleELine ?? 'Line 3 – Rents received';
-      if (line === 'Line 3 – Rents received') row.rentsReceivedCents += b.amountCents;
-      else row.otherIncomeCents += b.amountCents;
-    } else {
-      // Refunds arrive here as negative expense against their category's line.
-      const line = t.category?.irsScheduleELine ?? 'Line 19 – Other';
-      row.expenseLines[line] = (row.expenseLines[line] ?? 0) + b.amountCents;
-      row.totalExpensesCents += b.amountCents;
+    // Transfers/owner contributions yield no lines (not Schedule E income or
+    // expense); a split row maps each of its lines through its own category's
+    // IRS line.
+    for (const cl of pnlCategoryLines(t)) {
+      if (cl.bucket === 'income') {
+        // Income maps through the category's IRS line like expenses do
+        // (uncategorized defaults to rents); a category mapped off Line 3
+        // stays out of "Rents received" instead of silently inflating it.
+        const line = cl.category?.irsScheduleELine ?? 'Line 3 – Rents received';
+        if (line === 'Line 3 – Rents received') row.rentsReceivedCents += cl.amountCents;
+        else row.otherIncomeCents += cl.amountCents;
+      } else {
+        // Refunds arrive here as negative expense against their category's line.
+        const line = cl.category?.irsScheduleELine ?? 'Line 19 – Other';
+        row.expenseLines[line] = (row.expenseLines[line] ?? 0) + cl.amountCents;
+        row.totalExpensesCents += cl.amountCents;
+      }
     }
     row.netCents = row.rentsReceivedCents + row.otherIncomeCents - row.totalExpensesCents;
     rowsByProperty.set(key, row);
@@ -534,21 +564,30 @@ async function buildCapitalExpenses(
   propertyId?: string,
 ) {
   const capCategory = await prisma.category.findFirst({ where: { name: 'Capital Improvements' } });
+  const capCategoryId = capCategory?.id ?? '__none__';
   const txns = await prisma.transaction.findMany({
     where: {
       ...confirmedWhere(accountId, range, propertyId),
       ...ordinaryExpense,
-      categoryId: capCategory?.id ?? '__none__',
+      // Capital spend also reaches this report through a split line (e.g. a
+      // contractor invoice that's part repair, part improvement).
+      OR: [{ categoryId: capCategoryId }, { splits: { some: { categoryId: capCategoryId } } }],
     },
-    include: { property: true },
+    include: { property: true, splits: true },
     orderBy: { date: 'asc' },
   });
-  const rows = txns.map((t) => ({
-    date: iso(t.date),
-    description: t.description,
-    propertyLabel: t.property ? (t.property.nickname ?? t.property.addressLine1) : null,
-    amountCents: t.amountCents,
-  }));
+  // Only the capital slice of a split row counts here — its other categories
+  // are ordinary expenses.
+  const rows = txns.flatMap((t) =>
+    pnlCategoryLines(t)
+      .filter((cl) => cl.categoryId === capCategoryId)
+      .map((cl) => ({
+        date: iso(t.date),
+        description: t.description,
+        propertyLabel: t.property ? (t.property.nickname ?? t.property.addressLine1) : null,
+        amountCents: cl.amountCents,
+      })),
+  );
   return {
     simplified: true,
     rows,
@@ -662,31 +701,17 @@ async function buildMonthlyReview(accountId: string, period: string, tz: string)
   // upcoming renewals.
   const watchItems: string[] = [];
   const priorStart = monthStartInTz(addMonthsToPeriod(period, -3), tz);
-  const currentByCat = await prisma.transaction.groupBy({
-    by: ['categoryId'],
-    where: {
-      ...confirmedWhere(accountId, range),
-      ...ordinaryExpense,
-      categoryId: { not: null },
-    },
-    _sum: { amountCents: true },
-  });
-  const priorByCat = await prisma.transaction.groupBy({
-    by: ['categoryId'],
-    where: {
-      ...confirmedWhere(accountId, { from: priorStart, to: range.from }),
-      ...ordinaryExpense,
-    },
-    _sum: { amountCents: true },
-  });
-  const priorMap = new Map(priorByCat.map((g) => [g.categoryId ?? '', g._sum.amountCents ?? 0]));
+  const currentByCat = await expenseTotalsByCategory(accountId, range);
+  const priorMap = await expenseTotalsByCategory(accountId, { from: priorStart, to: range.from });
   const categories = await prisma.category.findMany();
   const categoryName = new Map(categories.map((c) => [c.id, c.name]));
-  const spikes = currentByCat
-    .map((g) => ({
-      name: categoryName.get(g.categoryId as string) ?? 'Uncategorized',
-      current: g._sum.amountCents ?? 0,
-      avg: (priorMap.get(g.categoryId as string) ?? 0) / 3,
+  const spikes = [...currentByCat]
+    // Uncategorized spend has no category to name in the watch item.
+    .filter(([categoryId]) => categoryId !== '')
+    .map(([categoryId, current]) => ({
+      name: categoryName.get(categoryId) ?? 'Uncategorized',
+      current,
+      avg: (priorMap.get(categoryId) ?? 0) / 3,
     }))
     .filter((s) => s.avg > 0 && s.current > s.avg * 1.25)
     .sort((a, b) => b.current - a.current)

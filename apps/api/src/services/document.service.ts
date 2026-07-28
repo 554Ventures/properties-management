@@ -343,19 +343,57 @@ export async function update(
 ): Promise<Document> {
   const existing = await prisma.document.findFirst({ where: { id, accountId } });
   if (!existing) throw new NotFoundError('document', id);
+
+  // entityType/entityId arrive together (contract-enforced) — a move/relink
+  // to another entity. Validate the target the same way the upload path does.
+  const moving = input.entityType !== undefined;
+  if (moving) {
+    await assertEntityOwned(accountId, input.entityType!, input.entityId!);
+  }
+
   const row = await prisma.document.update({
     where: { id },
     data: {
       ...(input.name !== undefined ? { name: input.name } : {}),
       ...(input.type !== undefined ? { type: input.type } : {}),
+      ...(moving ? { entityType: input.entityType, entityId: input.entityId } : {}),
     },
   });
+
+  if (moving && (existing.entityType !== row.entityType || existing.entityId !== row.entityId)) {
+    // Mirrors delete: a transaction backed by this document as its receipt
+    // loses the link when the document moves away from it.
+    if (existing.entityType === 'transaction') {
+      await prisma.transaction.updateMany({
+        where: { accountId, receiptUrl: downloadPath(id) },
+        data: { receiptUrl: null },
+      });
+    }
+    // Mirrors upload: a receipt-typed document landing on a transaction
+    // becomes its receipt link — but never clobbers an existing one.
+    if (row.entityType === 'transaction' && row.type === 'receipt') {
+      await prisma.transaction.updateMany({
+        where: { id: row.entityId, accountId, receiptUrl: null },
+        data: { receiptUrl: downloadPath(id) },
+      });
+    }
+  }
+
   await writeAudit(accountId, {
     actor,
     action: 'document.updated',
     entityType: 'document',
     entityId: id,
-    detail: { name: row.name, type: row.type },
+    detail: {
+      name: row.name,
+      type: row.type,
+      ...(moving
+        ? {
+            movedFrom: `${existing.entityType}:${existing.entityId}`,
+            movedTo: `${row.entityType}:${row.entityId}`,
+          }
+        : {}),
+    },
   });
   return toApiDocument(row);
 }

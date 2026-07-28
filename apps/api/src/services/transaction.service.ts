@@ -25,7 +25,11 @@ import type {
   TransactionType,
   UpdateTransactionInput,
 } from '@hearth/shared';
-import type { Prisma, Transaction as DbTransaction } from '@prisma/client';
+import type {
+  Prisma,
+  Transaction as DbTransaction,
+  TransactionSplit as DbTransactionSplit,
+} from '@prisma/client';
 import { BankDiscrepancyDataSchema, formatUsd } from '@hearth/shared';
 import {
   createPlaidAdapter,
@@ -60,7 +64,14 @@ import {
 } from './rent.service';
 import { vendorMemoryKey } from './vendor';
 
-export function toApiTransaction(t: DbTransaction): Transaction {
+/** Every producer of an API transaction reads the split lines with it, so
+ *  `splits` is never guessed at (empty array = an unsplit row). */
+type DbTransactionWithSplits = DbTransaction & { splits: DbTransactionSplit[] };
+
+/** Fetch the split lines alongside the row (Prisma include, reused verbatim). */
+const withSplits = { splits: true } as const;
+
+export function toApiTransaction(t: DbTransactionWithSplits): Transaction {
   return {
     id: t.id,
     accountId: t.accountId,
@@ -80,6 +91,11 @@ export function toApiTransaction(t: DbTransaction): Transaction {
     receiptUrl: t.receiptUrl,
     createdAt: iso(t.createdAt),
     updatedAt: iso(t.updatedAt),
+    splits: t.splits.map((s) => ({
+      id: s.id,
+      categoryId: s.categoryId,
+      amountCents: s.amountCents,
+    })),
   };
 }
 
@@ -109,7 +125,20 @@ export async function list(
     ...(query.unassigned ? { propertyId: null } : {}),
     ...(query.type ? { type: query.type } : {}),
     ...(query.status ? { status: query.status } : {}),
-    ...(query.categoryId ? { categoryId: query.categoryId } : {}),
+    // A category filter must also find rows that reach that category through a
+    // split line. Nested under AND so it can't collide with the `q` OR below.
+    ...(query.categoryId
+      ? {
+          AND: [
+            {
+              OR: [
+                { categoryId: query.categoryId },
+                { splits: { some: { categoryId: query.categoryId } } },
+              ],
+            },
+          ],
+        }
+      : {}),
     ...(q
       ? {
           OR: [
@@ -137,11 +166,18 @@ export async function list(
   // `offset` selects numbered-page mode; otherwise fall back to cursor mode.
   const useOffset = query.offset != null;
   const rowsPromise = useOffset
-    ? prisma.transaction.findMany({ where, orderBy, skip: query.offset, take: limit })
+    ? prisma.transaction.findMany({
+        where,
+        orderBy,
+        skip: query.offset,
+        take: limit,
+        include: withSplits,
+      })
     : prisma.transaction.findMany({
         where,
         orderBy,
         take: limit + 1,
+        include: withSplits,
         ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
       });
   const [rows, total] = await Promise.all([rowsPromise, prisma.transaction.count({ where })]);
@@ -153,7 +189,7 @@ export async function list(
     rentLinkedTransactionIds(ids),
     documentCountsByTransactionId(accountId, ids),
   ]);
-  const toItem = (r: DbTransaction): Transaction => {
+  const toItem = (r: DbTransactionWithSplits): Transaction => {
     const documentCount = docCounts.get(r.id) ?? 0;
     return {
       ...toApiTransaction(r),
@@ -395,6 +431,7 @@ export async function create(
       aiConfidence,
       receiptUrl: input.receiptUrl ?? null,
     },
+    include: withSplits,
   });
   await writeAudit(accountId, {
     actor: opts.actor ?? 'user',
@@ -414,8 +451,11 @@ export async function create(
   return { ...toApiTransaction(row), rentMatch };
 }
 
-async function getOwned(accountId: string, id: string): Promise<DbTransaction> {
-  const row = await prisma.transaction.findFirst({ where: { id, accountId } });
+async function getOwned(accountId: string, id: string): Promise<DbTransactionWithSplits> {
+  const row = await prisma.transaction.findFirst({
+    where: { id, accountId },
+    include: withSplits,
+  });
   if (!row) throw new NotFoundError('transaction', id);
   return row;
 }
@@ -460,6 +500,9 @@ export async function update(
     (input.date !== undefined && new Date(input.date).getTime() !== prior.date.getTime()) ||
     (input.type !== undefined && input.type !== prior.type) ||
     (input.categoryId !== undefined && input.categoryId !== prior.categoryId) ||
+    // Splitting a deposit across categories is the same recategorization
+    // divergence (clearing splits isn't: a rent-linked row can never have any).
+    input.splits != null ||
     (input.classification !== undefined && input.classification !== prior.classification);
   if (changesLinkedFields) {
     const period = await rentLinkPeriod(id);
@@ -469,24 +512,44 @@ export async function update(
       );
     }
   }
-  const row = await prisma.transaction.update({
-    where: { id },
-    data: {
-      ...(input.date !== undefined ? { date: new Date(input.date) } : {}),
-      ...(input.amountCents !== undefined ? { amountCents: input.amountCents } : {}),
-      ...(input.type !== undefined ? { type: input.type } : {}),
-      ...(input.description !== undefined ? { description: input.description } : {}),
-      ...(input.propertyId !== undefined ? { propertyId: input.propertyId } : {}),
-      ...(input.unitId !== undefined ? { unitId: input.unitId } : {}),
-      ...(input.categoryId !== undefined ? { categoryId: input.categoryId } : {}),
-      ...(input.vendor !== undefined ? { vendor: input.vendor } : {}),
-      ...(input.receiptUrl !== undefined ? { receiptUrl: input.receiptUrl } : {}),
-      ...(input.classification !== undefined ? { classification: input.classification } : {}),
-    },
+  const splitPlan = await planSplits(accountId, prior, input);
+  const row = await prisma.$transaction(async (tx) => {
+    const updated = await tx.transaction.update({
+      where: { id },
+      data: {
+        ...(input.date !== undefined ? { date: new Date(input.date) } : {}),
+        ...(input.amountCents !== undefined ? { amountCents: input.amountCents } : {}),
+        ...(input.type !== undefined ? { type: input.type } : {}),
+        ...(input.description !== undefined ? { description: input.description } : {}),
+        ...(input.propertyId !== undefined ? { propertyId: input.propertyId } : {}),
+        ...(input.unitId !== undefined ? { unitId: input.unitId } : {}),
+        ...(input.categoryId !== undefined ? { categoryId: input.categoryId } : {}),
+        ...(input.vendor !== undefined ? { vendor: input.vendor } : {}),
+        ...(input.receiptUrl !== undefined ? { receiptUrl: input.receiptUrl } : {}),
+        ...(input.classification !== undefined ? { classification: input.classification } : {}),
+        // Splits ARE the categorization: the parent's single category goes.
+        ...(splitPlan.action === 'replace' ? { categoryId: null } : {}),
+      },
+      include: withSplits,
+    });
+    if (splitPlan.action === 'none') return updated;
+    await tx.transactionSplit.deleteMany({ where: { transactionId: id } });
+    if (splitPlan.action === 'replace') {
+      await tx.transactionSplit.createMany({
+        data: splitPlan.lines.map((s) => ({
+          transactionId: id,
+          categoryId: s.categoryId,
+          amountCents: s.amountCents,
+        })),
+      });
+    }
+    return tx.transaction.findUniqueOrThrow({ where: { id }, include: withSplits });
   });
   // Second learning signal (plan §A5): recategorizing an already-saved row is
   // a correction too. Uses the row's effective vendor (the patch may have
-  // changed it in the same call).
+  // changed it in the same call). Split lines deliberately teach nothing —
+  // vendor memory maps a vendor to ONE category, and a split has no single
+  // answer to remember.
   if (input.categoryId !== undefined && input.categoryId !== prior.categoryId) {
     await recordVendorCategoryChoice(accountId, row.vendor, row.type, input.categoryId, 'correct');
   }
@@ -500,9 +563,114 @@ export async function update(
       priorCategoryId: prior.categoryId,
       amountCents: row.amountCents,
       categoryId: row.categoryId,
+      ...(splitPlan.action === 'none'
+        ? {}
+        : {
+            splits: row.splits.map((s) => ({
+              categoryId: s.categoryId,
+              amountCents: s.amountCents,
+            })),
+            priorSplitCount: prior.splits.length,
+          }),
     },
   });
   return toApiTransaction(row);
+}
+
+/**
+ * What this PATCH does to the row's split lines, validated against the row's
+ * FINAL state (a patch may move the amount/type in the same call):
+ *   `replace` — write these lines and null the parent category
+ *   `clear`   — delete the lines (explicit `splits: null`, or a new single
+ *               category, which supersedes them)
+ *   `none`    — leave them alone
+ * Every rejection is a 400: splits are a user-facing editing decision, and a
+ * silently-repaired split would put the category breakdown out of step with
+ * the row's own amount.
+ */
+async function planSplits(
+  accountId: string,
+  prior: DbTransactionWithSplits,
+  input: UpdateTransactionInput,
+): Promise<
+  | { action: 'none' }
+  | { action: 'clear' }
+  | { action: 'replace'; lines: Array<{ categoryId: string; amountCents: number }> }
+> {
+  const hasPriorSplits = prior.splits.length > 0;
+  // Mutual exclusion holds in BOTH orders: classifying a row that's already
+  // split would give it negative (refund) or zero (transfer) P&L totals while
+  // its split lines still read as positive expenses. Clearing the splits in
+  // the same PATCH is the sanctioned way out.
+  if (input.classification && hasPriorSplits && input.splits !== null) {
+    throw new BadRequestError(
+      `a transaction split across categories can't be classified as a ${input.classification.replace('_', ' ')} — clear the split first (splits: null)`,
+    );
+  }
+  if (input.splits != null) {
+    if (input.categoryId != null) {
+      throw new BadRequestError(
+        'a transaction has either one category or split lines, not both — omit categoryId when sending splits',
+      );
+    }
+    const classification =
+      input.classification !== undefined ? input.classification : prior.classification;
+    if (classification) {
+      throw new BadRequestError(
+        `a ${classification.replace('_', ' ')} transaction can't be split across categories`,
+      );
+    }
+    // Splits are confirmed-only: the bank sync rewrites amount/type on
+    // pending_review rows in place (applySyncBatch), which would silently
+    // leave the split lines summing to the old amount.
+    if (prior.status !== 'confirmed') {
+      throw new BadRequestError(
+        'confirm the transaction before splitting it across categories',
+      );
+    }
+    const type = input.type ?? prior.type;
+    const amountCents = input.amountCents ?? prior.amountCents;
+    const categoryIds = [...new Set(input.splits.map((s) => s.categoryId))];
+    const categories = await prisma.category.findMany({
+      where: { id: { in: categoryIds }, OR: [{ isSystem: true }, { accountId }] },
+      select: { id: true, type: true },
+    });
+    const byId = new Map(categories.map((c) => [c.id, c]));
+    for (const categoryId of categoryIds) {
+      const category = byId.get(categoryId);
+      if (!category) throw new NotFoundError('category', categoryId);
+      if (category.type !== type) {
+        throw new BadRequestError(
+          `every split category must be an ${type} category — ${categoryId} is not`,
+        );
+      }
+    }
+    const sumCents = input.splits.reduce((sum, s) => sum + s.amountCents, 0);
+    if (sumCents !== amountCents) {
+      throw new BadRequestError(
+        `splits must add up to the transaction amount — ${formatUsd(sumCents)} split against ${formatUsd(amountCents)}`,
+      );
+    }
+    return { action: 'replace', lines: input.splits };
+  }
+  if (input.splits === null) return hasPriorSplits ? { action: 'clear' } : { action: 'none' };
+  if (!hasPriorSplits) return { action: 'none' };
+  // Splits left in place: they must still describe the row afterwards, so a
+  // move of the amount (their sum) or the type (their categories' type) has to
+  // come with the new lines — or with `splits: null` to drop them.
+  if (input.amountCents !== undefined && input.amountCents !== prior.amountCents) {
+    throw new BadRequestError(
+      "this transaction is split across categories — send the new splits in the same update (or splits: null to clear them) when you change its amount",
+    );
+  }
+  if (input.type !== undefined && input.type !== prior.type) {
+    throw new BadRequestError(
+      "this transaction is split across categories — send the new splits in the same update (or splits: null to clear them) when you change its type",
+    );
+  }
+  // A new single category supersedes the split (same intent as picking one
+  // category in the UI).
+  return input.categoryId != null ? { action: 'clear' } : { action: 'none' };
 }
 
 /**
@@ -582,6 +750,7 @@ export async function getReviewQueue(
       where,
       orderBy: [{ date: 'desc' }, { id: 'desc' }],
       take: limit + 1,
+      include: withSplits,
       ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
     }),
     prisma.transaction.count({ where }),
@@ -762,6 +931,11 @@ export async function confirm(
     return confirmWithRentLink(accountId, existing, input.rentPaymentId, input.categoryId, actor);
   }
   assertClassificationValid(input.classification, existing.type);
+  if (input.classification && existing.splits.length > 0) {
+    throw new BadRequestError(
+      `a transaction split across categories can't be classified as a ${input.classification.replace('_', ' ')} — clear the split first`,
+    );
+  }
   if (input.propertyId !== undefined || input.unitId !== undefined) {
     await assertAttributionOwned(
       accountId,
@@ -769,17 +943,30 @@ export async function confirm(
       input.unitId !== undefined ? input.unitId : existing.unitId,
     );
   }
-  const usedSuggestion = !input.categoryId && !!existing.aiSuggestedCategoryId;
-  const categoryId = input.categoryId ?? existing.aiSuggestedCategoryId ?? existing.categoryId;
-  const row = await prisma.transaction.update({
-    where: { id },
-    data: {
-      status: 'confirmed',
-      categoryId,
-      ...(input.propertyId !== undefined ? { propertyId: input.propertyId } : {}),
-      ...(input.unitId !== undefined ? { unitId: input.unitId } : {}),
-      ...(input.classification !== undefined ? { classification: input.classification } : {}),
-    },
+  // A split row is already categorized (by its lines): an explicit category
+  // supersedes the split exactly like it does on PATCH, and with no explicit
+  // category the suggestion is not applied over it.
+  const hasSplits = existing.splits.length > 0;
+  const clearsSplits = hasSplits && !!input.categoryId;
+  const usedSuggestion = !input.categoryId && !hasSplits && !!existing.aiSuggestedCategoryId;
+  const categoryId = hasSplits
+    ? (input.categoryId ?? null)
+    : (input.categoryId ?? existing.aiSuggestedCategoryId ?? existing.categoryId);
+  const row = await prisma.$transaction(async (tx) => {
+    const updated = await tx.transaction.update({
+      where: { id },
+      data: {
+        status: 'confirmed',
+        categoryId,
+        ...(input.propertyId !== undefined ? { propertyId: input.propertyId } : {}),
+        ...(input.unitId !== undefined ? { unitId: input.unitId } : {}),
+        ...(input.classification !== undefined ? { classification: input.classification } : {}),
+      },
+      include: withSplits,
+    });
+    if (!clearsSplits) return updated;
+    await tx.transactionSplit.deleteMany({ where: { transactionId: id } });
+    return tx.transaction.findUniqueOrThrow({ where: { id }, include: withSplits });
   });
   // Learning signal (plan §A5): an explicit category that disagrees with the
   // suggestion is a correction; agreeing (explicitly or by accepting the
@@ -822,13 +1009,21 @@ export async function confirm(
  */
 async function confirmWithRentLink(
   accountId: string,
-  existing: DbTransaction,
+  existing: DbTransactionWithSplits,
   rentPaymentId: string,
   categoryIdOverride: string | undefined,
   actor: AuditActor,
 ): Promise<Transaction> {
   if (existing.type !== 'income') {
     throw new BadRequestError('only an income transaction can be linked to a rent payment');
+  }
+  // A deposit backing a rent charge is Rent income, whole — the link is keyed
+  // on that single category (see the update() guard), so a row split across
+  // categories can't back one.
+  if (existing.splits.length > 0) {
+    throw new BadRequestError(
+      "a transaction split across categories can't back a rent payment — clear the split first",
+    );
   }
   const payment = await prisma.rentPayment.findFirst({
     where: { id: rentPaymentId, lease: { unit: { property: { accountId } } } },
@@ -889,6 +1084,7 @@ async function confirmWithRentLink(
         propertyId: payment.lease.unit.propertyId,
         unitId: payment.lease.unitId,
       },
+      include: withSplits,
     });
     await tx.rentPaymentDeposit.create({
       data: {
@@ -959,7 +1155,11 @@ export async function dismiss(
   if (existing.status !== 'pending_review') {
     throw new BadRequestError('only a pending-review transaction can be dismissed');
   }
-  const row = await prisma.transaction.update({ where: { id }, data: { status: 'dismissed' } });
+  const row = await prisma.transaction.update({
+    where: { id },
+    data: { status: 'dismissed' },
+    include: withSplits,
+  });
   await writeAudit(accountId, {
     actor,
     action: 'transaction.dismissed',
@@ -987,6 +1187,7 @@ export async function restore(
   const row = await prisma.transaction.update({
     where: { id },
     data: { status: 'pending_review' },
+    include: withSplits,
   });
   await writeAudit(accountId, {
     actor,
@@ -1385,7 +1586,10 @@ export async function listBankDiscrepancies(
 
   const txnIds = rows.map((r) => r.transactionId).filter((id): id is string => !!id);
   const txns = txnIds.length
-    ? await prisma.transaction.findMany({ where: { id: { in: txnIds }, accountId } })
+    ? await prisma.transaction.findMany({
+        where: { id: { in: txnIds }, accountId },
+        include: withSplits,
+      })
     : [];
   const txnById = new Map(txns.map((t) => [t.id, t]));
   const categoryIds = [
@@ -1416,7 +1620,12 @@ export async function listBankDiscrepancies(
             date: iso(txn.date),
             type: txn.type as TransactionType,
             status: txn.status as TransactionStatus,
-            categoryName: txn.categoryId ? (categoryName.get(txn.categoryId) ?? null) : null,
+            categoryName:
+              txn.splits.length > 0
+                ? `Split across ${txn.splits.length} categories`
+                : txn.categoryId
+                  ? (categoryName.get(txn.categoryId) ?? null)
+                  : null,
           }
         : null,
       ...(link
@@ -1465,11 +1674,20 @@ export async function acceptBankDiscrepancy(
       'the local transaction no longer exists — dismiss this bank change instead',
     );
   }
+  let clearedSplits = false;
   if (disc.kind === 'removed') {
     await remove(accountId, disc.transactionId, actor);
   } else {
     const bankData = parseBankData(disc.bankDataJson);
     if (!bankData) throw new BadRequestError('this bank change is missing its restated values');
+    // The restated amount/type invalidates any split (its lines summed to the
+    // old figure), and update() rightly refuses to guess new ones — so the
+    // bank's version lands with the split dropped. The row comes back
+    // uncategorized rather than silently mis-split; the user re-splits it.
+    clearedSplits = !!(await prisma.transactionSplit.findFirst({
+      where: { transactionId: disc.transactionId },
+      select: { id: true },
+    }));
     await update(
       accountId,
       disc.transactionId,
@@ -1478,6 +1696,7 @@ export async function acceptBankDiscrepancy(
         amountCents: bankData.amountCents,
         type: bankData.type,
         description: bankData.description,
+        ...(clearedSplits ? { splits: null } : {}),
         // vendor can't be cleared through the update contract; only restate it
         // when the bank gave a concrete value (amount/date/type are what fix P&L).
         ...(bankData.vendor != null ? { vendor: bankData.vendor } : {}),
@@ -1494,7 +1713,12 @@ export async function acceptBankDiscrepancy(
     action: 'bank_discrepancy.accepted',
     entityType: 'bank_discrepancy',
     entityId: id,
-    detail: { externalId: disc.externalId, kind: disc.kind, transactionId: disc.transactionId },
+    detail: {
+      externalId: disc.externalId,
+      kind: disc.kind,
+      transactionId: disc.transactionId,
+      ...(clearedSplits ? { clearedSplits: true } : {}),
+    },
   });
   return toResolution(resolved);
 }

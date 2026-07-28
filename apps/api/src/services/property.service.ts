@@ -19,7 +19,7 @@ import {
   yearRangeInTz,
 } from '../lib/dates';
 import { ConflictError, NotFoundError } from '../lib/errors';
-import { pnlBucket, pnlSums } from '../lib/pnl';
+import { pnlBucket, pnlCategoryLines, pnlSums } from '../lib/pnl';
 import { prisma } from '../lib/prisma';
 import { writeAudit, type AuditActor } from './audit.service';
 import { generateInsights, toApiInsight } from './insight.service';
@@ -350,7 +350,7 @@ export async function getPnl(
       status: 'confirmed',
       date: { gte: range.from, lt: range.to },
     },
-    include: { category: true },
+    include: { category: true, splits: { include: { category: true } } },
   });
   const byCategory = new Map<
     string,
@@ -363,15 +363,19 @@ export async function getPnl(
     if (!b) continue; // transfers/owner contributions don't count
     if (b.bucket === 'income') incomeCents += b.amountCents;
     else expenseCents += b.amountCents; // refunds arrive here negative
-    const key = `${t.categoryId ?? 'uncategorized'}:${b.bucket}`;
-    const line = byCategory.get(key) ?? {
-      categoryId: t.categoryId,
-      categoryName: t.category?.name ?? 'Uncategorized',
-      type: b.bucket as TransactionType,
-      totalCents: 0,
-    };
-    line.totalCents += b.amountCents;
-    byCategory.set(key, line);
+    // A split row breaks into one line per split category; the totals above
+    // stay per-row, and the splits sum to the row's amount.
+    for (const cl of pnlCategoryLines(t)) {
+      const key = `${cl.categoryId ?? 'uncategorized'}:${cl.bucket}`;
+      const line = byCategory.get(key) ?? {
+        categoryId: cl.categoryId,
+        categoryName: cl.category?.name ?? 'Uncategorized',
+        type: cl.bucket as TransactionType,
+        totalCents: 0,
+      };
+      line.totalCents += cl.amountCents;
+      byCategory.set(key, line);
+    }
   }
   return {
     propertyId: id,

@@ -2,6 +2,7 @@
 import {
   ExpenseBreakdownResponseSchema,
   PropertyNoiResponseSchema,
+  type ExpenseBreakdownResponse,
 } from '@hearth/shared';
 import { describe, expect, it } from 'vitest';
 import {
@@ -20,6 +21,7 @@ import { addMonthsToPeriod, currentPeriod, monthStart } from '../lib/dates';
 import { prisma } from '../lib/prisma';
 import { getDemoAccountId } from '../plugins/auth';
 import * as dashboardService from '../services/dashboard.service';
+import * as transactionService from '../services/transaction.service';
 
 describe('dashboardService.getKpis (seed constants)', () => {
   it('returns the exact §10 figures', async () => {
@@ -65,6 +67,47 @@ describe('dashboardService.getExpenseBreakdown (seed constants)', () => {
     const amounts = result.slices.map((s) => s.amountCents);
     expect([...amounts].sort((a, b) => b - a)).toEqual(amounts);
     expect(result.slices.some((s) => s.categoryName === 'Other')).toBe(false);
+  });
+
+  it('attributes a split transaction to each of its categories without moving the total', async () => {
+    const accountId = await getDemoAccountId();
+    const before = await dashboardService.getExpenseBreakdown(accountId);
+    const sliceOf = (result: ExpenseBreakdownResponse, name: string) =>
+      result.slices.find((s) => s.categoryName === name)?.amountCents ?? 0;
+
+    const [repairs, supplies] = await Promise.all([
+      prisma.category.findFirstOrThrow({ where: { name: 'Repairs', isSystem: true } }),
+      prisma.category.findFirstOrThrow({ where: { name: 'Supplies', isSystem: true } }),
+    ]);
+    const txn = await prisma.transaction.create({
+      data: {
+        accountId,
+        date: new Date(),
+        amountCents: 30_000,
+        type: 'expense',
+        description: 'TEST split breakdown fixture',
+        source: 'manual',
+        status: 'confirmed',
+      },
+    });
+    await transactionService.update(accountId, txn.id, {
+      splits: [
+        { categoryId: repairs.id, amountCents: 20_000 },
+        { categoryId: supplies.id, amountCents: 10_000 },
+      ],
+    });
+
+    const after = await dashboardService.getExpenseBreakdown(accountId);
+    // Both categories pick up their own slice — nothing lands in Uncategorized.
+    expect(sliceOf(after, 'Repairs')).toBe(sliceOf(before, 'Repairs') + 20_000);
+    expect(sliceOf(after, 'Supplies')).toBe(sliceOf(before, 'Supplies') + 10_000);
+    expect(sliceOf(after, 'Uncategorized')).toBe(sliceOf(before, 'Uncategorized'));
+    expect(after.totalCents).toBe(before.totalCents + 30_000);
+
+    await prisma.transaction.delete({ where: { id: txn.id } });
+    await prisma.auditLog.deleteMany({ where: { accountId, entityId: txn.id } });
+    // Seed figures are pinned for later files — restore the breakdown exactly.
+    expect(await dashboardService.getExpenseBreakdown(accountId)).toEqual(before);
   });
 });
 

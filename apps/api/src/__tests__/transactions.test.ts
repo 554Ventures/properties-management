@@ -795,6 +795,26 @@ describe('PATCH /transactions/:id — rent-link category guard (own lease fixtur
     });
   });
 
+  it('rejects splitting the rent-linked row across categories', async () => {
+    const [repairs, supplies] = await Promise.all([
+      prisma.category.findFirstOrThrow({ where: { name: 'Repairs', isSystem: true } }),
+      prisma.category.findFirstOrThrow({ where: { name: 'Supplies', isSystem: true } }),
+    ]);
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/transactions/${linkedTxnId}`,
+      payload: {
+        splits: [
+          { categoryId: repairs.id, amountCents: 60_000 },
+          { categoryId: supplies.id, amountCents: 60_000 },
+        ],
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toMatch(/backs a recorded rent payment/);
+    expect(await prisma.transactionSplit.count({ where: { transactionId: linkedTxnId } })).toBe(0);
+  });
+
   it('rejects a category change on the rent-linked row', async () => {
     const supplies = await prisma.category.findFirst({
       where: { name: 'Supplies', isSystem: true },
@@ -1410,5 +1430,401 @@ describe('POST /transactions/import', () => {
         where: { accountId, externalId: { startsWith: 'plaid_mock_' } },
       });
     }
+  });
+});
+
+// Splitting one ledger row across several categories: the money never moves
+// (the parent row still owns amountCents), only its categorization gets finer.
+describe('PATCH /transactions/:id — category splits', () => {
+  let accountId: string;
+  let repairsId: string;
+  let suppliesId: string;
+  let utilitiesId: string;
+  let rentIncomeId: string;
+
+  const splitTxnIds: string[] = [];
+
+  /** A confirmed, unsplit expense row owned by this suite. */
+  async function expenseRow(
+    amountCents: number,
+    overrides: { categoryId?: string | null; vendor?: string; classification?: string } = {},
+  ) {
+    const row = await prisma.transaction.create({
+      data: {
+        accountId,
+        date: new Date(),
+        amountCents,
+        type: 'expense',
+        description: 'TEST split fixture',
+        source: 'manual',
+        status: 'confirmed',
+        categoryId: overrides.categoryId === undefined ? repairsId : overrides.categoryId,
+        vendor: overrides.vendor ?? null,
+        classification: overrides.classification ?? null,
+      },
+    });
+    splitTxnIds.push(row.id);
+    return row;
+  }
+
+  const patch = (id: string, payload: Record<string, unknown>) =>
+    app.inject({ method: 'PATCH', url: `/api/v1/transactions/${id}`, payload });
+
+  beforeAll(async () => {
+    accountId = await getDemoAccountId();
+    const [repairs, supplies, utilities, rent] = await Promise.all([
+      prisma.category.findFirstOrThrow({ where: { name: 'Repairs', isSystem: true } }),
+      prisma.category.findFirstOrThrow({ where: { name: 'Supplies', isSystem: true } }),
+      prisma.category.findFirstOrThrow({ where: { name: 'Utilities', isSystem: true } }),
+      prisma.category.findFirstOrThrow({ where: { name: 'Rent', type: 'income', isSystem: true } }),
+    ]);
+    repairsId = repairs.id;
+    suppliesId = supplies.id;
+    utilitiesId = utilities.id;
+    rentIncomeId = rent.id;
+  });
+
+  afterAll(async () => {
+    // Splits cascade with their parent row.
+    await prisma.transaction.deleteMany({ where: { id: { in: splitTxnIds } } });
+    await prisma.auditLog.deleteMany({ where: { accountId, entityId: { in: splitTxnIds } } });
+    await prisma.vendorCategoryMemory.deleteMany({
+      where: { accountId, vendorKey: { contains: 'zzsplit' } },
+    });
+  });
+
+  it('writes the split lines, nulls the parent category, and audits the breakdown', async () => {
+    const row = await expenseRow(10_000, { vendor: 'ZZSplit Hardware' });
+    const res = await patch(row.id, {
+      splits: [
+        { categoryId: repairsId, amountCents: 6_000 },
+        { categoryId: suppliesId, amountCents: 4_000 },
+      ],
+    });
+    expect(res.statusCode).toBe(200);
+    const txn = TransactionSchema.parse(res.json());
+    expect(txn.categoryId).toBeNull(); // the splits ARE the categorization
+    expect(txn.splits?.map((s) => [s.categoryId, s.amountCents])).toEqual([
+      [repairsId, 6_000],
+      [suppliesId, 4_000],
+    ]);
+    expect(txn.amountCents).toBe(10_000); // the row's money is untouched
+
+    const stored = await prisma.transactionSplit.findMany({ where: { transactionId: row.id } });
+    expect(stored).toHaveLength(2);
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { accountId, action: 'transaction.updated', entityId: row.id },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(JSON.parse(audit!.detailJson!)).toMatchObject({
+      categoryId: null,
+      splits: [
+        { categoryId: repairsId, amountCents: 6_000 },
+        { categoryId: suppliesId, amountCents: 4_000 },
+      ],
+    });
+
+    // A split teaches vendor memory nothing — there's no single category to
+    // remember for this vendor.
+    expect(
+      await prisma.vendorCategoryMemory.count({
+        where: { accountId, vendorKey: { contains: 'zzsplit' } },
+      }),
+    ).toBe(0);
+  });
+
+  it('replaces the previous lines wholesale', async () => {
+    const row = await expenseRow(10_000);
+    await patch(row.id, {
+      splits: [
+        { categoryId: repairsId, amountCents: 6_000 },
+        { categoryId: suppliesId, amountCents: 4_000 },
+      ],
+    });
+    const res = await patch(row.id, {
+      splits: [
+        { categoryId: repairsId, amountCents: 2_000 },
+        { categoryId: suppliesId, amountCents: 3_000 },
+        { categoryId: utilitiesId, amountCents: 5_000 },
+      ],
+    });
+    expect(res.statusCode).toBe(200);
+    const txn = TransactionSchema.parse(res.json());
+    expect(txn.splits).toHaveLength(3);
+    expect(txn.splits!.reduce((s, l) => s + l.amountCents, 0)).toBe(10_000);
+    expect(await prisma.transactionSplit.count({ where: { transactionId: row.id } })).toBe(3);
+  });
+
+  it('rejects splits that do not add up to the transaction amount', async () => {
+    const row = await expenseRow(10_000);
+    const res = await patch(row.id, {
+      splits: [
+        { categoryId: repairsId, amountCents: 6_000 },
+        { categoryId: suppliesId, amountCents: 3_999 },
+      ],
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toMatch(/add up to the transaction amount/);
+    expect(await prisma.transactionSplit.count({ where: { transactionId: row.id } })).toBe(0);
+  });
+
+  it('validates the sum against a new amount sent in the same PATCH', async () => {
+    const row = await expenseRow(10_000);
+    const ok = await patch(row.id, {
+      amountCents: 20_000,
+      splits: [
+        { categoryId: repairsId, amountCents: 12_000 },
+        { categoryId: suppliesId, amountCents: 8_000 },
+      ],
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(TransactionSchema.parse(ok.json()).amountCents).toBe(20_000);
+
+    const stale = await patch(row.id, {
+      amountCents: 30_000,
+      splits: [
+        { categoryId: repairsId, amountCents: 12_000 },
+        { categoryId: suppliesId, amountCents: 8_000 },
+      ],
+    });
+    expect(stale.statusCode).toBe(400);
+    expect(stale.json().error.message).toMatch(/add up to the transaction amount/);
+  });
+
+  it('rejects a split category of the wrong type', async () => {
+    const row = await expenseRow(10_000);
+    const res = await patch(row.id, {
+      splits: [
+        { categoryId: repairsId, amountCents: 6_000 },
+        { categoryId: rentIncomeId, amountCents: 4_000 }, // income category
+      ],
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toMatch(/must be an expense category/);
+  });
+
+  it('rejects a category the account cannot see', async () => {
+    const row = await expenseRow(10_000);
+    const res = await patch(row.id, {
+      splits: [
+        { categoryId: repairsId, amountCents: 6_000 },
+        { categoryId: 'cat_does_not_exist', amountCents: 4_000 },
+      ],
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('rejects splitting a classified (transfer) row', async () => {
+    const row = await expenseRow(10_000, { categoryId: null, classification: 'transfer' });
+    const res = await patch(row.id, {
+      splits: [
+        { categoryId: repairsId, amountCents: 6_000 },
+        { categoryId: suppliesId, amountCents: 4_000 },
+      ],
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toMatch(/can't be split across categories/);
+  });
+
+  it('rejects classifying a row that is already split, unless the same PATCH clears the splits', async () => {
+    const row = await expenseRow(10_000);
+    const splitPayload = {
+      splits: [
+        { categoryId: repairsId, amountCents: 6_000 },
+        { categoryId: suppliesId, amountCents: 4_000 },
+      ],
+    };
+    await patch(row.id, splitPayload);
+
+    // Classification would flip the row's P&L sign (refund) or drop it
+    // entirely (transfer) while the split lines still read as expenses.
+    const blocked = await patch(row.id, { classification: 'transfer' });
+    expect(blocked.statusCode).toBe(400);
+    expect(blocked.json().error.message).toMatch(/clear the split first/);
+    const untouched = await prisma.transaction.findUniqueOrThrow({ where: { id: row.id } });
+    expect(untouched.classification).toBeNull();
+    expect(await prisma.transactionSplit.count({ where: { transactionId: row.id } })).toBe(2);
+
+    const allowed = await patch(row.id, { classification: 'transfer', splits: null });
+    expect(allowed.statusCode).toBe(200);
+    const classified = TransactionSchema.parse(allowed.json());
+    expect(classified.classification).toBe('transfer');
+    expect(classified.splits).toEqual([]);
+  });
+
+  it('rejects splitting a row that has not been confirmed yet', async () => {
+    const pending = await prisma.transaction.create({
+      data: {
+        accountId,
+        date: new Date(),
+        amountCents: 10_000,
+        type: 'expense',
+        description: 'TEST split pending fixture',
+        source: 'bank',
+        status: 'pending_review',
+      },
+    });
+    splitTxnIds.push(pending.id);
+
+    const res = await patch(pending.id, {
+      splits: [
+        { categoryId: repairsId, amountCents: 6_000 },
+        { categoryId: suppliesId, amountCents: 4_000 },
+      ],
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toMatch(/confirm the transaction before splitting/);
+    expect(await prisma.transactionSplit.count({ where: { transactionId: pending.id } })).toBe(0);
+  });
+
+  it('rejects an amount change on a split row unless new splits come with it', async () => {
+    const row = await expenseRow(10_000);
+    await patch(row.id, {
+      splits: [
+        { categoryId: repairsId, amountCents: 6_000 },
+        { categoryId: suppliesId, amountCents: 4_000 },
+      ],
+    });
+    const res = await patch(row.id, { amountCents: 12_000 });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toMatch(/split across categories/);
+    const unchanged = await prisma.transaction.findUniqueOrThrow({ where: { id: row.id } });
+    expect(unchanged.amountCents).toBe(10_000);
+  });
+
+  it('clears the splits when a single category is set, and on splits: null', async () => {
+    const bySingleCategory = await expenseRow(10_000);
+    await patch(bySingleCategory.id, {
+      splits: [
+        { categoryId: repairsId, amountCents: 6_000 },
+        { categoryId: suppliesId, amountCents: 4_000 },
+      ],
+    });
+    const recategorized = await patch(bySingleCategory.id, { categoryId: utilitiesId });
+    expect(recategorized.statusCode).toBe(200);
+    const single = TransactionSchema.parse(recategorized.json());
+    expect(single.categoryId).toBe(utilitiesId);
+    expect(single.splits).toEqual([]);
+    expect(
+      await prisma.transactionSplit.count({ where: { transactionId: bySingleCategory.id } }),
+    ).toBe(0);
+
+    const byNull = await expenseRow(10_000);
+    await patch(byNull.id, {
+      splits: [
+        { categoryId: repairsId, amountCents: 6_000 },
+        { categoryId: suppliesId, amountCents: 4_000 },
+      ],
+    });
+    const cleared = await patch(byNull.id, { splits: null });
+    expect(cleared.statusCode).toBe(200);
+    const uncategorized = TransactionSchema.parse(cleared.json());
+    expect(uncategorized.splits).toEqual([]);
+    expect(uncategorized.categoryId).toBeNull();
+    expect(await prisma.transactionSplit.count({ where: { transactionId: byNull.id } })).toBe(0);
+  });
+
+  it('rejects splits sent together with a single categoryId, and one-line splits', async () => {
+    const row = await expenseRow(10_000);
+    const both = await patch(row.id, {
+      categoryId: utilitiesId,
+      splits: [
+        { categoryId: repairsId, amountCents: 6_000 },
+        { categoryId: suppliesId, amountCents: 4_000 },
+      ],
+    });
+    expect(both.statusCode).toBe(400);
+    expect(both.json().error.message).toMatch(/not both/);
+
+    const single = await patch(row.id, { splits: [{ categoryId: repairsId, amountCents: 10_000 }] });
+    expect(single.statusCode).toBe(400); // schema: at least two lines
+  });
+
+  it('GET /transactions?categoryId= matches rows that reach the category through a split', async () => {
+    const row = await expenseRow(10_000, { categoryId: null });
+    await patch(row.id, {
+      splits: [
+        { categoryId: repairsId, amountCents: 6_000 },
+        { categoryId: suppliesId, amountCents: 4_000 },
+      ],
+    });
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/transactions?categoryId=${suppliesId}&limit=100`,
+    });
+    expect(res.statusCode).toBe(200);
+    const list = TransactionListResponseSchema.parse(res.json());
+    const found = list.items.find((t) => t.id === row.id);
+    expect(found).toBeDefined();
+    expect(found!.splits?.map((s) => s.categoryId)).toEqual([repairsId, suppliesId]);
+  });
+
+  it('rejects linking a split income row to a rent payment', async () => {
+    const property = await propertyService.create(accountId, {
+      addressLine1: 'ZZSPLITRENT 2 Test Way',
+      city: 'X',
+      state: 'CA',
+      zip: '00000',
+      units: [{ label: 'A' }],
+    });
+    const unit = await prisma.unit.findFirstOrThrow({ where: { propertyId: property.id } });
+    const tenant = await tenantService.create(accountId, { fullName: 'ZZSplitrent Tenant' });
+    const period = currentPeriod();
+    const periodStart = monthStart(period);
+    const lease = await leaseService.create(accountId, {
+      unitId: unit.id,
+      tenantIds: [tenant.id],
+      rentCents: 100_000,
+      dueDay: 1,
+      startDate: iso(addDays(periodStart, -365)),
+      endDate: iso(addDays(periodStart, 365)),
+    });
+    await rentService.materializeExpectedPayments(accountId, period);
+    const charge = await prisma.rentPayment.findFirstOrThrow({
+      where: { leaseId: lease.id, period },
+    });
+
+    const otherIncome = await prisma.category.findFirstOrThrow({
+      where: { name: 'Other Income', type: 'income', isSystem: true },
+    });
+    const deposit = await prisma.transaction.create({
+      data: {
+        accountId,
+        date: new Date(),
+        amountCents: 100_000,
+        type: 'income',
+        description: 'TEST split deposit',
+        source: 'bank',
+        status: 'confirmed', // splits are confirmed-only
+      },
+    });
+    splitTxnIds.push(deposit.id);
+    const split = await patch(deposit.id, {
+      splits: [
+        { categoryId: rentIncomeId, amountCents: 60_000 },
+        { categoryId: otherIncome.id, amountCents: 40_000 },
+      ],
+    });
+    expect(split.statusCode).toBe(200);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/transactions/${deposit.id}/confirm`,
+      payload: { rentPaymentId: charge.id },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toMatch(/split across categories/);
+    const untouched = await prisma.rentPayment.findUniqueOrThrow({ where: { id: charge.id } });
+    expect(untouched.paidCents).toBe(0);
+
+    await prisma.rentPayment.deleteMany({ where: { leaseId: lease.id } });
+    await prisma.lease.delete({ where: { id: lease.id } });
+    await prisma.tenant.delete({ where: { id: tenant.id } });
+    await prisma.unit.deleteMany({ where: { propertyId: property.id } });
+    await prisma.property.delete({ where: { id: property.id } });
+    await prisma.auditLog.deleteMany({
+      where: { accountId, entityId: { in: [property.id, lease.id, tenant.id] } },
+    });
   });
 });

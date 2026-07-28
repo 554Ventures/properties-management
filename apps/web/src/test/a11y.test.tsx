@@ -547,6 +547,24 @@ describe('CRUD modal accessibility', () => {
     await expectNoModalViolations();
   });
 
+  it('TransactionEditModal split editor (initialized open from existing splits) has no axe violations', async () => {
+    vi.stubGlobal('fetch', vi.fn(txnModalFetch));
+    render(
+      <Providers>
+        <TransactionEditModal open onClose={() => {}} transaction={splitTransaction} />
+      </Providers>,
+    );
+    const dialog = await screen.findByRole('dialog');
+
+    // Splits initialize active for a row that already carries them.
+    await within(dialog).findByRole('button', { name: 'Remove split — use one category' });
+    expect(within(dialog).getByLabelText(/^Category/)).toBeDisabled();
+    await within(dialog).findByLabelText('Split 1 category');
+    await within(dialog).findByLabelText('Split 2 amount (USD)');
+
+    await expectNoModalViolations();
+  });
+
   it('MultiSelect (open dropdown) has no axe violations', async () => {
     render(
       <Providers>
@@ -604,6 +622,19 @@ const rentLinkedTransaction: Transaction = {
   id: 'tx-rent-linked',
   status: 'confirmed',
   rentLinked: true,
+};
+
+// A confirmed row already split across two categories, summing to its total
+// — the edit modal's split editor initializes open for this shape.
+const splitTransaction: Transaction = {
+  ...importedTransaction,
+  id: 'tx-split',
+  status: 'confirmed',
+  categoryId: null,
+  splits: [
+    { id: 's1', categoryId: 'c-rent', amountCents: 60000 },
+    { id: 's2', categoryId: 'c-supplies', amountCents: 55000 },
+  ],
 };
 
 // The edit modal's embedded DocumentsCard fetches GET /documents for the

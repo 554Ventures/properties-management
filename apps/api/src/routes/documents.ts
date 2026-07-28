@@ -1,5 +1,6 @@
 import {
   CreateDocumentFieldsSchema,
+  DocumentEntityTypeSchema,
   DocumentListQuerySchema,
   UpdateDocumentInputSchema,
 } from '@hearth/shared';
@@ -35,16 +36,28 @@ const DOCUMENT_WRITE_AREA: Record<DocumentEntityType, MemberPermission> = {
   transaction: 'money',
 };
 
+/** The entityType of a PATCH move target, or null when absent/not a valid type
+ *  (an invalid/incomplete body is left for schema validation to 400). */
+function targetWriteArea(body: unknown): MemberPermission | null {
+  if (typeof body !== 'object' || body === null || !('entityType' in body)) return null;
+  const parsed = DocumentEntityTypeSchema.safeParse((body as { entityType?: unknown }).entityType);
+  return parsed.success ? DOCUMENT_WRITE_AREA[parsed.data] : null;
+}
+
 // PATCH/DELETE guard: the area is only known after looking the document up.
 // Demo mode and owners skip the extra query; a missing or cross-account id
 // falls through unguarded so the service 404s (a 403 would leak that the
-// document exists in another account).
+// document exists in another account). A PATCH that moves the document to
+// another entity (body carries entityType) additionally needs the grant for
+// the TARGET area — a member must hold both source and target permissions.
 function requireDocumentPermission() {
   return async (req: FastifyRequest<{ Params: { id: string } }>) => {
     if (req.userId === null || req.userRole === 'owner') return;
     const entityType = await documentService.entityTypeOf(req.accountId, req.params.id);
     if (entityType === null) return;
     assertPermission(req, DOCUMENT_WRITE_AREA[entityType]);
+    const targetArea = targetWriteArea(req.body);
+    if (targetArea) assertPermission(req, targetArea);
   };
 }
 

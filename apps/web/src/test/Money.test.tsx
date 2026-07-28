@@ -38,6 +38,17 @@ const withDocuments: Transaction = {
   documentCount: 2,
 };
 
+const withSplits: Transaction = {
+  ...baseTransaction,
+  id: 'tx-split',
+  description: 'Roof + gutter repair',
+  categoryId: null,
+  splits: [
+    { id: 's1', categoryId: 'c-repairs', amountCents: 40000 },
+    { id: 's2', categoryId: 'c-exterior', amountCents: 24000 },
+  ],
+};
+
 function stubFetch(fixtures: Record<string, unknown>) {
   vi.stubGlobal(
     'fetch',
@@ -100,5 +111,36 @@ describe('Money attachment indicator', () => {
 
     const plainRow = screen.getByText('City utilities').closest('tr')!;
     expect(within(plainRow).queryByText(/attachment/)).not.toBeInTheDocument();
+  });
+});
+
+describe('Money split-category indicator', () => {
+  it('shows "Split · N categories" for a row with splits, discoverable via title and sr-only text', async () => {
+    stubFetch({
+      '/api/v1/transactions': { items: [withSplits, baseTransaction], nextCursor: null, total: 2 },
+      '/api/v1/transactions/review': { items: [], nextCursor: null, total: 0 },
+      '/api/v1/categories': [
+        { id: 'c-repairs', name: 'Repairs', type: 'expense' },
+        { id: 'c-exterior', name: 'Exterior', type: 'expense' },
+      ],
+      '/api/v1/properties': [],
+      '/api/v1/integrations': [],
+      '/api/v1/insights': [],
+    });
+    render(
+      <Providers>
+        <Routes>
+          <Route path="/money" element={<Money />} />
+        </Routes>
+      </Providers>,
+    );
+
+    const splitRow = (await screen.findByText('Roof + gutter repair')).closest('tr')!;
+    const cell = within(splitRow).getByText(/Split · 2/);
+    expect(cell).toHaveAttribute('title', 'Repairs, Exterior');
+    expect(within(splitRow).getByText('(Repairs, Exterior)')).toBeInTheDocument();
+
+    const plainRow = screen.getByText('City utilities').closest('tr')!;
+    expect(within(plainRow).queryByText(/Split ·/)).not.toBeInTheDocument();
   });
 });
