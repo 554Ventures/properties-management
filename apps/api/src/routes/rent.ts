@@ -28,6 +28,11 @@ export async function rentRoutes(app: FastifyInstance): Promise<void> {
     return rentService.findUnlinkedRentDeposits(req.accountId, q.period);
   });
 
+  // Every open charge with a positive remaining balance — the manual charge
+  // picker's option list (rent-match v2). Read-only, no date-window or
+  // attribution filtering; open to any member.
+  app.get('/rent/open-charges', async (req) => rentService.listOpenCharges(req.accountId));
+
   app.post('/rent/payments', needsRent, async (req, reply) => {
     const input = parseBody(RecordRentPaymentInputSchema, req.body);
     const payment = await rentService.recordPayment(req.accountId, input);

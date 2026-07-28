@@ -10,6 +10,7 @@ import { formatUsd } from '@hearth/shared';
 import type {
   BankDiscrepancyRow,
   Category,
+  RentChargeOption,
   ReviewQueueFilter,
   ReviewQueueItem,
   TransactionClassification,
@@ -24,6 +25,7 @@ import {
   useDismissAllReview,
   useDismissBankDiscrepancy,
   useDismissTransaction,
+  useOpenRentCharges,
   useProperties,
   usePropertyDetail,
   useReviewQueue,
@@ -37,11 +39,13 @@ import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorNotice } from '../components/ui/ErrorNotice';
 import { Input } from '../components/ui/FormField';
+import { Modal } from '../components/ui/Modal';
 import { Select } from '../components/ui/Select';
 import { Skeleton } from '../components/ui/Skeleton';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { useToast } from '../components/ui/Toast';
 import { IconAlertTriangle, IconCheck } from '../components/ui/icons';
+import { cx } from '../lib/cx';
 import { formatDate, formatMonth, formatShortDate } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
 
@@ -328,17 +332,28 @@ function ReviewItemCard({
   const [unitId, setUnitId] = useState('');
   // '' = ordinary income/expense; transfer/owner money leaves P&L, refunds net.
   const [classification, setClassification] = useState<TransactionClassification | ''>('');
-  // Rent-match acceptance is an explicit user action (never auto-applied).
-  const [rentAccepted, setRentAccepted] = useState(false);
+  // The one armed rent link, however it got picked — the AI-suggested chip or
+  // the manual picker — both explicit user actions (never auto-applied), and
+  // mutually exclusive since this is a single piece of state.
+  const [linkedRent, setLinkedRent] = useState<{
+    rentPaymentId: string;
+    tenantName: string;
+    period: string;
+    propertyLabel: string;
+    unitLabel: string;
+    // Audit provenance: an accepted AI chip audits ai_suggested_user_confirmed,
+    // a hand-picked charge audits plain 'user'.
+    source: 'suggestion' | 'manual';
+  } | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   const propertyDetail = usePropertyDetail(propertyId || undefined);
   const units = propertyDetail.data?.units ?? [];
   const rentMatch = item.rentMatch;
 
   const confirmItem = () => {
-    const rentLink = rentAccepted && rentMatch;
-    const payload = rentLink
-      ? { id: item.id, rentPaymentId: rentMatch.rentPaymentId }
+    const payload = linkedRent
+      ? { id: item.id, rentPaymentId: linkedRent.rentPaymentId, linkSource: linkedRent.source }
       : {
           id: item.id,
           categoryId: categoryId || undefined,
@@ -348,12 +363,12 @@ function ReviewItemCard({
         };
     // A rent-linked confirm always attributes to the lease's property; only
     // the plain-confirm path can leave the row unassigned.
-    const staysUnassigned = !rentLink && !propertyId;
+    const staysUnassigned = !linkedRent && !propertyId;
     confirm.mutate(payload, {
       onSuccess: () => {
         toast(
-          rentLink
-            ? `Confirmed and marked ${rentMatch.tenantName}'s ${formatMonth(rentMatch.period)} rent paid.`
+          linkedRent
+            ? `Confirmed and marked ${linkedRent.tenantName}'s ${formatMonth(linkedRent.period)} rent paid.`
             : `Confirmed “${item.description}”.`,
           'positive',
         );
@@ -388,179 +403,320 @@ function ReviewItemCard({
   };
 
   return (
-    <Card>
-      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-        <div className="min-w-0">
-          <p className="font-medium text-ink">{item.description}</p>
-          <p className="mt-0.5 text-sm text-ink-muted">
-            {item.vendor ? `${item.vendor} · ` : ''}
-            {formatDate(item.date)} ·{' '}
-            <span className="font-medium tabular-nums text-ink">
-              {item.type === 'income' ? '+' : '−'}
-              {formatUsd(item.amountCents)}
-            </span>
-          </p>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            {rentMatch && (
-              <AiChip
-                name={`${rentMatch.tenantName}'s ${formatMonth(rentMatch.period)} rent — ${rentMatch.propertyLabel} · ${rentMatch.unitLabel}`}
-                confidence={rentMatch.confidence}
-                applied={rentAccepted}
-                onApply={() => setRentAccepted(true)}
-                note={rentMatch.matchedName ? `deposit names ${rentMatch.matchedName}` : undefined}
-              />
-            )}
-            {item.aiSuggestedCategoryId && item.aiSuggestedCategoryName && !rentAccepted && (
-              <AiChip
-                name={item.aiSuggestedCategoryName}
-                confidence={item.aiConfidence ?? 0}
-                applied={categoryId === item.aiSuggestedCategoryId}
-                onApply={() => setCategoryId(item.aiSuggestedCategoryId as string)}
-                note={item.suggestionSource === 'learned' ? 'from your past choice' : undefined}
-              />
-            )}
-            {item.aiConfidence != null && item.aiConfidence < 0.7 && (
-              <StatusBadge tone="warning">Low confidence — check this one</StatusBadge>
+    <>
+      <Card>
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div className="min-w-0">
+            <p className="font-medium text-ink">{item.description}</p>
+            <p className="mt-0.5 text-sm text-ink-muted">
+              {item.vendor ? `${item.vendor} · ` : ''}
+              {formatDate(item.date)} ·{' '}
+              <span className="font-medium tabular-nums text-ink">
+                {item.type === 'income' ? '+' : '−'}
+                {formatUsd(item.amountCents)}
+              </span>
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {rentMatch && (
+                <AiChip
+                  name={`${rentMatch.tenantName}'s ${formatMonth(rentMatch.period)} rent — ${rentMatch.propertyLabel} · ${rentMatch.unitLabel}`}
+                  confidence={rentMatch.confidence}
+                  applied={linkedRent?.rentPaymentId === rentMatch.rentPaymentId}
+                  onApply={() =>
+                    setLinkedRent({
+                      rentPaymentId: rentMatch.rentPaymentId,
+                      tenantName: rentMatch.tenantName,
+                      period: rentMatch.period,
+                      propertyLabel: rentMatch.propertyLabel,
+                      unitLabel: rentMatch.unitLabel,
+                      source: 'suggestion',
+                    })
+                  }
+                  note={rentMatch.matchedName ? `deposit names ${rentMatch.matchedName}` : undefined}
+                />
+              )}
+              {item.aiSuggestedCategoryId && item.aiSuggestedCategoryName && !linkedRent && (
+                <AiChip
+                  name={item.aiSuggestedCategoryName}
+                  confidence={item.aiConfidence ?? 0}
+                  applied={categoryId === item.aiSuggestedCategoryId}
+                  onApply={() => setCategoryId(item.aiSuggestedCategoryId as string)}
+                  note={item.suggestionSource === 'learned' ? 'from your past choice' : undefined}
+                />
+              )}
+              {item.aiConfidence != null && item.aiConfidence < 0.7 && (
+                <StatusBadge tone="warning">Low confidence — check this one</StatusBadge>
+              )}
+              {/* Manual path (not AI content — a plain button, not an AiChip):
+                  lets the user pick from every open charge, for the cases the
+                  heuristic missed entirely. Stays reachable even after a
+                  suggestion is accepted so a manual pick can replace it
+                  (mutually exclusive — one rentPaymentId). */}
+              {item.type === 'income' && (
+                <Button variant="secondary" size="sm" onClick={() => setPickerOpen(true)}>
+                  Link to rent…
+                </Button>
+              )}
+            </div>
+            {item.possibleDuplicate && (
+              <p className="mt-2 text-sm text-warning">
+                <span className="font-medium">Possible duplicate:</span>{' '}
+                {item.possibleDuplicate.rentPeriod ? (
+                  <>
+                    this looks like the deposit behind the rent you recorded manually for{' '}
+                    {formatMonth(item.possibleDuplicate.rentPeriod)} (&ldquo;
+                    {item.possibleDuplicate.description}&rdquo;, {formatDate(item.possibleDuplicate.date)}
+                    ). If it&rsquo;s the same money, Dismiss this one — or unlink the manual payment
+                    on the Rent page first.
+                  </>
+                ) : (
+                  <>
+                    a confirmed {item.possibleDuplicate.source} transaction matches this amount and
+                    date (&ldquo;{item.possibleDuplicate.description}&rdquo;,{' '}
+                    {formatDate(item.possibleDuplicate.date)}). If it&rsquo;s the same money, Dismiss
+                    this one.
+                  </>
+                )}
+              </p>
             )}
           </div>
-          {item.possibleDuplicate && (
-            <p className="mt-2 text-sm text-warning">
-              <span className="font-medium">Possible duplicate:</span>{' '}
-              {item.possibleDuplicate.rentPeriod ? (
-                <>
-                  this looks like the deposit behind the rent you recorded manually for{' '}
-                  {formatMonth(item.possibleDuplicate.rentPeriod)} (&ldquo;
-                  {item.possibleDuplicate.description}&rdquo;, {formatDate(item.possibleDuplicate.date)}
-                  ). If it&rsquo;s the same money, Dismiss this one — or unlink the manual payment
-                  on the Rent page first.
-                </>
-              ) : (
-                <>
-                  a confirmed {item.possibleDuplicate.source} transaction matches this amount and
-                  date (&ldquo;{item.possibleDuplicate.description}&rdquo;,{' '}
-                  {formatDate(item.possibleDuplicate.date)}). If it&rsquo;s the same money, Dismiss
-                  this one.
-                </>
-              )}
-            </p>
-          )}
+          <div className="flex w-full flex-col gap-2 md:w-64">
+            {linkedRent ? (
+              <>
+                <p className="text-sm text-ink-muted">
+                  Confirming marks{' '}
+                  <span className="font-medium text-ink">{linkedRent.tenantName}</span>
+                  ’s {formatMonth(linkedRent.period)} rent paid and files this under{' '}
+                  <span className="font-medium text-ink">
+                    {linkedRent.propertyLabel} · {linkedRent.unitLabel}
+                  </span>{' '}
+                  as Rent.
+                </p>
+                <Button variant="ghost" onClick={() => setLinkedRent(null)}>
+                  Don't link to rent
+                </Button>
+              </>
+            ) : (
+              <>
+                <label
+                  htmlFor={`review-category-${item.id}`}
+                  className="text-xs font-medium text-ink-muted"
+                >
+                  Category
+                </label>
+                <Select
+                  id={`review-category-${item.id}`}
+                  value={categoryId}
+                  onChange={(e) => setCategoryId(e.target.value)}
+                >
+                  <option value="">
+                    {item.aiSuggestedCategoryName
+                      ? `Accept suggestion (${item.aiSuggestedCategoryName})`
+                      : 'Choose a category'}
+                  </option>
+                  {categoryOptions.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </Select>
+                <label
+                  htmlFor={`review-property-${item.id}`}
+                  className="text-xs font-medium text-ink-muted"
+                >
+                  Property
+                </label>
+                <Select
+                  id={`review-property-${item.id}`}
+                  value={propertyId}
+                  onChange={(e) => {
+                    setPropertyId(e.target.value);
+                    setUnitId('');
+                  }}
+                >
+                  <option value="">Portfolio (no property)</option>
+                  {(properties.data ?? []).map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.nickname ?? p.addressLine1}
+                    </option>
+                  ))}
+                </Select>
+                <label
+                  htmlFor={`review-unit-${item.id}`}
+                  className="text-xs font-medium text-ink-muted"
+                >
+                  Unit
+                </label>
+                <Select
+                  id={`review-unit-${item.id}`}
+                  value={unitId}
+                  onChange={(e) => setUnitId(e.target.value)}
+                  disabled={!propertyId || units.length === 0}
+                >
+                  <option value="">
+                    {propertyId ? 'Whole property (no unit)' : 'Choose a property first'}
+                  </option>
+                  {units.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.label}
+                    </option>
+                  ))}
+                </Select>
+                <label
+                  htmlFor={`review-classification-${item.id}`}
+                  className="text-xs font-medium text-ink-muted"
+                >
+                  Treatment
+                </label>
+                <Select
+                  id={`review-classification-${item.id}`}
+                  value={classification}
+                  onChange={(e) =>
+                    setClassification(e.target.value as TransactionClassification | '')
+                  }
+                >
+                  <option value="">
+                    Ordinary {item.type === 'income' ? 'income' : 'expense'}
+                  </option>
+                  <option value="transfer">Transfer between my accounts (not counted)</option>
+                  <option value="owner_contribution">Owner contribution (not counted)</option>
+                  {item.type === 'income' && (
+                    <option value="refund">Refund — nets against its expense category</option>
+                  )}
+                </Select>
+              </>
+            )}
+            <Button busy={confirm.isPending} onClick={confirmItem}>
+              <IconCheck size={14} />
+              Confirm
+            </Button>
+            <Button variant="ghost" busy={dismiss.isPending} onClick={dismissItem}>
+              Dismiss
+              <span className="sr-only"> “{item.description}”</span>
+            </Button>
+          </div>
         </div>
-        <div className="flex w-full flex-col gap-2 md:w-64">
-          {rentAccepted && rentMatch ? (
-            <>
-              <p className="text-sm text-ink-muted">
-                Confirming marks <span className="font-medium text-ink">{rentMatch.tenantName}</span>
-                ’s {formatMonth(rentMatch.period)} rent paid and files this under{' '}
-                <span className="font-medium text-ink">
-                  {rentMatch.propertyLabel} · {rentMatch.unitLabel}
-                </span>{' '}
-                as Rent.
-              </p>
-              <Button variant="ghost" onClick={() => setRentAccepted(false)}>
-                Don't link to rent
-              </Button>
-            </>
-          ) : (
-            <>
-              <label
-                htmlFor={`review-category-${item.id}`}
-                className="text-xs font-medium text-ink-muted"
-              >
-                Category
-              </label>
-              <Select
-                id={`review-category-${item.id}`}
-                value={categoryId}
-                onChange={(e) => setCategoryId(e.target.value)}
-              >
-                <option value="">
-                  {item.aiSuggestedCategoryName
-                    ? `Accept suggestion (${item.aiSuggestedCategoryName})`
-                    : 'Choose a category'}
-                </option>
-                {categoryOptions.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </Select>
-              <label
-                htmlFor={`review-property-${item.id}`}
-                className="text-xs font-medium text-ink-muted"
-              >
-                Property
-              </label>
-              <Select
-                id={`review-property-${item.id}`}
-                value={propertyId}
-                onChange={(e) => {
-                  setPropertyId(e.target.value);
-                  setUnitId('');
-                }}
-              >
-                <option value="">Portfolio (no property)</option>
-                {(properties.data ?? []).map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.nickname ?? p.addressLine1}
-                  </option>
-                ))}
-              </Select>
-              <label
-                htmlFor={`review-unit-${item.id}`}
-                className="text-xs font-medium text-ink-muted"
-              >
-                Unit
-              </label>
-              <Select
-                id={`review-unit-${item.id}`}
-                value={unitId}
-                onChange={(e) => setUnitId(e.target.value)}
-                disabled={!propertyId || units.length === 0}
-              >
-                <option value="">
-                  {propertyId ? 'Whole property (no unit)' : 'Choose a property first'}
-                </option>
-                {units.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.label}
-                  </option>
-                ))}
-              </Select>
-              <label
-                htmlFor={`review-classification-${item.id}`}
-                className="text-xs font-medium text-ink-muted"
-              >
-                Treatment
-              </label>
-              <Select
-                id={`review-classification-${item.id}`}
-                value={classification}
-                onChange={(e) =>
-                  setClassification(e.target.value as TransactionClassification | '')
-                }
-              >
-                <option value="">
-                  Ordinary {item.type === 'income' ? 'income' : 'expense'}
-                </option>
-                <option value="transfer">Transfer between my accounts (not counted)</option>
-                <option value="owner_contribution">Owner contribution (not counted)</option>
-                {item.type === 'income' && (
-                  <option value="refund">Refund — nets against its expense category</option>
-                )}
-              </Select>
-            </>
-          )}
-          <Button busy={confirm.isPending} onClick={confirmItem}>
-            <IconCheck size={14} />
-            Confirm
+      </Card>
+      {item.type === 'income' && (
+        <RentChargePickerModal
+          open={pickerOpen}
+          onClose={() => setPickerOpen(false)}
+          amountCents={item.amountCents}
+          onChoose={(option) => {
+            setLinkedRent({
+              rentPaymentId: option.rentPaymentId,
+              tenantName: option.tenantName,
+              period: option.period,
+              propertyLabel: option.propertyLabel,
+              unitLabel: option.unitLabel,
+              source: 'manual',
+            });
+            setPickerOpen(false);
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+// The manual charge picker (rent-match v2): every open charge, radio-group
+// select, for deposits the heuristic missed or attributed below the remaining
+// balance. A plain user-initiated modal, not AI content.
+function RentChargePickerModal({
+  open,
+  onClose,
+  amountCents,
+  onChoose,
+}: {
+  open: boolean;
+  onClose: () => void;
+  amountCents: number;
+  onChoose: (option: RentChargeOption) => void;
+}) {
+  const openCharges = useOpenRentCharges(open);
+  const [selectedId, setSelectedId] = useState('');
+  const items = openCharges.data?.items ?? [];
+
+  // A stale pick from a previous open shouldn't carry over.
+  useEffect(() => {
+    if (open) setSelectedId('');
+  }, [open]);
+
+  const confirmPick = () => {
+    const option = items.find((i) => i.rentPaymentId === selectedId);
+    if (option) onChoose(option);
+  };
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Link to a rent charge"
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
           </Button>
-          <Button variant="ghost" busy={dismiss.isPending} onClick={dismissItem}>
-            Dismiss
-            <span className="sr-only"> “{item.description}”</span>
+          <Button disabled={!selectedId} onClick={confirmPick}>
+            Link
           </Button>
-        </div>
-      </div>
-    </Card>
+        </>
+      }
+    >
+      {openCharges.isPending ? (
+        <Skeleton className="h-24 w-full" />
+      ) : openCharges.isError ? (
+        <ErrorNotice error={openCharges.error} onRetry={() => void openCharges.refetch()} />
+      ) : items.length === 0 ? (
+        <p className="text-sm text-ink-muted">No open rent charges to link to.</p>
+      ) : (
+        <fieldset className="flex flex-col gap-1">
+          <legend className="mb-2 text-sm font-medium text-ink">Choose a charge</legend>
+          <div className="flex max-h-72 flex-col gap-1 overflow-y-auto">
+            {items.map((option) => {
+              const disabled = option.remainingCents < amountCents;
+              // The note lives outside the <label> (not as a sibling text
+              // node inside it) so the radio's accessible name stays just the
+              // option itself; aria-describedby still surfaces the note to
+              // assistive tech, and it's rendered as visible text either way
+              // (never color alone).
+              const noteId = `rent-charge-note-${option.rentPaymentId}`;
+              return (
+                <div
+                  key={option.rentPaymentId}
+                  className={cx(
+                    'flex flex-col gap-0.5 rounded-md border border-border px-3 py-2 text-sm',
+                    disabled ? 'opacity-60' : 'hover:bg-surface-sunken',
+                  )}
+                >
+                  <label className={cx('flex items-start gap-2', disabled ? '' : 'cursor-pointer')}>
+                    <input
+                      type="radio"
+                      name="rent-charge-option"
+                      value={option.rentPaymentId}
+                      checked={selectedId === option.rentPaymentId}
+                      disabled={disabled}
+                      aria-describedby={disabled ? noteId : undefined}
+                      onChange={() => setSelectedId(option.rentPaymentId)}
+                      className="mt-0.5 h-4 w-4 border-border-strong text-brand focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand"
+                    />
+                    <span className="text-ink">
+                      {option.tenantName} — {formatMonth(option.period)} — {option.propertyLabel} ·{' '}
+                      {option.unitLabel} — {formatUsd(option.remainingCents)} remaining
+                    </span>
+                  </label>
+                  {disabled && (
+                    <p id={noteId} className="ml-6 text-xs text-warning">
+                      deposit exceeds remaining
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </fieldset>
+      )}
+    </Modal>
   );
 }
 

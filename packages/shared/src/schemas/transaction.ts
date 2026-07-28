@@ -92,6 +92,11 @@ export const UpdateTransactionInputSchema = CreateTransactionInputSchema.partial
 export const ConfirmTransactionInputSchema = z.object({
   categoryId: z.string().optional(), // override; omitted = accept the AI suggestion
   rentPaymentId: z.string().optional(),
+  // How the rentPaymentId was chosen: 'manual' = the user hand-picked the
+  // charge (picker modal / ambiguous-deposit select), auditing as plain
+  // 'user'; omitted or 'suggestion' = accepting an AI-computed match,
+  // auditing as 'ai_suggested_user_confirmed'.
+  linkSource: z.enum(['suggestion', 'manual']).optional(),
   propertyId: z.string().optional(),
   unitId: z.string().optional(),
   classification: TransactionClassificationSchema.optional(), // review time is the natural moment to say "this is a transfer"

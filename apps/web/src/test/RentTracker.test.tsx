@@ -10,6 +10,7 @@
 // summary row, multi-tenant share/mismatch surfacing, and unlinked-deposit
 // nudges inside a single AiSurface panel.
 import type {
+  AmbiguousRentDeposit,
   Insight,
   RentTrackerResponse,
   RentTrackerRow,
@@ -785,6 +786,88 @@ describe('RentTracker unlinked rent deposits', () => {
       );
     });
   });
+});
+
+// Ambiguous-deposit nudge (rent-match v2): a deposit that fits more than one
+// open charge — same AiSurface panel, a labeled Select of candidates, and a
+// Link button gated on a choice.
+describe('RentTracker ambiguous rent deposits', () => {
+  it('renders the ambiguous item with its candidate select and links the chosen candidate', async () => {
+    stubDesktopViewport();
+    const ambiguousItem: AmbiguousRentDeposit = {
+      transactionId: 'tx-ambiguous',
+      description: 'Check #4021',
+      amountCents: 115000,
+      date: '2026-07-05T00:00:00.000Z',
+      candidates: [
+        {
+          rentPaymentId: 'rp-cand-a',
+          leaseId: 'l1',
+          tenantName: 'T. Okafor',
+          unitLabel: 'Main',
+          propertyLabel: '21 Cedar Ct',
+          period,
+          remainingCents: 115000,
+        },
+        {
+          rentPaymentId: 'rp-cand-b',
+          leaseId: 'l2',
+          tenantName: 'J. Rivera',
+          unitLabel: 'Unit B',
+          propertyLabel: '12 Maple St',
+          period,
+          remainingCents: 115000,
+        },
+      ],
+    };
+    const fetchMock = makeFetch([
+      ...baseRoutes.filter((r) => r.path !== '/api/v1/rent/unlinked-deposits'),
+      {
+        method: 'GET',
+        path: '/api/v1/rent/unlinked-deposits',
+        body: { items: [], ambiguous: [ambiguousItem] },
+      },
+      { method: 'POST', path: '/api/v1/transactions/tx-ambiguous/confirm', body: {} },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+    const { container } = renderRentTracker();
+
+    const panel = await screen.findByRole('region', { name: 'AI insights' });
+    await within(panel).findByText(/Check #4021/);
+    expect(within(panel).getByText('$1,150.00')).toBeInTheDocument();
+    expect(
+      within(panel).getByText(/on Jul 5, 2026 could match 2 charges/),
+    ).toBeInTheDocument();
+
+    const select = within(panel).getByLabelText('Matching charge');
+    const linkButton = within(panel).getByRole('button', { name: 'Link' });
+    expect(linkButton).toBeDisabled();
+
+    fireEvent.change(select, { target: { value: 'rp-cand-b' } });
+    expect(linkButton).not.toBeDisabled();
+
+    fireEvent.click(linkButton);
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url) === '/api/v1/transactions/tx-ambiguous/confirm' &&
+          (init as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(call).toBeDefined();
+      // linkSource 'manual': the user chose among the candidates, so the
+      // audit actor stays 'user'.
+      expect((call![1] as RequestInit).body).toBe(
+        JSON.stringify({ rentPaymentId: 'rp-cand-b', linkSource: 'manual' }),
+      );
+    });
+    expect(
+      await screen.findByText(`Deposit applied to J. Rivera's ${formatMonthLong(period)} rent.`),
+    ).toBeInTheDocument();
+
+    const results = await axe.run(container, { rules: { 'color-contrast': { enabled: false } } });
+    expect(results.violations.map((v) => v.id)).toEqual([]);
+  }, 20_000);
 });
 
 describe('RentTracker reminder send flow (F1)', () => {

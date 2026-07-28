@@ -259,9 +259,9 @@ describe('GET /rent/unlinked-deposits (the linkage nudge)', () => {
     await prisma.transaction.deleteMany({ where: { id: { in: [over.id, wrongCategory.id] } } });
   });
 
-  it('disambiguates a deposit fitting several charges when the descriptor names exactly one tenant', async () => {
+  it('disambiguates a deposit fitting several charges when the descriptor names exactly one tenant; a still-ambiguous one surfaces as a candidate list', async () => {
     // Both seeded open charges (Okafor's and Park's) can absorb a small
-    // unattributed deposit, which used to suppress the nudge outright.
+    // unattributed deposit.
     const tracker = await rentService.getMonthStatus(accountId, period);
     const okafor = tracker.rows.find((r) => r.tenantName === OKAFOR_NAME)!;
     const park = tracker.rows.find((r) => r.tenantName === PARK_NAME)!;
@@ -291,14 +291,90 @@ describe('GET /rent/unlinked-deposits (the linkage nudge)', () => {
     const body = UnlinkedRentDepositsResponseSchema.parse(
       (await app.inject({ method: 'GET', url: `/api/v1/rent/unlinked-deposits?period=${period}` })).json(),
     );
-    // Descriptor names Okafor's lease tenant → that charge, unambiguously.
+    // Descriptor names Okafor's lease tenant → that charge, unambiguously —
+    // a name-disambiguated single still lands in `items` exactly as before.
     expect(body.items.find((i) => i.transactionId === named.id)).toMatchObject({
       rentPaymentId: okafor.rentPaymentId,
       tenantName: OKAFOR_NAME,
     });
-    // Bland descriptor still fits both charges → still suppressed.
+    expect(body.ambiguous?.find((a) => a.transactionId === named.id)).toBeUndefined();
+    // Bland descriptor still fits both charges → the manual picker's
+    // `ambiguous` list (rent-match v2), never silently dropped.
     expect(body.items.find((i) => i.transactionId === bland.id)).toBeUndefined();
+    const ambiguousEntry = body.ambiguous?.find((a) => a.transactionId === bland.id);
+    expect(ambiguousEntry).toMatchObject({ amountCents, description: 'TEST MYSTERY DEPOSIT' });
+    expect(ambiguousEntry?.candidates).toHaveLength(2);
+    expect(new Set(ambiguousEntry?.candidates.map((c) => c.rentPaymentId))).toEqual(
+      new Set([okafor.rentPaymentId, park.rentPaymentId]),
+    );
 
     await prisma.transaction.deleteMany({ where: { id: { in: [named.id, bland.id] } } });
+  });
+
+  it('links an ambiguous deposit through the existing POST /transactions/:id/confirm { rentPaymentId } path — it drops off the next response', async () => {
+    const tracker = await rentService.getMonthStatus(accountId, period);
+    const okafor = tracker.rows.find((r) => r.tenantName === OKAFOR_NAME)!;
+    const park = tracker.rows.find((r) => r.tenantName === PARK_NAME)!;
+    const amountCents = 40000;
+    expect(amountCents).toBeLessThanOrEqual(okafor.amountCents - okafor.paidCents);
+    expect(amountCents).toBeLessThanOrEqual(park.amountCents - park.paidCents);
+    const startedAt = new Date();
+
+    const rentCategory = await prisma.category.findFirstOrThrow({
+      where: { name: 'Rent', type: 'income', isSystem: true },
+    });
+    const txn = await prisma.transaction.create({
+      data: {
+        accountId,
+        categoryId: rentCategory.id,
+        date: new Date(),
+        amountCents,
+        type: 'income',
+        source: 'manual',
+        status: 'confirmed',
+        description: 'TEST AMBIGUOUS DEPOSIT TO LINK',
+      },
+    });
+
+    const before = UnlinkedRentDepositsResponseSchema.parse(
+      (await app.inject({ method: 'GET', url: `/api/v1/rent/unlinked-deposits?period=${period}` })).json(),
+    );
+    expect(
+      before.ambiguous?.find((a) => a.transactionId === txn.id)?.candidates.map((c) => c.rentPaymentId),
+    ).toEqual(expect.arrayContaining([okafor.rentPaymentId, park.rentPaymentId]));
+
+    // The manual picker: the user resolves the ambiguity by choosing Okafor's
+    // charge, through the same confirm path the heuristic-matched flow uses.
+    const confirmRes = await app.inject({
+      method: 'POST',
+      url: `/api/v1/transactions/${txn.id}/confirm`,
+      payload: { rentPaymentId: okafor.rentPaymentId, linkSource: 'manual' },
+    });
+    expect(confirmRes.statusCode).toBe(200);
+
+    // A hand-picked charge is the user's own call — plain 'user' actor, not
+    // the ai_suggested_user_confirmed upgrade an accepted suggestion gets.
+    const confirmAudit = await prisma.auditLog.findFirst({
+      where: { accountId, action: 'transaction.confirmed', entityId: txn.id },
+    });
+    expect(confirmAudit?.actor).toBe('user');
+
+    const after = UnlinkedRentDepositsResponseSchema.parse(
+      (await app.inject({ method: 'GET', url: `/api/v1/rent/unlinked-deposits?period=${period}` })).json(),
+    );
+    expect(after.ambiguous?.find((a) => a.transactionId === txn.id)).toBeUndefined();
+    expect(after.items.find((i) => i.transactionId === txn.id)).toBeUndefined();
+    const linked = await prisma.rentPayment.findUniqueOrThrow({ where: { id: okafor.rentPaymentId } });
+    expect(linked.paidCents).toBe(amountCents);
+
+    // Cleanup: unlink (reverts paidCents/status), delete the test transaction,
+    // and its audit trail (scoped to rows created just now) so Okafor's charge
+    // is exactly as the seed left it for later files.
+    const deposit = await prisma.rentPaymentDeposit.findUniqueOrThrow({ where: { transactionId: txn.id } });
+    await rentService.unlinkDeposit(accountId, okafor.rentPaymentId, deposit.id);
+    await prisma.transaction.delete({ where: { id: txn.id } });
+    await prisma.auditLog.deleteMany({
+      where: { accountId, entityId: { in: [txn.id, okafor.rentPaymentId] }, createdAt: { gte: startedAt } },
+    });
   });
 });

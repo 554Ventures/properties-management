@@ -3,7 +3,12 @@
 // /transactions/bank-discrepancies returns pending rows, and is absent when
 // it doesn't. Diff line + rent-linked guided unlink covered per kind.
 import { formatUsd } from '@hearth/shared';
-import type { BankDiscrepancyRow, ReviewQueueResponse } from '@hearth/shared';
+import type {
+  BankDiscrepancyRow,
+  RentChargeOption,
+  ReviewQueueItem,
+  ReviewQueueResponse,
+} from '@hearth/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -258,5 +263,177 @@ describe('MoneyReview bank-correction section', () => {
     expect(
       await screen.findByText('Kept your version — the bank change is dismissed.'),
     ).toBeInTheDocument();
+  });
+});
+
+// Manual rent charge picker (rent-match v2): a "Link to rent…" button on
+// income cards opens a radio-group modal fed by GET /rent/open-charges —
+// for deposits the heuristic missed entirely, not just an alternative to the
+// AiChip suggestion.
+const plainIncomeItem: ReviewQueueItem = {
+  id: 'tx-income',
+  accountId: 'acc1',
+  propertyId: null,
+  unitId: null,
+  categoryId: null,
+  date: '2026-07-04T00:00:00.000Z',
+  amountCents: 115000,
+  type: 'income',
+  description: 'Zelle payment',
+  vendor: null,
+  source: 'bank',
+  status: 'pending_review',
+  classification: null,
+  aiSuggestedCategoryId: null,
+  aiConfidence: null,
+  receiptUrl: null,
+  createdAt: '2026-07-04T00:00:00.000Z',
+  updatedAt: '2026-07-04T00:00:00.000Z',
+  aiSuggestedCategoryName: null,
+  rentMatch: null,
+};
+
+const reviewQueueWithPlainIncome: ReviewQueueResponse = {
+  items: [plainIncomeItem],
+  nextCursor: null,
+  total: 1,
+};
+
+// Fits the deposit exactly (115000 remaining for a 115000 deposit).
+const openChargeFits: RentChargeOption = {
+  rentPaymentId: 'rp-fits',
+  leaseId: 'l1',
+  tenantName: 'T. Okafor',
+  unitLabel: 'Main',
+  propertyLabel: '21 Cedar Ct',
+  period: '2026-07',
+  remainingCents: 115000,
+};
+
+// Remaining (500.00) < the deposit (1,150.00) — must render disabled.
+const openChargeTooSmall: RentChargeOption = {
+  rentPaymentId: 'rp-too-small',
+  leaseId: 'l2',
+  tenantName: 'J. Rivera',
+  unitLabel: 'Unit B',
+  propertyLabel: '12 Maple St',
+  period: '2026-06',
+  remainingCents: 50000,
+};
+
+describe('MoneyReview manual rent charge picker', () => {
+  it('lists open charges, disables one exceeding the deposit with a visible note, and arming a choice puts its rentPaymentId in the confirm body', async () => {
+    const fetchMock = makeFetch([
+      { method: 'GET', path: '/api/v1/transactions/review', body: reviewQueueWithPlainIncome },
+      { method: 'GET', path: '/api/v1/categories', body: [] },
+      { method: 'GET', path: '/api/v1/properties', body: [] },
+      {
+        method: 'GET',
+        path: '/api/v1/rent/open-charges',
+        body: { items: [openChargeFits, openChargeTooSmall] },
+      },
+      { method: 'POST', path: '/api/v1/transactions/tx-income/confirm', body: {} },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+    renderMoneyReview();
+
+    await screen.findByText('Zelle payment');
+    // The manual button is a plain secondary button, not an AiChip/AiSurface.
+    fireEvent.click(screen.getByRole('button', { name: 'Link to rent…' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Link to a rent charge' });
+    await within(dialog).findByText(/T\. Okafor/);
+
+    const fitsRadio = within(dialog).getByRole('radio', {
+      name: `T. Okafor — Jul 2026 — 21 Cedar Ct · Main — ${formatUsd(115000)} remaining`,
+    });
+    expect(fitsRadio).not.toBeDisabled();
+
+    const tooSmallRadio = within(dialog).getByRole('radio', {
+      name: `J. Rivera — Jun 2026 — 12 Maple St · Unit B — ${formatUsd(50000)} remaining`,
+    });
+    expect(tooSmallRadio).toBeDisabled();
+    // Visible text note, not color alone.
+    expect(within(dialog).getByText('deposit exceeds remaining')).toBeInTheDocument();
+
+    const linkButton = within(dialog).getByRole('button', { name: 'Link' });
+    expect(linkButton).toBeDisabled();
+
+    fireEvent.click(fitsRadio);
+    expect(linkButton).not.toBeDisabled();
+    fireEvent.click(linkButton);
+
+    expect(screen.queryByRole('dialog', { name: 'Link to a rent charge' })).not.toBeInTheDocument();
+    expect(screen.getByText(/Confirming marks/)).toHaveTextContent(
+      'Confirming marks T. Okafor’s Jul 2026 rent paid and files this under 21 Cedar Ct · Main as Rent.',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url) === '/api/v1/transactions/tx-income/confirm' &&
+          (init as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(call).toBeDefined();
+      // linkSource 'manual' keeps the audit actor 'user' — a hand-picked
+      // charge is not an accepted AI suggestion.
+      expect((call![1] as RequestInit).body).toBe(
+        JSON.stringify({ rentPaymentId: 'rp-fits', linkSource: 'manual' }),
+      );
+    });
+    expect(
+      await screen.findByText("Confirmed and marked T. Okafor's Jul 2026 rent paid."),
+    ).toBeInTheDocument();
+  });
+
+  it('a manual pick replaces an already-accepted AI rent-match chip (mutually exclusive)', async () => {
+    const suggestedItem: ReviewQueueItem = {
+      ...plainIncomeItem,
+      id: 'tx-suggested',
+      rentMatch: {
+        rentPaymentId: 'rp-suggested',
+        leaseId: 'l3',
+        tenantName: 'A. Nguyen',
+        propertyId: 'p3',
+        propertyLabel: '9 Birch Ave',
+        unitId: 'u3',
+        unitLabel: 'Unit 1',
+        period: '2026-07',
+        dueDate: '2026-07-01T00:00:00.000Z',
+        amountCents: 115000,
+        paidCents: 0,
+        confidence: 0.9,
+      },
+    };
+    const fetchMock = makeFetch([
+      {
+        method: 'GET',
+        path: '/api/v1/transactions/review',
+        body: { items: [suggestedItem], nextCursor: null, total: 1 },
+      },
+      { method: 'GET', path: '/api/v1/categories', body: [] },
+      { method: 'GET', path: '/api/v1/properties', body: [] },
+      { method: 'GET', path: '/api/v1/rent/open-charges', body: { items: [openChargeFits] } },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+    renderMoneyReview();
+
+    await screen.findByText('Zelle payment');
+    fireEvent.click(screen.getByRole('button', { name: /suggests: A\. Nguyen/ }));
+    expect(screen.getByText(/Confirming marks/)).toHaveTextContent(/A\. Nguyen/);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Link to rent…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Link to a rent charge' });
+    const fitsRadio = await within(dialog).findByRole('radio', {
+      name: `T. Okafor — Jul 2026 — 21 Cedar Ct · Main — ${formatUsd(115000)} remaining`,
+    });
+    fireEvent.click(fitsRadio);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Link' }));
+
+    // The manual pick replaced the chip's link — only one linked charge shown.
+    expect(screen.getByText(/Confirming marks/)).toHaveTextContent(/T\. Okafor/);
+    expect(screen.getByText(/Confirming marks/)).not.toHaveTextContent(/A\. Nguyen/);
   });
 });

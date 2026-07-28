@@ -1,9 +1,12 @@
 import type {
+  AmbiguousRentDeposit,
   ApplyLateFeeInput,
   GraceDaysBasis,
+  OpenRentChargesResponse,
   PaymentLinkResponse,
   PropertyDetailUnitRent,
   RecordRentPaymentInput,
+  RentChargeOption,
   RentPayment,
   RentPaymentMethod,
   RentPaymentStatus,
@@ -985,6 +988,78 @@ export async function waiveLateFee(
   return toApiRentPayment(updated);
 }
 
+/** Shape of a RentPayment loaded with its lease/unit/property/tenants —
+ *  everything toRentChargeOption needs to build the manual picker's option
+ *  row (RentChargeOptionSchema), reused by listOpenCharges and the ambiguous
+ *  candidates below. */
+type ChargeWithLease = {
+  id: string;
+  leaseId: string;
+  period: string;
+  amountCents: number;
+  lateFeeCents: number;
+  paidCents: number;
+  lease: {
+    unit: { label: string; property: { nickname: string | null; addressLine1: string } };
+    leaseTenants: { tenant: { fullName: string } }[];
+  };
+};
+
+function toRentChargeOption(charge: ChargeWithLease): RentChargeOption {
+  const property = charge.lease.unit.property;
+  return {
+    rentPaymentId: charge.id,
+    leaseId: charge.leaseId,
+    tenantName: charge.lease.leaseTenants[0]?.tenant.fullName ?? 'Unknown tenant',
+    unitLabel: charge.lease.unit.label,
+    propertyLabel: property.nickname ?? property.addressLine1,
+    period: charge.period,
+    remainingCents: charge.amountCents + charge.lateFeeCents - charge.paidCents,
+  };
+}
+
+/**
+ * Every open (due/processing, unarchived, account-scoped) expected rent
+ * charge with a positive remaining balance — the manual charge picker's
+ * option list (rent-match v2). Deliberately NO date-window or attribution
+ * filtering (see OpenRentChargesResponseSchema's doc comment: the picker
+ * exists precisely because those heuristics' filters can miss a charge).
+ * Materializes the account's current period first so a fresh month's charges
+ * are listed even before anything else on the account has touched them.
+ * Ordered period desc, then propertyLabel/unitLabel asc.
+ */
+export async function listOpenCharges(accountId: string): Promise<OpenRentChargesResponse> {
+  const tz = await accountTimezone(accountId);
+  await materializeExpectedPayments(accountId, currentPeriodInTz(tz), tz);
+
+  const charges = await prisma.rentPayment.findMany({
+    where: {
+      status: { in: ['due', 'processing'] },
+      lease: { unit: { archivedAt: null, property: { accountId, archivedAt: null } } },
+    },
+    include: {
+      lease: {
+        include: {
+          unit: { include: { property: true } },
+          leaseTenants: { include: { tenant: true }, orderBy: { isPrimary: 'desc' } },
+        },
+      },
+    },
+  });
+
+  const items = charges
+    .filter((c) => c.amountCents + c.lateFeeCents - c.paidCents > 0)
+    .map(toRentChargeOption)
+    .sort(
+      (a, b) =>
+        (a.period < b.period ? 1 : a.period > b.period ? -1 : 0) || // period desc
+        a.propertyLabel.localeCompare(b.propertyLabel) ||
+        a.unitLabel.localeCompare(b.unitLabel),
+    );
+
+  return { items };
+}
+
 /**
  * The "silently still late" fix (plan §C5): Rent-categorized, confirmed
  * income transactions that aren't linked as deposits but could apply to a
@@ -992,14 +1067,16 @@ export async function waiveLateFee(
  * date, no larger than the remaining balance, and attribution-compatible
  * (same unit; same property with no unit; or unattributed). Broader than the
  * review-queue chip: below-remaining partials surface here too, as a
- * question. A transaction fitting more than one charge is suppressed unless
- * its descriptor names exactly one of the charges' lease tenants
- * (name-match v2 disambiguation).
+ * question. A transaction fitting exactly one charge (after tenant-name
+ * disambiguation when it fits several) lands in `items`; one that still fits
+ * more than one charge after that disambiguation lands in `ambiguous` with
+ * its candidate charges (rent-match v2's manual picker) for the user to pick
+ * from — it is never silently dropped.
  */
 export async function findUnlinkedRentDeposits(
   accountId: string,
   period?: string,
-): Promise<{ items: UnlinkedRentDeposit[] }> {
+): Promise<{ items: UnlinkedRentDeposit[]; ambiguous: AmbiguousRentDeposit[] }> {
   const tz = await accountTimezone(accountId);
   const resolvedPeriod = period ?? currentPeriodInTz(tz);
   await materializeExpectedPayments(accountId, resolvedPeriod, tz);
@@ -1019,13 +1096,13 @@ export async function findUnlinkedRentDeposits(
     },
   });
   const open = charges.filter((c) => c.paidCents < c.amountCents + c.lateFeeCents);
-  if (open.length === 0) return { items: [] };
+  if (open.length === 0) return { items: [], ambiguous: [] };
 
   const rentCategories = await prisma.category.findMany({
     where: { name: 'Rent', type: 'income', OR: [{ isSystem: true }, { accountId }] },
     select: { id: true },
   });
-  if (rentCategories.length === 0) return { items: [] };
+  if (rentCategories.length === 0) return { items: [], ambiguous: [] };
 
   const dueTimes = open.map((c) => c.dueDate.getTime());
   const candidates = await prisma.transaction.findMany({
@@ -1046,6 +1123,7 @@ export async function findUnlinkedRentDeposits(
   });
 
   const items: UnlinkedRentDeposit[] = [];
+  const ambiguous: AmbiguousRentDeposit[] = [];
   for (const txn of candidates) {
     const fits = open.filter((c) => {
       const remaining = c.amountCents + c.lateFeeCents - c.paidCents;
@@ -1055,11 +1133,12 @@ export async function findUnlinkedRentDeposits(
       if (Math.abs(calendarDaysBetween(c.dueDate, txn.date)) > RENT_MATCH_WINDOW_DAYS) return false;
       if (txn.unitId) return txn.unitId === c.lease.unitId;
       if (txn.propertyId) return txn.propertyId === c.lease.unit.propertyId;
-      return true; // unattributed — allowed only if it fits exactly one charge
+      return true; // unattributed — single fit links directly, multi-fit goes to `ambiguous`
     });
+    if (fits.length === 0) continue;
     // Ambiguity fallback (heuristics v2): when the deposit fits several
     // charges, let the descriptor settle it — but only if it names exactly
-    // one charge's lease tenants (shared surnames keep both, still suppressed).
+    // one charge's lease tenants (shared surnames keep both, still ambiguous).
     let resolved = fits;
     if (fits.length > 1) {
       const descriptor = `${txn.description} ${txn.vendor ?? ''}`;
@@ -1071,24 +1150,29 @@ export async function findUnlinkedRentDeposits(
           ) !== null,
       );
     }
-    if (resolved.length !== 1) continue;
+    if (fits.length > 1 && resolved.length !== 1) {
+      // Still fits more than one charge after name-disambiguation — hand the
+      // user the manual picker instead of guessing or dropping it (rent-match
+      // v2). Candidates keep `fits`' (i.e. `open`'s) order.
+      ambiguous.push({
+        transactionId: txn.id,
+        description: txn.description,
+        amountCents: txn.amountCents,
+        date: iso(txn.date),
+        candidates: fits.map(toRentChargeOption),
+      });
+      continue;
+    }
     const charge = resolved[0] as (typeof open)[number];
-    const property = charge.lease.unit.property;
     items.push({
+      ...toRentChargeOption(charge),
       transactionId: txn.id,
       description: txn.description,
       amountCents: txn.amountCents,
       date: iso(txn.date),
-      rentPaymentId: charge.id,
-      leaseId: charge.leaseId,
-      tenantName: charge.lease.leaseTenants[0]?.tenant.fullName ?? 'Unknown tenant',
-      unitLabel: charge.lease.unit.label,
-      propertyLabel: property.nickname ?? property.addressLine1,
-      period: charge.period,
-      remainingCents: charge.amountCents + charge.lateFeeCents - charge.paidCents,
     });
   }
-  return { items };
+  return { items, ambiguous };
 }
 
 /** Set or clear (null) a co-tenant's expected share of the lease rent. */

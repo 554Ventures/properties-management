@@ -7,7 +7,12 @@
 // unlinked rent-deposit suggestions — so the page has exactly one ✦ AI area.
 import { useEffect, useMemo, useState } from 'react';
 import { formatUsd } from '@hearth/shared';
-import type { RentPaymentMethod, RentTrackerRow, SendRemindersResponse } from '@hearth/shared';
+import type {
+  AmbiguousRentDeposit,
+  RentPaymentMethod,
+  RentTrackerRow,
+  SendRemindersResponse,
+} from '@hearth/shared';
 import { useSearchParams } from 'react-router-dom';
 import {
   useApplyLateFee,
@@ -46,7 +51,7 @@ import { RowActions } from '../components/ui/RowActions';
 import { Table, Td, Th, Tr } from '../components/ui/Table';
 import { useToast } from '../components/ui/Toast';
 import { IconBell, IconCalendarCheck, IconCheck, IconDollar } from '../components/ui/icons';
-import { currentPeriod, formatDate, formatMonthLong, recentPeriods } from '../lib/format';
+import { currentPeriod, formatDate, formatMonth, formatMonthLong, recentPeriods } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
 import { usePermissions } from '../lib/usePermissions';
 
@@ -158,6 +163,9 @@ export function RentTracker() {
 
   const rows = tracker.data?.rows ?? [];
   const unlinkedItems = unlinkedDeposits.data?.items ?? [];
+  // Optional on the wire (pre-picker fixtures keep parsing) — a deposit that
+  // fits more than one open charge, for the user to disambiguate.
+  const ambiguousItems = unlinkedDeposits.data?.ambiguous ?? [];
   // Partial-but-past-grace rows are still owed and remindable.
   const lateRows = rows.filter(
     (row) => row.status === 'late' || (row.status === 'partial' && row.daysLate != null),
@@ -391,7 +399,7 @@ export function RentTracker() {
           unlinked-deposit suggestions share one AiSurface (one ✦ badge)
           instead of stacking separate bordered boxes around the KPI row. */}
       <LiveRegion>
-        {(lateRentInsight || unlinkedItems.length > 0) && (
+        {(lateRentInsight || unlinkedItems.length > 0 || ambiguousItems.length > 0) && (
           <section aria-label="AI insights">
             <AiSurface>
               {lateRentInsight && (
@@ -457,6 +465,31 @@ export function RentTracker() {
                           </Button>
                         )}
                       </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {ambiguousItems.length > 0 && (
+                <div
+                  className={
+                    lateRentInsight || unlinkedItems.length > 0
+                      ? 'mt-4 flex flex-col gap-1 border-t border-border pt-3'
+                      : 'flex flex-col gap-1'
+                  }
+                >
+                  <p className="text-sm font-medium text-ink">
+                    {ambiguousItems.length === 1
+                      ? 'A Rent-categorized deposit matches more than one open charge'
+                      : `${ambiguousItems.length} Rent-categorized deposits match more than one open charge`}
+                  </p>
+                  <ul className="divide-y divide-border">
+                    {ambiguousItems.map((item) => (
+                      <AmbiguousDepositItem
+                        key={item.transactionId}
+                        item={item}
+                        linkDeposit={linkDeposit}
+                        canMoney={canMoney}
+                      />
                     ))}
                   </ul>
                 </div>
@@ -913,5 +946,88 @@ export function RentTracker() {
         }
       />
     </div>
+  );
+}
+
+// A deposit that fits more than one open charge — a labeled Select of
+// candidates (own component so each row keeps its own chosen-candidate
+// state) plus a Link button that stays disabled until one is chosen. Uses
+// the same confirm mutation + invalidation + toast pattern as the plain
+// unlinked-deposit nudge above.
+function AmbiguousDepositItem({
+  item,
+  linkDeposit,
+  canMoney,
+}: {
+  item: AmbiguousRentDeposit;
+  linkDeposit: ReturnType<typeof useConfirmTransaction>;
+  canMoney: boolean;
+}) {
+  const [selectedId, setSelectedId] = useState('');
+  const { toast } = useToast();
+  const selected = item.candidates.find((c) => c.rentPaymentId === selectedId);
+
+  const link = () => {
+    if (!selected) return;
+    linkDeposit.mutate(
+      // linkSource 'manual': the user chose the charge, so the audit actor
+      // stays 'user' (an accepted AI suggestion audits differently).
+      { id: item.transactionId, rentPaymentId: selected.rentPaymentId, linkSource: 'manual' },
+      {
+        onSuccess: () =>
+          toast(
+            `Deposit applied to ${selected.tenantName}'s ${formatMonthLong(selected.period)} rent.`,
+            'positive',
+          ),
+        onError: () => toast('Could not link the deposit. Try again.', 'danger'),
+      },
+    );
+  };
+
+  return (
+    <li className="flex flex-col gap-2 py-2.5">
+      <p className="text-sm text-ink">
+        <span className="text-ink-muted">&ldquo;{item.description}&rdquo; — </span>
+        <span className="font-medium tabular-nums">{formatUsd(item.amountCents)}</span>
+        <span className="text-ink-muted">
+          {' '}
+          on {formatDate(item.date)} could match {item.candidates.length} charges
+        </span>
+      </p>
+      {canMoney && (
+        <div className="flex flex-col gap-1.5 sm:flex-row sm:items-end sm:gap-2">
+          <div className="flex flex-1 flex-col gap-1.5">
+            <label
+              htmlFor={`ambiguous-charge-${item.transactionId}`}
+              className="text-xs font-medium text-ink-muted"
+            >
+              Matching charge
+            </label>
+            <Select
+              id={`ambiguous-charge-${item.transactionId}`}
+              value={selectedId}
+              onChange={(e) => setSelectedId(e.target.value)}
+            >
+              <option value="">Choose a charge</option>
+              {item.candidates.map((c) => (
+                <option key={c.rentPaymentId} value={c.rentPaymentId}>
+                  {c.tenantName} — {formatMonth(c.period)} — {c.propertyLabel} · {c.unitLabel} —{' '}
+                  {formatUsd(c.remainingCents)} remaining
+                </option>
+              ))}
+            </Select>
+          </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={!selected}
+            busy={linkDeposit.isPending && linkDeposit.variables?.id === item.transactionId}
+            onClick={link}
+          >
+            Link
+          </Button>
+        </div>
+      )}
+    </li>
   );
 }

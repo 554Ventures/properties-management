@@ -58,6 +58,7 @@ import type {
   LogContractorJobResponse,
   NotificationPrefs,
   OnboardingState,
+  OpenRentChargesResponse,
   Property,
   PropertyDetailResponse,
   PushDevice,
@@ -788,6 +789,19 @@ export function useUnlinkedRentDeposits(period: string) {
     queryKey: ['rent', 'unlinked-deposits', period],
     queryFn: () =>
       api.get<UnlinkedRentDepositsResponse>(`/rent/unlinked-deposits${toQuery({ period })}`),
+    staleTime: STALE_SHORT,
+  });
+}
+
+// Every open (due/processing) rent charge with a positive remaining balance —
+// the manual charge picker's option list (rent-match v2: the review queue's
+// "Link to rent…" button, for deposits the heuristic missed). `enabled` only
+// while the picker modal is open — no point fetching until asked.
+export function useOpenRentCharges(enabled: boolean) {
+  return useQuery({
+    queryKey: ['rent', 'open-charges'],
+    queryFn: () => api.get<OpenRentChargesResponse>('/rent/open-charges'),
+    enabled,
     staleTime: STALE_SHORT,
   });
 }
