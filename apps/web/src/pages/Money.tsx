@@ -295,7 +295,19 @@ export function Money() {
         accessor: (txn) => txn.categoryId ?? '',
         options: categoryOptions,
       },
-      cell: (txn) => (txn.categoryId ? (categoryName.get(txn.categoryId) ?? '—') : '—'),
+      cell: (txn) => {
+        if (txn.splits && txn.splits.length > 0) {
+          const names = txn.splits.map((s) => categoryName.get(s.categoryId) ?? '—').join(', ');
+          return (
+            <span title={names}>
+              Split · {txn.splits.length}{' '}
+              {txn.splits.length === 1 ? 'category' : 'categories'}
+              <span className="sr-only"> ({names})</span>
+            </span>
+          );
+        }
+        return txn.categoryId ? (categoryName.get(txn.categoryId) ?? '—') : '—';
+      },
     },
     {
       id: 'amount',

@@ -711,12 +711,28 @@ export function useUploadDocument() {
   });
 }
 
+/**
+ * PATCH /documents/:id — also the "move to another entity" relink: passing
+ * entityType+entityId together moves the document. `currentEntityType` (the
+ * document's entityType *before* the move, mirroring useDeleteDocument) is
+ * client-only — stripped from the PATCH body — so a move into or out of a
+ * transaction invalidates the ledger's paperclip counts either way.
+ */
 export function useUpdateDocument() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, ...input }: UpdateDocumentInput & { id: string }) =>
+    mutationFn: ({
+      id,
+      currentEntityType: _currentEntityType,
+      ...input
+    }: UpdateDocumentInput & { id: string; currentEntityType?: DocumentEntityType }) =>
       api.patch<Document>(`/documents/${id}`, input),
-    onSuccess: () => invalidateDocuments(qc),
+    onSuccess: (_doc, { entityType, currentEntityType }) => {
+      invalidateDocuments(qc);
+      if (entityType === 'transaction' || currentEntityType === 'transaction') {
+        void qc.invalidateQueries({ queryKey: ['transactions'] });
+      }
+    },
   });
 }
 

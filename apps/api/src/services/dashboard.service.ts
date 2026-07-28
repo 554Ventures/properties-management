@@ -18,7 +18,7 @@ import {
   startOfDayInTz,
   trailingPeriods,
 } from '../lib/dates';
-import { ordinaryExpense, pnlSums } from '../lib/pnl';
+import { pnlCategoryLines, pnlSums } from '../lib/pnl';
 import { prisma } from '../lib/prisma';
 import { accountTimezone } from './account.service';
 import { generateInsights } from './insight.service';
@@ -163,46 +163,44 @@ export async function getExpenseBreakdown(accountId: string): Promise<ExpenseBre
   const period = currentPeriodInTz(tz);
   const range = { from: monthStartInTz(period, tz), to: monthEndExclusiveInTz(period, tz) };
   const portfolioFilter = { OR: [{ propertyId: null }, { property: { archivedAt: null } }] };
-  const grouped = await prisma.transaction.groupBy({
-    by: ['categoryId'],
+  // Expanded in memory rather than grouped in SQL: a split row's money belongs
+  // to its split categories, not to the (null) category on the parent.
+  // pnlCategoryLines applies the same classification semantics the two
+  // groupBys used to — transfers drop out, refunds arrive as negative expense
+  // against the category they refund (plan §D1).
+  const txns = await prisma.transaction.findMany({
     where: {
       accountId,
       status: 'confirmed',
-      ...ordinaryExpense, // transfers classified out of the expense donut
       date: { gte: range.from, lt: range.to },
       // Match getKpis: active portfolio + account-level (unassigned) lines.
       ...portfolioFilter,
     },
-    _sum: { amountCents: true },
+    include: { splits: true },
   });
-  // Refunds net against the category they refund (plan §D1).
-  const refunds = await prisma.transaction.groupBy({
-    by: ['categoryId'],
-    where: {
-      accountId,
-      status: 'confirmed',
-      classification: 'refund',
-      date: { gte: range.from, lt: range.to },
-      ...portfolioFilter,
-    },
-    _sum: { amountCents: true },
-  });
-  const refundByCategory = new Map(refunds.map((r) => [r.categoryId, r._sum.amountCents ?? 0]));
+  const totalsByCategory = new Map<string | null, number>();
+  for (const t of txns) {
+    for (const cl of pnlCategoryLines(t)) {
+      if (cl.bucket !== 'expense') continue;
+      totalsByCategory.set(
+        cl.categoryId,
+        (totalsByCategory.get(cl.categoryId) ?? 0) + cl.amountCents,
+      );
+    }
+  }
 
-  const categoryIds = [...grouped, ...refunds]
-    .map((g) => g.categoryId)
-    .filter((id): id is string => id !== null);
+  const categoryIds = [...totalsByCategory.keys()].filter((id): id is string => id !== null);
   const categories = await prisma.category.findMany({
     where: { id: { in: categoryIds } },
     select: { id: true, name: true },
   });
   const nameById = new Map(categories.map((c) => [c.id, c.name]));
 
-  const sorted = grouped
-    .map((g) => ({
-      categoryId: g.categoryId,
-      categoryName: g.categoryId ? (nameById.get(g.categoryId) ?? 'Uncategorized') : 'Uncategorized',
-      amountCents: (g._sum.amountCents ?? 0) - (refundByCategory.get(g.categoryId) ?? 0),
+  const sorted = [...totalsByCategory]
+    .map(([categoryId, amountCents]) => ({
+      categoryId,
+      categoryName: categoryId ? (nameById.get(categoryId) ?? 'Uncategorized') : 'Uncategorized',
+      amountCents,
     }))
     .filter((s) => s.amountCents > 0)
     .sort((a, b) => b.amountCents - a.amountCents);

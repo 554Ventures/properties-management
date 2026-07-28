@@ -10,12 +10,14 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import FormData from 'form-data';
+import { SignJWT } from 'jose';
 import { DocumentListResponseSchema, DocumentSchema, TransactionSchema } from '@hearth/shared';
 import { SEED_DOCUMENTS } from '../../prisma/seed-constants';
 import { buildApp } from '../app';
 import { iso } from '../lib/dates';
 import { prisma } from '../lib/prisma';
 import { getDemoAccountId } from '../plugins/auth';
+import { resetAuthServiceCache } from '../services/auth.service';
 
 process.env.STORAGE_DIR = mkdtempSync(path.join(os.tmpdir(), 'hearth-docs-test-'));
 
@@ -357,6 +359,293 @@ describe('PATCH /documents/:id', () => {
     const updated = DocumentSchema.parse(patched.json());
     expect(updated.name).toBe('ZZDOC after.pdf');
     expect(updated.type).toBe('insurance');
+  });
+});
+
+describe('PATCH /documents/:id — move to another entity', () => {
+  it('updates derived listing context', async () => {
+    const { property, okaforTenantId } = await seededEntities();
+    const res = await upload({
+      entityType: 'property',
+      entityId: property.id,
+      type: 'other',
+      name: 'ZZDOC move-context.pdf',
+    });
+    const doc = DocumentSchema.parse(res.json());
+    createdDocIds.push(doc.id);
+
+    const beforeMove = DocumentListResponseSchema.parse(
+      (await app.inject({ url: `/api/v1/documents?propertyId=${property.id}` })).json(),
+    );
+    expect(beforeMove.documents.map((d) => d.id)).toContain(doc.id);
+
+    // Property docs are never in tenant-context listings — a clean signal
+    // that the move actually changed which context the document derives into.
+    const moved = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/documents/${doc.id}`,
+      payload: { entityType: 'tenant', entityId: okaforTenantId },
+    });
+    expect(moved.statusCode).toBe(200);
+    const updated = DocumentSchema.parse(moved.json());
+    expect(updated.entityType).toBe('tenant');
+    expect(updated.entityId).toBe(okaforTenantId);
+
+    const afterMove = DocumentListResponseSchema.parse(
+      (await app.inject({ url: `/api/v1/documents?propertyId=${property.id}` })).json(),
+    );
+    expect(afterMove.documents.map((d) => d.id)).not.toContain(doc.id);
+
+    const byTenant = DocumentListResponseSchema.parse(
+      (await app.inject({ url: `/api/v1/documents?tenantId=${okaforTenantId}` })).json(),
+    );
+    const row = byTenant.documents.find((d) => d.id === doc.id);
+    expect(row).toBeDefined();
+    expect(row!.propertyId).toBeNull();
+    expect(row!.tenantId).toBe(okaforTenantId);
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { action: 'document.updated', entityId: doc.id },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(audit).not.toBeNull();
+    expect(JSON.parse(audit!.detailJson!)).toMatchObject({
+      movedFrom: `property:${property.id}`,
+      movedTo: `tenant:${okaforTenantId}`,
+    });
+  });
+
+  it('sets receiptUrl when a receipt-typed document is moved onto a transaction', async () => {
+    const { property } = await seededEntities();
+    const txn = await createTestTransaction('ZZDOC move receipt-on target');
+    expect(txn.receiptUrl).toBeNull();
+
+    const res = await upload({
+      entityType: 'property',
+      entityId: property.id,
+      type: 'receipt',
+      name: 'ZZDOC move receipt-on.pdf',
+    });
+    const doc = DocumentSchema.parse(res.json());
+    createdDocIds.push(doc.id);
+
+    const moved = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/documents/${doc.id}`,
+      payload: { entityType: 'transaction', entityId: txn.id },
+    });
+    expect(moved.statusCode).toBe(200);
+
+    const linked = await prisma.transaction.findUniqueOrThrow({ where: { id: txn.id } });
+    expect(linked.receiptUrl).toBe(`/api/v1/documents/${doc.id}/download`);
+  });
+
+  it('clears receiptUrl when the receipt document is moved off its transaction', async () => {
+    const { property } = await seededEntities();
+    const txn = await createTestTransaction('ZZDOC move receipt-off target');
+    const res = await upload({
+      entityType: 'transaction',
+      entityId: txn.id,
+      type: 'receipt',
+      name: 'ZZDOC move receipt-off.pdf',
+    });
+    const doc = DocumentSchema.parse(res.json());
+    createdDocIds.push(doc.id);
+
+    const linked = await prisma.transaction.findUniqueOrThrow({ where: { id: txn.id } });
+    expect(linked.receiptUrl).toBe(`/api/v1/documents/${doc.id}/download`);
+
+    const moved = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/documents/${doc.id}`,
+      payload: { entityType: 'property', entityId: property.id },
+    });
+    expect(moved.statusCode).toBe(200);
+
+    const cleared = await prisma.transaction.findUniqueOrThrow({ where: { id: txn.id } });
+    expect(cleared.receiptUrl).toBeNull();
+  });
+
+  it('404s when the move target belongs to another account', async () => {
+    const { property } = await seededEntities();
+    const res = await upload({
+      entityType: 'property',
+      entityId: property.id,
+      type: 'other',
+      name: 'ZZDOC move cross-account.pdf',
+    });
+    const doc = DocumentSchema.parse(res.json());
+    createdDocIds.push(doc.id);
+
+    const other = await prisma.account.create({
+      data: { name: 'Other Landlord 3', email: `documents-move-${Date.now()}@example.com` },
+    });
+    createdAccountIds.push(other.id);
+    const otherProperty = await prisma.property.create({
+      data: {
+        accountId: other.id,
+        addressLine1: '3 Elsewhere Ave',
+        city: 'Springfield',
+        state: 'IL',
+        zip: '62704',
+      },
+    });
+
+    const moved = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/documents/${doc.id}`,
+      payload: { entityType: 'property', entityId: otherProperty.id },
+    });
+    expect(moved.statusCode).toBe(404);
+
+    // Untouched by the failed move.
+    const still = await prisma.document.findUniqueOrThrow({ where: { id: doc.id } });
+    expect(still.entityType).toBe('property');
+    expect(still.entityId).toBe(property.id);
+  });
+
+  it('400s when entityType is given without entityId', async () => {
+    const { property } = await seededEntities();
+    const res = await upload({
+      entityType: 'property',
+      entityId: property.id,
+      type: 'other',
+      name: 'ZZDOC move missing-id.pdf',
+    });
+    const doc = DocumentSchema.parse(res.json());
+    createdDocIds.push(doc.id);
+
+    const moved = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/documents/${doc.id}`,
+      payload: { entityType: 'unit' },
+    });
+    expect(moved.statusCode).toBe(400);
+    // The contract-level refine rejects the pair mismatch in parseBody.
+    expect(moved.json().error.code).toBe('validation_error');
+  });
+});
+
+describe('PATCH /documents/:id — move permission enforcement (Supabase mode)', () => {
+  const TEST_SECRET = 'test-jwt-secret-with-at-least-32-characters!';
+  let authzApp: FastifyInstance;
+  const authzAccountIds: string[] = [];
+
+  beforeAll(async () => {
+    process.env.SUPABASE_JWT_SECRET = TEST_SECRET;
+    resetAuthServiceCache();
+    authzApp = await buildApp();
+  });
+
+  afterAll(async () => {
+    await prisma.account.deleteMany({ where: { id: { in: authzAccountIds } } });
+    delete process.env.SUPABASE_JWT_SECRET;
+    resetAuthServiceCache();
+    await authzApp.close();
+  });
+
+  /** A throwaway account + a member scoped to `permissions`, signed a Supabase-shaped JWT. */
+  async function memberFixture(supabaseUserId: string, permissions: string[]) {
+    const account = await prisma.account.create({
+      data: { name: 'Document Move Authz', email: `${supabaseUserId}@example.com` },
+    });
+    authzAccountIds.push(account.id);
+    await prisma.user.create({
+      data: {
+        accountId: account.id,
+        supabaseUserId,
+        email: `${supabaseUserId}@example.com`,
+        role: 'member',
+        permissionsJson: JSON.stringify(permissions),
+      },
+    });
+    const property = await prisma.property.create({
+      data: { accountId: account.id, addressLine1: '1 Move Rd', city: 'X', state: 'CA', zip: '00000' },
+    });
+    const txn = await prisma.transaction.create({
+      data: {
+        accountId: account.id,
+        date: new Date(),
+        amountCents: 1000,
+        type: 'expense',
+        description: 'Authz move target',
+        source: 'manual',
+        status: 'confirmed',
+      },
+    });
+    const doc = await prisma.document.create({
+      data: {
+        accountId: account.id,
+        entityType: 'property',
+        entityId: property.id,
+        type: 'other',
+        name: 'authz-source.pdf',
+        storageKey: `${account.id}/${supabaseUserId}/authz-source.pdf`,
+        mimeType: 'application/pdf',
+        sizeBytes: 10,
+      },
+    });
+    const token = await new SignJWT({ email: `${supabaseUserId}@example.com`, aud: 'authenticated' })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setSubject(supabaseUserId)
+      .setIssuedAt()
+      .setExpirationTime('1h')
+      .sign(new TextEncoder().encode(TEST_SECRET));
+    return { accountId: account.id, token, docId: doc.id, txnId: txn.id };
+  }
+
+  it('403s a member who has the source grant but not the target grant', async () => {
+    // Doc lives on a property ('properties' area) and the member wants to
+    // move it onto a transaction ('money' area) without holding 'money'.
+    const { token, docId, txnId } = await memberFixture('doc-move-member-1', ['properties']);
+
+    const res = await authzApp.inject({
+      method: 'PATCH',
+      url: `/api/v1/documents/${docId}`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { entityType: 'transaction', entityId: txnId },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('forbidden');
+    expect((await prisma.document.findUniqueOrThrow({ where: { id: docId } })).entityType).toBe(
+      'property',
+    );
+  });
+
+  it('403s a member who has the target grant but not the source grant', async () => {
+    // Member holds 'money' (the target area) but not 'properties' (the
+    // source area the document currently lives in).
+    const { token, docId, txnId } = await memberFixture('doc-move-member-2', ['money']);
+
+    const res = await authzApp.inject({
+      method: 'PATCH',
+      url: `/api/v1/documents/${docId}`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { entityType: 'transaction', entityId: txnId },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('forbidden');
+    expect((await prisma.document.findUniqueOrThrow({ where: { id: docId } })).entityType).toBe(
+      'property',
+    );
+  });
+
+  it('succeeds for a member holding both the source and target grants', async () => {
+    const { token, docId, txnId } = await memberFixture('doc-move-member-3', [
+      'properties',
+      'money',
+    ]);
+
+    const res = await authzApp.inject({
+      method: 'PATCH',
+      url: `/api/v1/documents/${docId}`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { entityType: 'transaction', entityId: txnId },
+    });
+    expect(res.statusCode).toBe(200);
+    expect((await prisma.document.findUniqueOrThrow({ where: { id: docId } })).entityType).toBe(
+      'transaction',
+    );
   });
 });
 

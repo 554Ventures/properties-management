@@ -24,11 +24,19 @@ export const CreateDocumentFieldsSchema = z.object({
   name: z.string().min(1).max(200).optional(), // defaults to the uploaded filename
 });
 
-// PATCH /documents/:id
-export const UpdateDocumentInputSchema = z.object({
-  name: z.string().min(1).max(200).optional(),
-  type: DocumentTypeSchema.optional(),
-});
+// PATCH /documents/:id — entityType/entityId together move (relink) the
+// document to another entity; either both are present or neither is.
+export const UpdateDocumentInputSchema = z
+  .object({
+    name: z.string().min(1).max(200).optional(),
+    type: DocumentTypeSchema.optional(),
+    entityType: DocumentEntityTypeSchema.optional(),
+    entityId: z.string().min(1).optional(),
+  })
+  .refine((v) => (v.entityType === undefined) === (v.entityId === undefined), {
+    message: 'entityType and entityId must be provided together',
+    path: ['entityId'],
+  });
 
 // GET /documents — propertyId/tenantId filters include derived context (docs on
 // the property's units/leases/transactions; docs on the tenant's leases).

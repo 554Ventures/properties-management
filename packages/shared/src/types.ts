@@ -78,6 +78,7 @@ export type AcceptRenewalInput = z.infer<typeof s.AcceptRenewalInputSchema>;
 
 // Transactions
 export type Transaction = z.infer<typeof s.TransactionSchema>;
+export type TransactionSplit = z.infer<typeof s.TransactionSplitSchema>;
 export type CreateTransactionInput = z.infer<typeof s.CreateTransactionInputSchema>;
 export type UpdateTransactionInput = z.infer<typeof s.UpdateTransactionInputSchema>;
 export type ConfirmTransactionInput = z.infer<typeof s.ConfirmTransactionInputSchema>;

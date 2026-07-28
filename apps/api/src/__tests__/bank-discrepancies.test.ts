@@ -31,6 +31,7 @@ import {
   dismissBankDiscrepancy,
   importFromBank,
   listBankDiscrepancies,
+  update as updateTransaction,
 } from '../services/transaction.service';
 
 const EMAIL = (s: string) => `bank-disc-${s}@bankdisctest.example`;
@@ -176,6 +177,42 @@ describe('accepting a bank change applies the restated values through the guarde
       where: { accountId, action: 'bank_discrepancy.accepted', entityId: modified.id },
     });
     expect(audit?.actor).toBe('user');
+  });
+
+  it('drops the splits when the bank restates the amount of a split row', async () => {
+    const { accountId } = await setupConfirmedDiscrepancies('accept-split');
+    const sherwin = await prisma.transaction.findFirstOrThrow({
+      where: { accountId, externalId: 'plaid_mock_1' },
+    });
+    const [repairs, supplies] = await Promise.all([
+      prisma.category.findFirstOrThrow({ where: { name: 'Repairs', isSystem: true } }),
+      prisma.category.findFirstOrThrow({ where: { name: 'Supplies', isSystem: true } }),
+    ]);
+    await updateTransaction(accountId, sherwin.id, {
+      splits: [
+        { categoryId: repairs.id, amountCents: 5_000 },
+        { categoryId: supplies.id, amountCents: 4_250 }, // sums to the 9250 row
+      ],
+    });
+
+    // The bank's 9310 restatement invalidates lines that summed to 9250, so
+    // accepting drops them instead of dead-ending on the update() guard.
+    const modified = (await listBankDiscrepancies(accountId)).items.find(
+      (d) => d.kind === 'modified',
+    )!;
+    expect(modified.transaction?.categoryName).toBe('Split across 2 categories');
+
+    const resolution = await acceptBankDiscrepancy(accountId, modified.id);
+    expect(resolution.status).toBe('accepted');
+    const restated = await prisma.transaction.findUniqueOrThrow({ where: { id: sherwin.id } });
+    expect(restated.amountCents).toBe(9310);
+    expect(restated.categoryId).toBeNull(); // uncategorized — the user re-splits
+    expect(await prisma.transactionSplit.count({ where: { transactionId: sherwin.id } })).toBe(0);
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { accountId, action: 'bank_discrepancy.accepted', entityId: modified.id },
+    });
+    expect(JSON.parse(audit!.detailJson!)).toMatchObject({ clearedSplits: true });
   });
 });
 

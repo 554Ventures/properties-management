@@ -7,6 +7,16 @@ import {
 } from '../enums';
 import { PeriodSchema } from './rent';
 
+// One category slice of a transaction split across multiple categories. The
+// parent row keeps the single money figure (`amountCents`); the splits say how
+// it breaks down and always sum to it exactly. A split row carries
+// `categoryId: null` on the parent — the splits ARE its categorization.
+export const TransactionSplitSchema = z.object({
+  id: z.string(),
+  categoryId: z.string(),
+  amountCents: z.number().int().positive(),
+});
+
 export const TransactionSchema = z.object({
   id: z.string(),
   accountId: z.string(),
@@ -36,6 +46,10 @@ export const TransactionSchema = z.object({
   // reverse). Populated by GET /transactions only; omitted when zero so
   // other producers stay unchanged.
   documentCount: z.number().int().positive().optional(),
+  // Multi-category split lines, always present on API responses (empty array
+  // when the row isn't split). Optional in the contract only so consumers that
+  // predate splits keep type-checking; every backend producer populates it.
+  splits: z.array(TransactionSplitSchema).optional(),
 });
 
 // POST /transactions — if categoryId is omitted the response carries
@@ -55,8 +69,21 @@ export const CreateTransactionInputSchema = z.object({
 });
 
 // PATCH /transactions/:id — `classification: null` clears back to ordinary.
+// `splits` replaces the row's split lines wholesale (they must sum to the
+// row's amount and carry categories of the row's type); `splits: null` clears
+// them back to a single category; omitting the field leaves them unchanged.
 export const UpdateTransactionInputSchema = CreateTransactionInputSchema.partial().extend({
   classification: TransactionClassificationSchema.nullable().optional(),
+  splits: z
+    .array(
+      z.object({
+        categoryId: z.string(),
+        amountCents: z.number().int().positive(),
+      }),
+    )
+    .min(2) // a one-line "split" is just a category
+    .nullable()
+    .optional(),
 });
 
 // POST /transactions/:id/confirm — rentPaymentId links the (income) transaction

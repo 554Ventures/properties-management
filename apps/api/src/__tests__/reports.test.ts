@@ -16,6 +16,7 @@ import { prisma } from '../lib/prisma';
 import { DEMO_TIMEZONE } from '../../prisma/seed-constants';
 import { getDemoAccountId } from '../plugins/auth';
 import * as reportService from '../services/report.service';
+import * as transactionService from '../services/transaction.service';
 
 // Monthly review buckets its period on the account's local calendar (WS4), so
 // the `from` anchor + reconciliation range use the demo account's timezone.
@@ -244,6 +245,149 @@ describe('schedule_e income line mapping', () => {
     await prisma.transaction.delete({ where: { id: txn.id } });
     await prisma.category.delete({ where: { id: category.id } });
     await prisma.auditLog.deleteMany({ where: { accountId, entityId: report.id } });
+  });
+});
+
+// Splitting a row moves money BETWEEN category lines and nowhere else: every
+// total in every report has to come out identical.
+describe('transaction splits in reports', () => {
+  const REPAIRS_LINE = 'Line 14 – Repairs';
+  const SUPPLIES_LINE = 'Line 15 – Supplies';
+
+  interface PnlData {
+    lines: Array<{ categoryName: string; type: string; totalCents: number }>;
+    totals: { incomeCents: number; expenseCents: number; netCents: number };
+  }
+  interface LedgerData {
+    rows: Array<{ description: string; categoryName: string | null; amountCents: number }>;
+    totals: { incomeCents: number; expenseCents: number; netCents: number };
+  }
+  interface ScheduleELinesData {
+    propertyRows: Array<{
+      propertyLabel: string;
+      expenseLines: Record<string, number>;
+      totalExpensesCents: number;
+    }>;
+    totals: { totalExpensesCents: number; netCents: number };
+  }
+
+  /** Generates `type` for the tax year and returns its snapshot, cleaned up. */
+  async function snapshot<T>(accountId: string, type: 'pnl' | 'general_ledger' | 'schedule_e') {
+    const report = await reportService.generate(accountId, {
+      type,
+      taxYear: new Date().getUTCFullYear(),
+    });
+    const detail = await reportService.getById(accountId, report.id);
+    await prisma.report.delete({ where: { id: report.id } });
+    await prisma.auditLog.deleteMany({ where: { accountId, entityId: report.id } });
+    return detail.data as T;
+  }
+
+  async function fixtureTransaction(accountId: string, categoryId: string) {
+    return prisma.transaction.create({
+      data: {
+        accountId,
+        date: new Date(),
+        amountCents: 50_000,
+        type: 'expense',
+        description: 'TEST split reporting fixture',
+        source: 'manual',
+        status: 'confirmed',
+        categoryId,
+      },
+    });
+  }
+
+  async function cleanup(accountId: string, txnId: string) {
+    await prisma.transaction.delete({ where: { id: txnId } });
+    await prisma.auditLog.deleteMany({ where: { accountId, entityId: txnId } });
+  }
+
+  it('moves P&L category lines by the split amounts and leaves the totals alone', async () => {
+    const accountId = await getDemoAccountId();
+    const [repairs, supplies] = await Promise.all([
+      prisma.category.findFirstOrThrow({ where: { name: 'Repairs', isSystem: true } }),
+      prisma.category.findFirstOrThrow({ where: { name: 'Supplies', isSystem: true } }),
+    ]);
+    const txn = await fixtureTransaction(accountId, repairs.id);
+
+    const before = await snapshot<PnlData>(accountId, 'pnl');
+    const lineOf = (data: PnlData, name: string) =>
+      data.lines.find((l) => l.type === 'expense' && l.categoryName === name)?.totalCents ?? 0;
+
+    await transactionService.update(accountId, txn.id, {
+      splits: [
+        { categoryId: repairs.id, amountCents: 30_000 },
+        { categoryId: supplies.id, amountCents: 20_000 },
+      ],
+    });
+
+    const after = await snapshot<PnlData>(accountId, 'pnl');
+    expect(after.totals).toEqual(before.totals); // the row's money never moved
+    expect(lineOf(after, 'Repairs')).toBe(lineOf(before, 'Repairs') - 20_000);
+    expect(lineOf(after, 'Supplies')).toBe(lineOf(before, 'Supplies') + 20_000);
+
+    await cleanup(accountId, txn.id);
+  });
+
+  it('renders one general-ledger row labelled Split (N categories)', async () => {
+    const accountId = await getDemoAccountId();
+    const [repairs, supplies] = await Promise.all([
+      prisma.category.findFirstOrThrow({ where: { name: 'Repairs', isSystem: true } }),
+      prisma.category.findFirstOrThrow({ where: { name: 'Supplies', isSystem: true } }),
+    ]);
+    const txn = await fixtureTransaction(accountId, repairs.id);
+    const before = await snapshot<LedgerData>(accountId, 'general_ledger');
+
+    await transactionService.update(accountId, txn.id, {
+      splits: [
+        { categoryId: repairs.id, amountCents: 30_000 },
+        { categoryId: supplies.id, amountCents: 20_000 },
+      ],
+    });
+
+    const after = await snapshot<LedgerData>(accountId, 'general_ledger');
+    const rows = after.rows.filter((r) => r.description === 'TEST split reporting fixture');
+    expect(rows).toHaveLength(1); // one row, not one per split
+    expect(rows[0]!.categoryName).toBe('Split (2 categories)');
+    expect(rows[0]!.amountCents).toBe(50_000);
+    expect(after.totals).toEqual(before.totals);
+
+    await cleanup(accountId, txn.id);
+  });
+
+  it('maps each split line through its own IRS Schedule E line', async () => {
+    const accountId = await getDemoAccountId();
+    const [repairs, supplies] = await Promise.all([
+      prisma.category.findFirstOrThrow({ where: { name: 'Repairs', isSystem: true } }),
+      prisma.category.findFirstOrThrow({ where: { name: 'Supplies', isSystem: true } }),
+    ]);
+    const txn = await fixtureTransaction(accountId, repairs.id);
+
+    const before = await snapshot<ScheduleELinesData>(accountId, 'schedule_e');
+    const portfolioLines = (data: ScheduleELinesData) =>
+      data.propertyRows.find((r) => r.propertyLabel === 'Portfolio / unassigned')!;
+
+    await transactionService.update(accountId, txn.id, {
+      splits: [
+        { categoryId: repairs.id, amountCents: 30_000 },
+        { categoryId: supplies.id, amountCents: 20_000 },
+      ],
+    });
+
+    const after = await snapshot<ScheduleELinesData>(accountId, 'schedule_e');
+    const beforeRow = portfolioLines(before);
+    const afterRow = portfolioLines(after);
+    expect(afterRow.expenseLines[REPAIRS_LINE]).toBe(
+      (beforeRow.expenseLines[REPAIRS_LINE] ?? 0) - 20_000,
+    );
+    expect(afterRow.expenseLines[SUPPLIES_LINE]).toBe(
+      (beforeRow.expenseLines[SUPPLIES_LINE] ?? 0) + 20_000,
+    );
+    expect(afterRow.totalExpensesCents).toBe(beforeRow.totalExpensesCents);
+    expect(after.totals).toEqual(before.totals);
+
+    await cleanup(accountId, txn.id);
   });
 });
 

@@ -244,6 +244,7 @@ model Category {
 
   account      Account?      @relation(fields: [accountId], references: [id], onDelete: Cascade)
   transactions Transaction[]
+  transactionSplits TransactionSplit[]
   vendorCategoryMemories VendorCategoryMemory[]
 }
 
@@ -301,10 +302,33 @@ model Transaction {
   rentPayment RentPayment?
   rentDeposit RentPaymentDeposit?
   bankSyncDiscrepancies BankSyncDiscrepancy[]
+  splits      TransactionSplit[]
 
   @@index([accountId, date])
   @@index([accountId, status])
   @@unique([accountId, externalId])
+}
+
+// One category slice of a transaction split across several categories (e.g. a
+// hardware-store receipt that's part Repairs, part Supplies). Invariants, all
+// enforced in transaction.service: at least two rows, every amount positive,
+// the rows sum EXACTLY to the parent's amountCents, every category is
+// account-visible and of the parent's type, and the parent carries
+// categoryId = null while splits exist. Splits only ever refine *per-category*
+// aggregation — the parent row still owns the money, so totals/KPIs/NOI are
+// untouched (lib/pnl.ts pnlCategoryLines is the one expansion point).
+// A rent-linked row or a classified (transfer/owner_contribution/refund) row
+// can never be split.
+model TransactionSplit {
+  id            String @id @default(cuid())
+  transactionId String
+  categoryId    String
+  amountCents   Int // always positive; sign comes from the parent's `type`
+
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  category    Category    @relation(fields: [categoryId], references: [id])
+
+  @@index([transactionId])
 }
 
 // A bank-side change (Plaid/Stripe FC `modified` or `removed`) that arrived

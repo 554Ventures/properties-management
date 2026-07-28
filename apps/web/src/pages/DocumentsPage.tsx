@@ -12,6 +12,7 @@ import {
   DOCUMENT_TYPE_LABELS,
   DocumentUploadModal,
 } from '../components/documents/DocumentUploadModal';
+import { MoveDocumentModal } from '../components/documents/MoveDocumentModal';
 import { PageHeader } from '../components/shell/PageHeader';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
@@ -24,7 +25,13 @@ import { Select } from '../components/ui/Select';
 import { Skeleton } from '../components/ui/Skeleton';
 import { useToast } from '../components/ui/Toast';
 import { RowActions } from '../components/ui/RowActions';
-import { IconDownload, IconFileText, IconTrash, IconUpload } from '../components/ui/icons';
+import {
+  IconDownload,
+  IconFileText,
+  IconMove,
+  IconTrash,
+  IconUpload,
+} from '../components/ui/icons';
 import { formatBytes, formatDate } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
 
@@ -55,6 +62,7 @@ export function DocumentsPage() {
 
   const [uploadOpen, setUploadOpen] = useState(false);
   const [deleting, setDeleting] = useState<DocumentListRow | null>(null);
+  const [moving, setMoving] = useState<DocumentListRow | null>(null);
 
   const filtered = Boolean(propertyId || tenantId || type);
   const rows = documents.data?.documents ?? [];
@@ -135,6 +143,7 @@ export function DocumentsPage() {
           context={d.name}
           actions={[
             { label: 'Download', icon: <IconDownload size={14} />, onClick: () => download(d) },
+            { label: 'Move to…', icon: <IconMove size={14} />, onClick: () => setMoving(d) },
             { label: 'Delete', icon: <IconTrash size={14} />, onClick: () => setDeleting(d) },
           ]}
         />
@@ -236,6 +245,7 @@ export function DocumentsPage() {
       )}
 
       <DocumentUploadModal open={uploadOpen} onClose={() => setUploadOpen(false)} />
+      <MoveDocumentModal document={moving} onClose={() => setMoving(null)} />
       <ConfirmDialog
         open={deleting !== null}
         onClose={() => setDeleting(null)}

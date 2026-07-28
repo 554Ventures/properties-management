@@ -39,6 +39,55 @@ export function pnlBucket(t: {
   return { bucket: t.type === 'income' ? 'income' : 'expense', amountCents: t.amountCents };
 }
 
+/** One per-category P&L line derived from a transaction. `C` is whatever the
+ *  caller included for the category relation (name, irsScheduleELine, …). */
+export interface PnlCategoryLine<C> {
+  bucket: 'income' | 'expense';
+  categoryId: string | null;
+  category: C | null;
+  amountCents: number;
+}
+
+/**
+ * Per-CATEGORY P&L contribution(s) of a transaction — the one place that knows
+ * splits exist. An unsplit row yields a single line for its own category; a
+ * split row yields one line per split (its money is unchanged, only its
+ * categorization is finer). A row that doesn't count in P&L yields none.
+ *
+ * Totals never go through here (they're per-row: `pnlBucket`/`pnlSums`) —
+ * splits sum exactly to the parent's amount, so both agree by construction.
+ * Splits can never carry a classification (transaction.service rejects it), so
+ * the refund sign-flip only ever applies to the single-line case.
+ */
+export function pnlCategoryLines<C>(t: {
+  type: string;
+  classification: string | null;
+  amountCents: number;
+  categoryId: string | null;
+  category?: C | null;
+  splits?: Array<{ categoryId: string; amountCents: number; category?: C | null }>;
+}): Array<PnlCategoryLine<C>> {
+  const b = pnlBucket(t);
+  if (!b) return [];
+  const splits = t.splits ?? [];
+  if (splits.length === 0) {
+    return [
+      {
+        bucket: b.bucket,
+        categoryId: t.categoryId,
+        category: t.category ?? null,
+        amountCents: b.amountCents,
+      },
+    ];
+  }
+  return splits.map((s) => ({
+    bucket: b.bucket,
+    categoryId: s.categoryId,
+    category: s.category ?? null,
+    amountCents: s.amountCents,
+  }));
+}
+
 /** Effective totals from a `groupBy(['type', 'classification', ...])` result. */
 export function pnlSums(
   grouped: Array<{
