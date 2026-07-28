@@ -197,14 +197,18 @@ async function okaforPayment() {
   });
 }
 
-async function createPendingBankDeposit(accountId: string, amountCents: number) {
+async function createPendingBankDeposit(
+  accountId: string,
+  amountCents: number,
+  description = 'TEST ACH CREDIT — RENT DEPOSIT',
+) {
   const row = await prisma.transaction.create({
     data: {
       accountId,
       date: new Date(),
       amountCents,
       type: 'income',
-      description: 'TEST ACH CREDIT — RENT DEPOSIT',
+      description,
       vendor: 'ACH transfer',
       source: 'bank',
       status: 'pending_review',
@@ -219,6 +223,7 @@ describe('pickRentMatch (pure matcher)', () => {
     rentPaymentId: 'rp1',
     leaseId: 'l1',
     tenantName: 'T. Okafor',
+    tenantNames: ['T. Okafor'],
     propertyId: 'p1',
     propertyLabel: '48 Maple St',
     unitId: 'u1',
@@ -254,6 +259,79 @@ describe('pickRentMatch (pure matcher)', () => {
     expect(pickRentMatch(txnOn('2026-07-02T00:00:00.000Z'), twins)).toBeNull();
   });
 
+  it('sets matchedName when the descriptor names the tenant (boost tier)', () => {
+    const match = pickRentMatch(
+      { ...txnOn('2026-07-02T00:00:00.000Z'), description: 'ACH CREDIT — RENT T OKAFOR' },
+      [candidate()],
+    );
+    expect(match).toMatchObject({
+      rentPaymentId: 'rp1',
+      matchedName: 'T. Okafor',
+      disambiguatedByName: false,
+    });
+  });
+
+  it('leaves matchedName null on a bland-descriptor single match', () => {
+    const match = pickRentMatch(
+      { ...txnOn('2026-07-02T00:00:00.000Z'), description: 'ACH CREDIT — RENT DEPOSIT' },
+      [candidate()],
+    );
+    expect(match).toMatchObject({ rentPaymentId: 'rp1', matchedName: null });
+  });
+
+  it('matches against the vendor field too', () => {
+    const match = pickRentMatch(
+      { ...txnOn('2026-07-02T00:00:00.000Z'), description: 'ACH CREDIT', vendor: 'T OKAFOR' },
+      [candidate()],
+    );
+    expect(match?.matchedName).toBe('T. Okafor');
+  });
+
+  it('disambiguates an amount/date tie when exactly one candidate is named', () => {
+    const twins = [
+      candidate(),
+      candidate({ rentPaymentId: 'rp2', leaseId: 'l2', tenantName: 'D. Park', tenantNames: ['D. Park'] }),
+    ];
+    const match = pickRentMatch(
+      { ...txnOn('2026-07-02T00:00:00.000Z'), description: 'ZELLE FROM D PARK' },
+      twins,
+    );
+    expect(match).toMatchObject({
+      rentPaymentId: 'rp2',
+      matchedName: 'D. Park',
+      disambiguatedByName: true,
+    });
+  });
+
+  it('keeps suppressing a tie when the descriptor names neither or both candidates', () => {
+    const twins = [
+      candidate({ tenantName: 'A. Osei', tenantNames: ['A. Osei'] }),
+      candidate({ rentPaymentId: 'rp2', leaseId: 'l2', tenantName: 'R. Osei', tenantNames: ['R. Osei'] }),
+    ];
+    // Bland descriptor: neither named.
+    expect(pickRentMatch({ ...txnOn('2026-07-02T00:00:00.000Z'), description: 'ACH DEPOSIT' }, twins)).toBeNull();
+    // Shared surname: both name-match — still ambiguous, still suppressed.
+    expect(pickRentMatch({ ...txnOn('2026-07-02T00:00:00.000Z'), description: 'ZELLE OSEI RENT' }, twins)).toBeNull();
+  });
+
+  it('matches a co-tenant name, not just the primary', () => {
+    const shared = candidate({ tenantNames: ['D. Park', 'R. Osei'] });
+    const match = pickRentMatch(
+      { ...txnOn('2026-07-02T00:00:00.000Z'), description: 'ZELLE FROM R OSEI' },
+      [shared],
+    );
+    expect(match?.matchedName).toBe('R. Osei');
+  });
+
+  it('never creates a name-only suggestion (right name, wrong amount)', () => {
+    expect(
+      pickRentMatch(
+        { ...txnOn('2026-07-02T00:00:00.000Z', 99999), description: 'RENT T OKAFOR' },
+        [candidate()],
+      ),
+    ).toBeNull();
+  });
+
   it('matches the remaining balance of a partially paid charge (not the full amount)', () => {
     const partial = candidate({ paidCents: 40000 }); // 75000 remaining
     expect(pickRentMatch(txnOn('2026-07-02T00:00:00.000Z', 75000), [partial])?.rentPaymentId).toBe(
@@ -286,6 +364,9 @@ describe('GET /transactions/review — rent match suggestion', () => {
       tenantName: OKAFOR_NAME,
       amountCents: OKAFOR_RENT_CENTS,
       period: currentPeriod(),
+      // Bland descriptor: baseline confidence, no name signal.
+      confidence: 0.9,
+      matchedName: null,
     });
 
     for (const expense of queue.items.filter((i) => i.type === 'expense')) {
@@ -293,6 +374,28 @@ describe('GET /transactions/review — rent match suggestion', () => {
     }
 
     // Leave the queue as the seed had it for later test files.
+    await prisma.transaction.delete({ where: { id: deposit.id } });
+  });
+
+  it('boosts confidence to 0.95 when the deposit descriptor names the tenant', async () => {
+    const accountId = await getDemoAccountId();
+    const deposit = await createPendingBankDeposit(
+      accountId,
+      OKAFOR_RENT_CENTS,
+      'TEST ACH CREDIT — RENT T OKAFOR',
+    );
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/transactions/review' });
+    expect(res.statusCode).toBe(200);
+    const queue = ReviewQueueResponseSchema.parse(res.json());
+
+    const payment = await okaforPayment();
+    expect(queue.items.find((i) => i.id === deposit.id)?.rentMatch).toMatchObject({
+      rentPaymentId: payment.id,
+      confidence: 0.95,
+      matchedName: OKAFOR_NAME,
+    });
+
     await prisma.transaction.delete({ where: { id: deposit.id } });
   });
 
@@ -639,6 +742,8 @@ describe('POST /transactions — manual income rent match and linked-row guard',
     const txn = CreateTransactionResponseSchema.parse(res.json());
     createdIds.push(txn.id);
     linkedTxnId = txn.id;
+    // Descriptor names Okafor, so this match carries the 0.95 name boost —
+    // deliberately not pinned here; the boost has its own route test above.
     expect(txn.rentMatch).toMatchObject({
       rentPaymentId: payment.id,
       tenantName: OKAFOR_NAME,

@@ -1,6 +1,6 @@
 # Tenant-Name Matching for Rent-Match Heuristics (v2)
 
-> **Status (2026-07-15):** Plan approved-in-principle, not yet started. Scope decisions made: name matching only (manual charge picker stays a separate roadmap item); tier = boost + disambiguate (no name-only suggestions). Pick up from "Order of work".
+> **Status: complete (2026-07-27).** Implemented as specced on branch `feat/tenant-name-matching` — see `docs/WHATS_NEXT.md` §3 and `docs/FEATURES.md` for the as-built summaries. Scope decisions that were made: name matching only (manual charge picker stays a separate roadmap item); tier = boost + disambiguate (no name-only suggestions).
 
 ## Context
 

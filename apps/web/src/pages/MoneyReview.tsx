@@ -407,6 +407,7 @@ function ReviewItemCard({
                 confidence={rentMatch.confidence}
                 applied={rentAccepted}
                 onApply={() => setRentAccepted(true)}
+                note={rentMatch.matchedName ? `deposit names ${rentMatch.matchedName}` : undefined}
               />
             )}
             {item.aiSuggestedCategoryId && item.aiSuggestedCategoryName && !rentAccepted && (

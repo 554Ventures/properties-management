@@ -258,4 +258,47 @@ describe('GET /rent/unlinked-deposits (the linkage nudge)', () => {
 
     await prisma.transaction.deleteMany({ where: { id: { in: [over.id, wrongCategory.id] } } });
   });
+
+  it('disambiguates a deposit fitting several charges when the descriptor names exactly one tenant', async () => {
+    // Both seeded open charges (Okafor's and Park's) can absorb a small
+    // unattributed deposit, which used to suppress the nudge outright.
+    const tracker = await rentService.getMonthStatus(accountId, period);
+    const okafor = tracker.rows.find((r) => r.tenantName === OKAFOR_NAME)!;
+    const park = tracker.rows.find((r) => r.tenantName === PARK_NAME)!;
+    const amountCents = 40000;
+    expect(amountCents).toBeLessThanOrEqual(okafor.amountCents - okafor.paidCents);
+    expect(amountCents).toBeLessThanOrEqual(park.amountCents - park.paidCents);
+
+    const rentCategory = await prisma.category.findFirstOrThrow({
+      where: { name: 'Rent', type: 'income', isSystem: true },
+    });
+    const base = {
+      accountId,
+      categoryId: rentCategory.id,
+      date: new Date(),
+      amountCents,
+      type: 'income',
+      source: 'manual',
+      status: 'confirmed',
+    } as const;
+    const named = await prisma.transaction.create({
+      data: { ...base, description: 'TEST ZELLE FROM T OKAFOR' },
+    });
+    const bland = await prisma.transaction.create({
+      data: { ...base, description: 'TEST MYSTERY DEPOSIT' },
+    });
+
+    const body = UnlinkedRentDepositsResponseSchema.parse(
+      (await app.inject({ method: 'GET', url: `/api/v1/rent/unlinked-deposits?period=${period}` })).json(),
+    );
+    // Descriptor names Okafor's lease tenant → that charge, unambiguously.
+    expect(body.items.find((i) => i.transactionId === named.id)).toMatchObject({
+      rentPaymentId: okafor.rentPaymentId,
+      tenantName: OKAFOR_NAME,
+    });
+    // Bland descriptor still fits both charges → still suppressed.
+    expect(body.items.find((i) => i.transactionId === bland.id)).toBeUndefined();
+
+    await prisma.transaction.deleteMany({ where: { id: { in: [named.id, bland.id] } } });
+  });
 });

@@ -120,6 +120,9 @@ export const RentMatchSuggestionSchema = z.object({
   amountCents: z.number().int().positive(), // the full charge
   paidCents: z.number().int(), // already received; the match completes the difference
   confidence: z.number().min(0).max(1),
+  // Tenant the deposit descriptor names, when it does — why the confidence is
+  // what it is. Optional so pre-existing fixtures parse; the API always emits it.
+  matchedName: z.string().nullable().optional(),
 });
 
 // POST /transactions response — the created row plus, for a confirmed income
