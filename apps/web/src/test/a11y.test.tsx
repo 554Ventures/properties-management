@@ -855,6 +855,81 @@ describe('review queue accessibility', () => {
       results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`),
     ).toEqual([]);
   }, 20_000);
+
+  it('the manual rent charge picker modal (with a disabled over-amount option) has no axe violations', async () => {
+    const reviewFixtures: Record<string, unknown> = {
+      '/api/v1/transactions/review': reviewQueue,
+      '/api/v1/transactions/bank-discrepancies': { items: [] },
+      '/api/v1/categories': [
+        { id: 'c-rent', name: 'Rent', type: 'income' },
+        { id: 'c-supplies', name: 'Supplies', type: 'expense' },
+      ],
+      '/api/v1/properties': properties,
+      '/api/v1/rent/open-charges': {
+        items: [
+          {
+            rentPaymentId: 'rp-open-fits',
+            leaseId: 'l1',
+            tenantName: 'T. Okafor',
+            unitLabel: 'Main',
+            propertyLabel: '21 Cedar Ct',
+            period: '2026-07',
+            remainingCents: 115000,
+          },
+          {
+            rentPaymentId: 'rp-open-too-small',
+            leaseId: 'l4',
+            tenantName: 'K. Alvarez',
+            unitLabel: 'Unit C',
+            propertyLabel: '4 Oak Row',
+            period: '2026-06',
+            remainingCents: 5000,
+          },
+        ],
+      },
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const path = String(input).replace(/^https?:\/\/[^/]+/, '').split('?')[0] ?? '';
+        const body = reviewFixtures[path];
+        return Promise.resolve(
+          new Response(JSON.stringify(body ?? { error: { code: 'not_found', message: path } }), {
+            status: body === undefined ? 404 : 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }),
+    );
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { container } = render(
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <MemoryRouter initialEntries={['/money/review']}>
+            <Routes>
+              <Route path="/money/review" element={<MoneyReview />} />
+            </Routes>
+          </MemoryRouter>
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByText(/T\. Okafor's Jul 2026 rent/);
+    const linkButtons = await screen.findAllByRole('button', { name: 'Link to rent…' });
+    fireEvent.click(linkButtons[0]!);
+
+    const dialog = await screen.findByRole('dialog', { name: 'Link to a rent charge' });
+    await within(dialog).findByText(/K\. Alvarez/);
+    expect(within(dialog).getByText('deposit exceeds remaining')).toBeInTheDocument();
+
+    const results = await axe.run(container, {
+      rules: { 'color-contrast': { enabled: false } },
+    });
+    expect(
+      results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`),
+    ).toEqual([]);
+  }, 20_000);
 });
 
 // --- Property hub --------------------------------------------------------------

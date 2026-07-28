@@ -119,12 +119,35 @@ export const RecordRentPaymentInputSchema = z.object({
   tenantId: z.string().optional(), // which co-tenant paid (must be on the lease)
 });
 
+// An open (due/processing, unarchived) expected rent charge a deposit could be
+// manually linked to — the option row of the manual charge picker (rent-match
+// v2). Reused by GET /rent/open-charges and the ambiguous-deposit candidates.
+export const RentChargeOptionSchema = z.object({
+  rentPaymentId: z.string(),
+  leaseId: z.string(),
+  tenantName: z.string(),
+  unitLabel: z.string(),
+  propertyLabel: z.string(),
+  period: PeriodSchema,
+  remainingCents: z.number().int().positive(), // amount + late fee − already paid
+});
+
+// GET /rent/open-charges — every open charge with a positive remaining
+// balance, newest period first. The manual picker's option list: deliberately
+// no date-window or attribution filtering (the picker exists because the
+// heuristics' filters missed); the client disables options whose remaining is
+// below the deposit amount (overshoot is rejected server-side on link).
+export const OpenRentChargesResponseSchema = z.object({
+  items: z.array(RentChargeOptionSchema),
+});
+
 // GET /rent/unlinked-deposits?period= — Rent-categorized income transactions
 // that could apply to a still-open charge but aren't linked as deposits (plan
 // §C5): the "silently still late" fix. Broader than the review-queue chip
 // (below-remaining partials included); surfaced as a question, never
-// auto-applied. Ambiguous candidates (one deposit fitting several charges)
-// are suppressed.
+// auto-applied. A deposit fitting exactly one charge (after tenant-name
+// disambiguation) lands in `items`; one fitting several charges lands in
+// `ambiguous` with its candidate charges for the user to pick from.
 export const UnlinkedRentDepositSchema = z.object({
   transactionId: z.string(),
   description: z.string(),
@@ -139,8 +162,19 @@ export const UnlinkedRentDepositSchema = z.object({
   remainingCents: z.number().int().positive(), // still due on the charge before this deposit
 });
 
+export const AmbiguousRentDepositSchema = z.object({
+  transactionId: z.string(),
+  description: z.string(),
+  amountCents: z.number().int().positive(),
+  date: z.string().datetime(),
+  candidates: z.array(RentChargeOptionSchema).min(2), // the charges it fits, tracker order
+});
+
 export const UnlinkedRentDepositsResponseSchema = z.object({
   items: z.array(UnlinkedRentDepositSchema),
+  // Optional so pre-picker consumers/fixtures keep parsing; the API always
+  // emits it (empty array when nothing is ambiguous).
+  ambiguous: z.array(AmbiguousRentDepositSchema).optional(),
 });
 
 // POST /rent/payments/:id/payment-link — mock Stripe link.

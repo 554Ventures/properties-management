@@ -943,7 +943,14 @@ export async function confirm(
   if (input.rentPaymentId) {
     // Attribution comes from the lease itself on this path; a rent deposit is
     // ordinary income by definition, so any classification input is ignored.
-    return confirmWithRentLink(accountId, existing, input.rentPaymentId, input.categoryId, actor);
+    return confirmWithRentLink(
+      accountId,
+      existing,
+      input.rentPaymentId,
+      input.categoryId,
+      actor,
+      input.linkSource === 'manual',
+    );
   }
   assertClassificationValid(input.classification, existing.type);
   if (input.classification && existing.splits.length > 0) {
@@ -1028,6 +1035,7 @@ async function confirmWithRentLink(
   rentPaymentId: string,
   categoryIdOverride: string | undefined,
   actor: AuditActor,
+  manualLink = false,
 ): Promise<Transaction> {
   if (existing.type !== 'income') {
     throw new BadRequestError('only an income transaction can be linked to a rent payment');
@@ -1129,8 +1137,10 @@ async function confirmWithRentLink(
     return { row: confirmedRow, updatedPayment: linkedPayment };
   });
 
-  // Accepting the rent-match suggestion is accepting AI-suggested content.
-  const auditActor = actor === 'user' ? 'ai_suggested_user_confirmed' : actor;
+  // Accepting the rent-match suggestion is accepting AI-suggested content; a
+  // hand-picked charge (picker modal, ambiguous-deposit select) is the user's
+  // own call and stays 'user'.
+  const auditActor = actor === 'user' && !manualLink ? 'ai_suggested_user_confirmed' : actor;
   await writeAudit(accountId, {
     actor: auditActor,
     action: 'transaction.confirmed',
