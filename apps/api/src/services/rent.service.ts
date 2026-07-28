@@ -37,6 +37,7 @@ import { createEmailAdapter, isRealEmailConfigured } from '../integrations/facto
 import { mockStripe } from '../integrations/mock/mock-stripe';
 import { accountTimezone } from './account.service';
 import { writeAudit, type AuditActor } from './audit.service';
+import { matchTenantName } from './name-match';
 import { notifyAccount } from './push.service';
 
 export function toApiRentPayment(p: DbRentPayment): RentPayment {
@@ -495,6 +496,8 @@ export interface RentMatchCandidate {
   rentPaymentId: string;
   leaseId: string;
   tenantName: string;
+  /** All lease tenants, primary first — the payer may be a co-tenant. */
+  tenantNames: string[];
   propertyId: string;
   propertyLabel: string;
   unitId: string;
@@ -532,6 +535,7 @@ export async function findRentMatchCandidates(
       rentPaymentId: p.id,
       leaseId: p.leaseId,
       tenantName: p.lease.leaseTenants[0]?.tenant.fullName ?? 'Unknown tenant',
+      tenantNames: p.lease.leaseTenants.map((lt) => lt.tenant.fullName),
       propertyId: property.id,
       propertyLabel: property.nickname ?? property.addressLine1,
       unitId: p.lease.unitId,
@@ -545,14 +549,27 @@ export async function findRentMatchCandidates(
   });
 }
 
+export interface RentMatchResult extends RentMatchCandidate {
+  /** Tenant the deposit descriptor names, when it does (name-match v2). */
+  matchedName: string | null;
+  /** True when the name signal broke an amount/date tie between 2+ candidates. */
+  disambiguatedByName: boolean;
+}
+
 /**
  * Pick the expected rent a bank deposit looks like: exactly the charge's
  * *remaining* balance (full total for untouched charges, the shortfall for
  * partials — so the second roommate check matches, and a completed charge
- * never does), dated within RENT_MATCH_WINDOW_DAYS of the due date. Two
- * same-remaining candidates in window is ambiguous — suppress the suggestion
- * rather than guess. Below-remaining partials are deliberately not suggested
- * here (that's the Rent-page nudge's broader tier, plan §C5).
+ * never does), dated within RENT_MATCH_WINDOW_DAYS of the due date. Below-
+ * remaining partials are deliberately not suggested here (that's the Rent-page
+ * nudge's broader tier, plan §C5).
+ *
+ * Tenant-name matching (heuristics v2) is boost + disambiguate only — the
+ * descriptor naming a tenant can raise confidence on the single exact-amount
+ * match, or settle a tie between same-remaining candidates when exactly one
+ * candidate's lease tenants are named; it never creates name-only suggestions
+ * (right name + wrong amount stays null). A tie where zero or 2+ candidates
+ * name-match stays suppressed rather than guessed at.
  *
  * Remaining is against totalDue = amountCents + lateFeeCents (WS7). Documented
  * consequence: once a fee is applied, a deposit for exactly the base rent no
@@ -561,10 +578,15 @@ export async function findRentMatchCandidates(
  * and it never wrong-links.
  */
 export function pickRentMatch(
-  txn: { amountCents: number; date: Date },
+  txn: {
+    amountCents: number;
+    date: Date;
+    description?: string | null;
+    vendor?: string | null;
+  },
   candidates: RentMatchCandidate[],
-): RentMatchCandidate | null {
-  const matches = candidates.filter(
+): RentMatchResult | null {
+  const inWindow = candidates.filter(
     (c) =>
       c.amountCents + c.lateFeeCents - c.paidCents === txn.amountCents &&
       c.amountCents + c.lateFeeCents - c.paidCents > 0 &&
@@ -574,7 +596,22 @@ export function pickRentMatch(
       // 14-day tolerance, so this stays timezone-agnostic.
       Math.abs(calendarDaysBetween(c.dueDate, txn.date)) <= RENT_MATCH_WINDOW_DAYS,
   );
-  return matches.length === 1 ? (matches[0] ?? null) : null;
+  if (inWindow.length === 0) return null;
+  const descriptor = `${txn.description ?? ''} ${txn.vendor ?? ''}`;
+  if (inWindow.length === 1) {
+    const match = inWindow[0] as RentMatchCandidate;
+    return {
+      ...match,
+      matchedName: matchTenantName(match.tenantNames, descriptor),
+      disambiguatedByName: false,
+    };
+  }
+  const named = inWindow
+    .map((c) => ({ candidate: c, matchedName: matchTenantName(c.tenantNames, descriptor) }))
+    .filter((m) => m.matchedName !== null);
+  if (named.length !== 1) return null;
+  const { candidate, matchedName } = named[0] as { candidate: RentMatchCandidate; matchedName: string };
+  return { ...candidate, matchedName, disambiguatedByName: true };
 }
 
 export async function recordPayment(
@@ -955,8 +992,9 @@ export async function waiveLateFee(
  * date, no larger than the remaining balance, and attribution-compatible
  * (same unit; same property with no unit; or unattributed). Broader than the
  * review-queue chip: below-remaining partials surface here too, as a
- * question. A transaction fitting more than one charge is suppressed rather
- * than guessed at.
+ * question. A transaction fitting more than one charge is suppressed unless
+ * its descriptor names exactly one of the charges' lease tenants
+ * (name-match v2 disambiguation).
  */
 export async function findUnlinkedRentDeposits(
   accountId: string,
@@ -1019,8 +1057,22 @@ export async function findUnlinkedRentDeposits(
       if (txn.propertyId) return txn.propertyId === c.lease.unit.propertyId;
       return true; // unattributed — allowed only if it fits exactly one charge
     });
-    if (fits.length !== 1) continue;
-    const charge = fits[0] as (typeof open)[number];
+    // Ambiguity fallback (heuristics v2): when the deposit fits several
+    // charges, let the descriptor settle it — but only if it names exactly
+    // one charge's lease tenants (shared surnames keep both, still suppressed).
+    let resolved = fits;
+    if (fits.length > 1) {
+      const descriptor = `${txn.description} ${txn.vendor ?? ''}`;
+      resolved = fits.filter(
+        (c) =>
+          matchTenantName(
+            c.lease.leaseTenants.map((lt) => lt.tenant.fullName),
+            descriptor,
+          ) !== null,
+      );
+    }
+    if (resolved.length !== 1) continue;
+    const charge = resolved[0] as (typeof open)[number];
     const property = charge.lease.unit.property;
     items.push({
       transactionId: txn.id,

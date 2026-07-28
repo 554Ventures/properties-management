@@ -798,8 +798,15 @@ export async function getReviewQueue(
 }
 
 // Heuristic confidence shown on the rent-match chip; a single exact-amount,
-// in-window candidate is a strong but not certain signal.
-const RENT_MATCH_CONFIDENCE = 0.9;
+// in-window candidate is a strong but not certain signal. The descriptor
+// naming a lease tenant strengthens it; a name that broke an amount/date tie
+// is weaker than an uncontested exact match. All three sit at or above the
+// BULK_CONFIRM_MIN_CONFIDENCE=0.7 gate, but rent matches are excluded from
+// bulk confirm as a class (linking is always an explicit per-item action), so
+// a disambiguated match can never be mass-applied.
+const RENT_MATCH_CONFIDENCE = 0.9; // exact amount + window (unchanged baseline)
+const RENT_MATCH_NAME_CONFIDENCE = 0.95; // …and descriptor names a lease tenant
+const RENT_MATCH_DISAMBIGUATED_CONFIDENCE = 0.85; // name broke an amount/date tie
 
 /**
  * Computed fresh on every queue load (never stored) so a payment recorded by
@@ -837,7 +844,10 @@ async function computeRentMatches(
     to: addDays(new Date(Math.max(...times)), RENT_MATCH_WINDOW_DAYS),
   });
   for (const r of incomeRows) {
-    const match = pickRentMatch({ amountCents: r.amountCents, date: r.date }, candidates);
+    const match = pickRentMatch(
+      { amountCents: r.amountCents, date: r.date, description: r.description, vendor: r.vendor },
+      candidates,
+    );
     if (!match) continue;
     matches.set(r.id, {
       rentPaymentId: match.rentPaymentId,
@@ -851,7 +861,12 @@ async function computeRentMatches(
       dueDate: iso(match.dueDate),
       amountCents: match.amountCents,
       paidCents: match.paidCents,
-      confidence: RENT_MATCH_CONFIDENCE,
+      confidence: match.disambiguatedByName
+        ? RENT_MATCH_DISAMBIGUATED_CONFIDENCE
+        : match.matchedName
+          ? RENT_MATCH_NAME_CONFIDENCE
+          : RENT_MATCH_CONFIDENCE,
+      matchedName: match.matchedName,
     });
   }
   return matches;
