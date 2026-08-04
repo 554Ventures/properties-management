@@ -91,10 +91,20 @@ export async function sendMessage(
   writeAccess: ChatWriteAccess,
 ): Promise<void> {
   const session = await getOwned(accountId, sessionId);
-  if (session.status === 'awaiting_user') {
-    throw new ConflictError('session is awaiting an answer to a question — POST /answer instead');
-  }
-  if (session.status === 'running') {
+  // Atomic claim (WHATS_NEXT §2): the conditional WHERE is the transition
+  // guard. Two concurrent sends can both read 'idle', but only one matches
+  // the idle→running update — the loser sees count 0 and 409s here, before
+  // the SSE hijack, so it still gets a normal JSON error response. The first
+  // message stamps the session title inside the same write.
+  const claimed = await prisma.chatSession.updateMany({
+    where: { id: session.id, status: 'idle' },
+    data: { status: 'running', ...(session.title ? {} : { title: text.slice(0, 80) }) },
+  });
+  if (claimed.count === 0) {
+    const fresh = await getOwned(accountId, sessionId);
+    if (fresh.status === 'awaiting_user') {
+      throw new ConflictError('session is awaiting an answer to a question — POST /answer instead');
+    }
     throw new ConflictError('a turn is already running on this session');
   }
 
@@ -123,6 +133,21 @@ export async function answerQuestion(
   }
   // Validate before hijacking so bad answers get a normal 4xx JSON response.
   const prepared = await prepareResume(session, answer);
+
+  // Atomic claim (WHATS_NEXT §2): awaiting_user→running consumes the paused
+  // state (context kept) in the same conditional write. Two concurrent
+  // answers can both pass the read guard above, but only one can consume the
+  // pause — the loser sees count 0 and 409s before the SSE hijack.
+  const claimed = await prisma.chatSession.updateMany({
+    where: { id: session.id, status: 'awaiting_user' },
+    data: {
+      status: 'running',
+      providerStateJson: prepared.context ? JSON.stringify({ context: prepared.context }) : null,
+    },
+  });
+  if (claimed.count === 0) {
+    throw new ConflictError('session has no pending question to answer');
+  }
 
   const deniedTools = deniedWriteTools(writeAccess.role, writeAccess.permissions);
   sseStart(reply);

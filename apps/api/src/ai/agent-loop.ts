@@ -323,24 +323,33 @@ export async function runUserTurn(opts: {
   const { accountId, session, text, emit } = opts;
   const state = parseProviderState(session.providerStateJson);
 
-  await prisma.chatMessage.create({
-    data: {
-      sessionId: session.id,
-      role: 'user',
-      blocksJson: JSON.stringify([{ type: 'text', text }]),
-    },
-  });
-  const history = await prisma.chatMessage.findMany({
-    where: { sessionId: session.id },
-    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-  });
-  const assistantMessage = await prisma.chatMessage.create({
-    data: { sessionId: session.id, role: 'assistant', blocksJson: '[]' },
-  });
-  await prisma.chatSession.update({
-    where: { id: session.id },
-    data: { status: 'running', ...(session.title ? {} : { title: text.slice(0, 80) }) },
-  });
+  // The caller (chat.service) has already claimed idle→running atomically —
+  // status is never written here. If setup fails before `guarded` takes over
+  // error handling, release the claim so the session isn't stuck 'running'
+  // with no loop left to finish it.
+  let history: DbChatMessage[];
+  let assistantMessage: DbChatMessage;
+  try {
+    await prisma.chatMessage.create({
+      data: {
+        sessionId: session.id,
+        role: 'user',
+        blocksJson: JSON.stringify([{ type: 'text', text }]),
+      },
+    });
+    history = await prisma.chatMessage.findMany({
+      where: { sessionId: session.id },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+    assistantMessage = await prisma.chatMessage.create({
+      data: { sessionId: session.id, role: 'assistant', blocksJson: '[]' },
+    });
+  } catch (err) {
+    await prisma.chatSession
+      .updateMany({ where: { id: session.id, status: 'running' }, data: { status: 'idle' } })
+      .catch(() => undefined);
+    throw err;
+  }
 
   emit('message_start', { messageId: assistantMessage.id });
   await guarded({
@@ -431,14 +440,8 @@ export async function resumeTurn(opts: {
   deniedTools?: ReadonlySet<string>;
 }): Promise<void> {
   const { accountId, session, prepared, emit } = opts;
-  const state = parseProviderState(session.providerStateJson);
-  await prisma.chatSession.update({
-    where: { id: session.id },
-    data: {
-      status: 'running',
-      providerStateJson: state.context ? JSON.stringify({ context: state.context }) : null,
-    },
-  });
+  // Status + provider state were already transitioned by the caller's atomic
+  // awaiting_user→running claim (chat.service) — nothing to write here.
   emit('message_start', { messageId: prepared.assistantMessageId });
   await guarded({
     accountId,

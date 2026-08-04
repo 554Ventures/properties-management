@@ -255,6 +255,84 @@ describe('409 guards', () => {
     expect(res.json()).toMatchObject({ error: { code: 'conflict' } });
   });
 
+  it('rejects a new message while a turn is running (idle→running claim already taken)', async () => {
+    const sessionId = await createSession(app);
+    await prisma.chatSession.update({ where: { id: sessionId }, data: { status: 'running' } });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/chat/sessions/${sessionId}/messages`,
+      payload: { text: 'while running' },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ error: { code: 'conflict' } });
+    // No turn entered the loop: nothing was persisted for the rejected send.
+    expect(
+      await prisma.chatMessage.count({ where: { sessionId } }),
+    ).toBe(0);
+  });
+
+  it('two concurrent sends: exactly one enters the loop, the other 409s (atomic claim)', async () => {
+    const sessionId = await createSession(app);
+    const post = () =>
+      app.inject({
+        method: 'POST',
+        url: `/api/v1/chat/sessions/${sessionId}/messages`,
+        payload: { text: 'How is my cash flow this month?' },
+      });
+
+    // Before the conditional-updateMany claim, both requests read 'idle',
+    // both passed the guard, and both ran a full model turn (duplicated
+    // messages, interleaved block indices). Now the claim admits exactly one.
+    const [a, b] = await Promise.all([post(), post()]);
+    expect([a.statusCode, b.statusCode].sort()).toEqual([200, 409]);
+    const winner = a.statusCode === 200 ? a : b;
+    const frames = parseSse(winner.body);
+    expect(frames.map((f) => f.event)).toContain('message_complete');
+
+    // One user message + one assistant message — not two of each.
+    const messages = ChatMessageListResponseSchema.parse(
+      (
+        await app.inject({ method: 'GET', url: `/api/v1/chat/sessions/${sessionId}/messages` })
+      ).json(),
+    );
+    expect(messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+    expect(await getSessionStatus(app, sessionId)).toBe('idle');
+  });
+
+  it('two concurrent answers: exactly one consumes the pause, the other 409s', async () => {
+    const sessionId = await createSession(app);
+    const frames = await sendMessage(app, sessionId, 'I need help with my taxes');
+    const question = AskUserQuestionBlockSchema.parse(
+      frames.find((f) => f.event === 'block_complete')!.data.block,
+    );
+    expect(await getSessionStatus(app, sessionId)).toBe('awaiting_user');
+
+    const answer = () =>
+      app.inject({
+        method: 'POST',
+        url: `/api/v1/chat/sessions/${sessionId}/answer`,
+        payload: { questionId: question.questionId, selectedOptionIds: ['current_ytd'] },
+      });
+    const [a, b] = await Promise.all([answer(), answer()]);
+    expect([a.statusCode, b.statusCode].sort()).toEqual([200, 409]);
+
+    // The single resumed turn appended each post-resume block exactly once —
+    // a double resume duplicated the whole tail of the assistant message.
+    const messages = ChatMessageListResponseSchema.parse(
+      (
+        await app.inject({ method: 'GET', url: `/api/v1/chat/sessions/${sessionId}/messages` })
+      ).json(),
+    );
+    expect(messages[1]!.blocks.map((bl) => bl.type)).toEqual([
+      'ask_user_question',
+      'text',
+      'data_table',
+      'action_card',
+    ]);
+    expect(await getSessionStatus(app, sessionId)).toBe('idle');
+  });
+
   it('rejects an answer that references the wrong question', async () => {
     const sessionId = await createSession(app);
     await sendMessage(app, sessionId, 'help with taxes');
