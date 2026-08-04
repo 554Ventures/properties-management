@@ -6,6 +6,7 @@ import type {
   AskUserQuestionBlock as AskUserQuestionBlockData,
 } from '@hearth/shared';
 import { fireEvent, render, screen } from '@testing-library/react';
+import axe from 'axe-core';
 import { describe, expect, it, vi } from 'vitest';
 import { AskUserQuestionBlock } from '../components/chat/blocks/AskUserQuestionBlock';
 
@@ -136,5 +137,44 @@ describe('AskUserQuestionBlock', () => {
     }
     expect(screen.getByRole('radio', { name: /^2025/ })).toHaveAttribute('aria-checked', 'true');
     expect(screen.getByLabelText('Other — add detail (optional)')).toBeDisabled();
+  });
+
+  it('renders the answered state from block.answeredOptionIds alone (post-reload, no client state)', () => {
+    const persisted: AskUserQuestionBlockData = { ...singleSelect, answeredOptionIds: ['y2025'] };
+    render(<AskUserQuestionBlock block={persisted} active={false} onSubmit={vi.fn()} />);
+
+    expect(screen.queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument();
+    expect(screen.getByText('Answered')).toBeInTheDocument();
+
+    const radios = screen.getAllByRole('radio');
+    for (const radio of radios) {
+      expect(radio).toHaveAttribute('aria-disabled', 'true');
+      expect(radio).toHaveAttribute('tabindex', '-1');
+    }
+    expect(screen.getByRole('radio', { name: /^2025/ })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByLabelText('Other — add detail (optional)')).toBeDisabled();
+  });
+
+  it('renders answeredFreeText from the persisted block', () => {
+    const persisted: AskUserQuestionBlockData = {
+      ...singleSelect,
+      answeredOptionIds: [],
+      answeredFreeText: '2023 — amended return',
+    };
+    render(<AskUserQuestionBlock block={persisted} active={false} onSubmit={vi.fn()} />);
+
+    expect(screen.getByLabelText('Other — add detail (optional)')).toHaveValue(
+      '2023 — amended return',
+    );
+  });
+
+  it('has no axe violations in the answered state', async () => {
+    const persisted: AskUserQuestionBlockData = { ...singleSelect, answeredOptionIds: ['y2025'] };
+    const { container } = render(
+      <AskUserQuestionBlock block={persisted} active={false} onSubmit={vi.fn()} />,
+    );
+
+    const results = await axe.run(container);
+    expect(results.violations).toEqual([]);
   });
 });

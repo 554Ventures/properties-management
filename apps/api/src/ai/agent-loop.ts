@@ -370,6 +370,11 @@ export interface PreparedResume {
   messages: MessageParam[];
   blocks: ContentBlock[];
   assistantMessageId: string;
+  // What was answered, for stamping the persisted question block once the
+  // claim wins (WHATS_NEXT §1 — the selection must survive a reload).
+  blockIndex: number;
+  answeredOptionIds: string[];
+  answeredFreeText: string | undefined;
 }
 
 /** Validate the answer against the paused state (throws 4xx before the SSE
@@ -427,6 +432,9 @@ export async function prepareResume(
     messages,
     blocks,
     assistantMessageId: paused.assistantMessageId,
+    blockIndex: paused.blockIndex,
+    answeredOptionIds: answer.selectedOptionIds,
+    answeredFreeText: answer.freeText ?? undefined,
   };
 }
 
@@ -441,7 +449,26 @@ export async function resumeTurn(opts: {
 }): Promise<void> {
   const { accountId, session, prepared, emit } = opts;
   // Status + provider state were already transitioned by the caller's atomic
-  // awaiting_user→running claim (chat.service) — nothing to write here.
+  // awaiting_user→running claim (chat.service) — nothing to write here. The
+  // answered selection IS stamped here, exactly once, because only the claim
+  // winner reaches this point: the persisted question block records what was
+  // chosen (WHATS_NEXT §1) so the transcript survives a reload during or
+  // after the resumed turn. finalize() later persists the same (mutated)
+  // blocks array, so the stamp also rides every subsequent write.
+  const question = prepared.blocks[prepared.blockIndex];
+  if (question?.type === 'ask_user_question') {
+    prepared.blocks[prepared.blockIndex] = {
+      ...question,
+      answeredOptionIds: prepared.answeredOptionIds,
+      ...(prepared.answeredFreeText !== undefined
+        ? { answeredFreeText: prepared.answeredFreeText }
+        : {}),
+    };
+    await prisma.chatMessage.update({
+      where: { id: prepared.assistantMessageId },
+      data: { blocksJson: JSON.stringify(prepared.blocks) },
+    });
+  }
   emit('message_start', { messageId: prepared.assistantMessageId });
   await guarded({
     accountId,

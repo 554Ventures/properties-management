@@ -86,6 +86,11 @@ export const AskUserQuestionBlockSchema = z.object({
   multiSelect: z.boolean(),
   options: z.array(AskUserQuestionOptionSchema).min(2).max(4),
   allowFreeText: z.literal(true),
+  // Stamped server-side when the /answer claim wins (docs/WHATS_NEXT.md §1):
+  // the persisted transcript then shows WHAT was chosen, not just the
+  // question, so the selection survives a reload. Absent = not yet answered.
+  answeredOptionIds: z.array(z.string()).optional(),
+  answeredFreeText: z.string().optional(),
 });
 
 export const ContentBlockSchema = z.discriminatedUnion('type', [

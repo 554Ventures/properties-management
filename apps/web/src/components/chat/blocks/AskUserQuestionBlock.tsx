@@ -2,7 +2,10 @@
 // cards — single-select as a role="radiogroup" with roving tabindex + arrow
 // keys, multiSelect as a checkbox group — plus the "Other" free-text input
 // (allowFreeText). After answering, the question stays in the transcript with
-// the chosen option(s) marked and everything disabled.
+// the chosen option(s) marked and everything disabled. The `answered` prop
+// covers the live session (state kept client-side right after submit); once
+// the server stamps `block.answeredOptionIds`/`answeredFreeText` on the
+// persisted block (e.g. after a reload), those fields are authoritative.
 import { useId, useRef, useState, type KeyboardEvent } from 'react';
 import type {
   AskUserQuestionAnswer,
@@ -15,7 +18,7 @@ import { IconCheck } from '../../ui/icons';
 
 export interface AskUserQuestionBlockProps {
   block: AskUserQuestionBlockData;
-  /** The submitted answer, once there is one — freezes the block. */
+  /** The submitted answer, once there is one (live session only) — freezes the block. */
   answered?: AskUserQuestionAnswer;
   /** True while the turn is paused waiting on this question. */
   active: boolean;
@@ -86,9 +89,13 @@ export function AskUserQuestionBlock({
   const [focusIndex, setFocusIndex] = useState(0);
   const optionRefs = useRef<Array<HTMLDivElement | null>>([]);
 
-  const done = Boolean(answered);
+  // The persisted block wins once the server has stamped it (survives a
+  // reload); otherwise fall back to the client-side mark from the live submit.
+  const persisted = block.answeredOptionIds !== undefined;
+  const done = persisted || Boolean(answered);
   const disabled = done || !active;
-  const checkedIds = answered ? answered.selectedOptionIds : selected;
+  const checkedIds = block.answeredOptionIds ?? answered?.selectedOptionIds ?? selected;
+  const answeredFreeText = persisted ? block.answeredFreeText : answered?.freeText;
   const canSubmit = selected.length > 0 || freeText.trim() !== '';
 
   const select = (optionId: string) => {
@@ -183,7 +190,7 @@ export function AskUserQuestionBlock({
           id={freeTextId}
           type="text"
           disabled={disabled}
-          value={done ? (answered?.freeText ?? '') : freeText}
+          value={done ? (answeredFreeText ?? '') : freeText}
           onChange={(event) => setFreeText(event.target.value)}
           className="rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-faint disabled:opacity-60"
         />

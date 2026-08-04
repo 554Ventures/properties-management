@@ -222,6 +222,11 @@ describe('mock script 2 — the full askUserQuestion round-trip', () => {
         'data_table',
         'action_card',
       ]);
+      // The persisted question block records the selection (WHATS_NEXT §1):
+      // a reload shows what was chosen, not just the question.
+      const answeredBlock = AskUserQuestionBlockSchema.parse(finalMessages[1]!.blocks[0]);
+      expect(answeredBlock.answeredOptionIds).toEqual(['current_ytd']);
+      expect(answeredBlock.answeredFreeText).toBeUndefined();
       expect(await getSessionStatus(app2, sessionId)).toBe('idle');
     } finally {
       await app2.close();
@@ -330,7 +335,38 @@ describe('409 guards', () => {
       'data_table',
       'action_card',
     ]);
+    // Only the winning answer stamped the selection.
+    const answered = AskUserQuestionBlockSchema.parse(messages[1]!.blocks[0]);
+    expect(answered.answeredOptionIds).toEqual(['current_ytd']);
     expect(await getSessionStatus(app, sessionId)).toBe('idle');
+  });
+
+  it('persists a free-text answer on the question block', async () => {
+    const sessionId = await createSession(app);
+    const frames = await sendMessage(app, sessionId, 'I need help with my taxes');
+    const question = AskUserQuestionBlockSchema.parse(
+      frames.find((f) => f.event === 'block_complete')!.data.block,
+    );
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/chat/sessions/${sessionId}/answer`,
+      payload: {
+        questionId: question.questionId,
+        selectedOptionIds: [],
+        freeText: 'the year I bought the duplex',
+      },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const messages = ChatMessageListResponseSchema.parse(
+      (
+        await app.inject({ method: 'GET', url: `/api/v1/chat/sessions/${sessionId}/messages` })
+      ).json(),
+    );
+    const answered = AskUserQuestionBlockSchema.parse(messages[1]!.blocks[0]);
+    expect(answered.answeredOptionIds).toEqual([]);
+    expect(answered.answeredFreeText).toBe('the year I bought the duplex');
   });
 
   it('rejects an answer that references the wrong question', async () => {
