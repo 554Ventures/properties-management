@@ -183,6 +183,58 @@ export function expectedChargeCents(
 }
 
 /**
+ * The leases that actually cover days of `period`, sorted by start date, under
+ * the day-attribution rule every rent surface shares: a lease's endDate is its
+ * inclusive last day (→ endExclusive = endDate + 1 day), EXCEPT when another
+ * lease starts exactly on that day (a renewal switchover) — then the
+ * switchover day belongs to the successor, so the outgoing lease ends
+ * exclusive *at* its endDate. Pass every billable (active/ended) lease on the
+ * unit; leases that don't touch `period` filter out harmlessly.
+ */
+export function coveringLeases<L extends { id: string; startDate: Date; endDate: Date }>(
+  leases: L[],
+  period: string,
+  tz: string,
+): Array<{ lease: L; endExclusive: Date; covered: number }> {
+  return leases
+    .map((l) => {
+      const endDay = startOfDayInTz(l.endDate, tz);
+      const abutsSuccessor = leases.some(
+        (m) => m.id !== l.id && startOfDayInTz(m.startDate, tz).getTime() === endDay.getTime(),
+      );
+      const endExclusive = abutsSuccessor ? endDay : addDays(endDay, 1);
+      return {
+        lease: l,
+        endExclusive,
+        covered: coveredDaysInPeriod(period, l.startDate, endExclusive, tz),
+      };
+    })
+    .filter((c) => c.covered > 0)
+    .sort((a, b) => a.lease.startDate.getTime() - b.lease.startDate.getTime());
+}
+
+/**
+ * The unit's expected charge for `period`: the SUM of each covering lease's
+ * prorated share, rounded ONCE on the blend. This is the single formula both
+ * materializeExpectedPayments and lease.service's reconcileUnitCharges apply,
+ * so a month materialized after a transition and a month adjusted by one
+ * converge on an identical figure.
+ */
+export function blendedChargeCents(
+  covering: Array<{ lease: { rentCents: number; startDate: Date }; endExclusive: Date }>,
+  period: string,
+  tz: string,
+): number {
+  return Math.round(
+    covering.reduce(
+      (sum, c) =>
+        sum + proratedRentShare(c.lease.rentCents, period, c.lease.startDate, c.endExclusive, tz),
+      0,
+    ),
+  );
+}
+
+/**
  * In-memory expected charge for a lease/period with no RentPayment row yet —
  * same derivation as rent.service's materializeExpectedPayments (prorated
  * charge, due date never before the lease starts) but NEVER persisted: the
@@ -303,44 +355,12 @@ export async function materializeExpectedPayments(
   for (const [unitId, unitLeases] of byUnit) {
     if (chargedUnits.has(unitId)) continue; // unit already has this month's charge
 
-    // Day attribution mirrors reconcileShortenedLeaseCharges: a lease's endDate
-    // is its inclusive last day (→ endExclusive = endDate + 1 day), EXCEPT when
-    // a successor lease starts exactly on that day (a renewal switchover). Then
-    // the switchover day belongs to the successor, so the outgoing lease ends
-    // exclusive *at* its endDate — exactly the boundary reconcile uses when it
-    // prorates the outgoing lease up to (not including) the successor's start.
-    const covering = unitLeases
-      .map((l) => {
-        const endDay = startOfDayInTz(l.endDate, timezone);
-        const abutsSuccessor = unitLeases.some(
-          (m) =>
-            m.id !== l.id && startOfDayInTz(m.startDate, timezone).getTime() === endDay.getTime(),
-        );
-        const endExclusive = abutsSuccessor ? endDay : addDays(endDay, 1);
-        return {
-          lease: l,
-          endExclusive,
-          covered: coveredDaysInPeriod(period, l.startDate, endExclusive, timezone),
-        };
-      })
-      .filter((c) => c.covered > 0)
-      .sort((a, b) => a.lease.startDate.getTime() - b.lease.startDate.getTime());
+    const covering = coveringLeases(unitLeases, period, timezone);
     if (covering.length === 0) continue;
 
-    // When two (or more) sequential leases cover parts of this month, the charge
-    // is the SUM of each lease's prorated share, rounded ONCE on the sum — the
-    // exact figure reconcileShortenedLeaseCharges produces for a month already
-    // materialized before the renewal (unrounded shares, one Math.round on the
-    // blend), so the materialize-after-renewal path and the reconcile path
-    // converge on an identical row.
-    const shareSum = covering.reduce(
-      (sum, c) =>
-        sum + proratedRentShare(c.lease.rentCents, period, c.lease.startDate, c.endExclusive, timezone),
-      0,
-    );
     // The row belongs to the earliest lease that actually covers days — the same
-    // row reconcile keeps (it adjusts the outgoing lease's existing charge and
-    // lets the unit-level guard suppress the successor's row). leaseId + dueDate
+    // row reconcileUnitCharges adjusts on a later transition (the unit-level
+    // guard above keeps successors from adding their own row). leaseId + dueDate
     // come from that lease; only the amount blends. A lease starting mid-month
     // can't be due before it begins: the due date is local midnight of
     // (1st + dueDay − 1), clamped up to the lease's local start day (WS4).
@@ -351,7 +371,7 @@ export async function materializeExpectedPayments(
       leaseId: owner.id,
       period,
       dueDate: nominalDue < startDay ? startDay : nominalDue,
-      amountCents: Math.round(shareSum),
+      amountCents: blendedChargeCents(covering, period, timezone),
       status: 'due',
     });
   }

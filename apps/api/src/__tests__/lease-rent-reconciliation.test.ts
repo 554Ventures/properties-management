@@ -58,7 +58,14 @@ beforeAll(async () => {
     city: 'X',
     state: 'CA',
     zip: '00000',
-    units: [{ label: 'R1' }, { label: 'R2' }, { label: 'R3' }, { label: 'R4' }],
+    units: [
+      { label: 'R1' },
+      { label: 'R2' },
+      { label: 'R3' },
+      { label: 'R4' },
+      { label: 'R5' },
+      { label: 'R6' },
+    ],
   });
   propertyId = property.id;
   unitIds = (
@@ -181,6 +188,102 @@ describe('mid-month termination', () => {
     expect(JSON.parse(voided!.detailJson!)).toMatchObject({
       priorAmountCents: rent,
       reason: 'lease_terminated',
+    });
+  });
+});
+
+describe('second renewal inside the same month', () => {
+  it('re-blends the charge still owned by the original lease (O→S→T)', async () => {
+    const unitId = unitIds[4]!;
+    const rentO = 100_000;
+    const rentS = 110_000;
+    const rentT = 120_000;
+    const oId = await makeLease(unitId, rentO, addDays(periodStart, -365), addDays(periodStart, 180));
+    await rentService.materializeExpectedPayments(accountId, period);
+
+    // First renewal from the 10th: the month's row (owned by O) blends O+S.
+    const switch1 = addDays(periodStart, 9);
+    const sLease = await leaseService.createRenewal(accountId, oId, {
+      rentCents: rentS,
+      dueDay: 1,
+      startDate: iso(switch1),
+      endDate: iso(addDays(switch1, 365)),
+    });
+    leaseIds.push(sLease.id);
+
+    // Second renewal from the 20th. The row belongs to O, not S — a reconcile
+    // scoped to the renewed lease finds nothing and keeps the O+S blend
+    // (over-billing S through month end, never billing T).
+    const switch2 = addDays(periodStart, 19);
+    const tLease = await leaseService.createRenewal(accountId, sLease.id, {
+      rentCents: rentT,
+      dueDay: 1,
+      startDate: iso(switch2),
+      endDate: iso(addDays(switch2, 365)),
+    });
+    leaseIds.push(tLease.id);
+    await rentService.materializeExpectedPayments(accountId, period);
+
+    const rows = await prisma.rentPayment.findMany({ where: { period, lease: { unitId } } });
+    expect(rows).toHaveLength(1);
+    // O days 1–9, S days 10–19, T days 20–end; rounded once on the blended sum.
+    const blended = Math.round(
+      (rentO * 9) / daysInMonth +
+        (rentS * 10) / daysInMonth +
+        (rentT * (daysInMonth - 19)) / daysInMonth,
+    );
+    expect(rows[0]!.leaseId).toBe(oId); // ownership never moves off the earliest lease
+    expect(rows[0]!.amountCents).toBe(blended);
+
+    const audits = await prisma.auditLog.findMany({
+      where: { accountId, action: 'rent_payment.adjusted', entityId: rows[0]!.id },
+    });
+    expect(
+      audits.some((a) => {
+        const detail = JSON.parse(a.detailJson!);
+        return detail.amountCents === blended && detail.reason === 'lease_renewal_switchover';
+      }),
+    ).toBe(true);
+  });
+});
+
+describe('re-lease after a mid-month vacancy', () => {
+  it('re-blends a materialized month when a new lease starts inside it', async () => {
+    const unitId = unitIds[5]!;
+    const rentOld = 90_000;
+    const rentNew = 96_000;
+    // The outgoing lease ends on the 10th of this month; its charge
+    // materializes prorated to days 1–10.
+    const oldId = await makeLease(unitId, rentOld, addDays(periodStart, -365), addDays(periodStart, 9));
+    await rentService.materializeExpectedPayments(accountId, period);
+    const before = await prisma.rentPayment.findUniqueOrThrow({
+      where: { leaseId_period: { leaseId: oldId, period } },
+    });
+    expect(before.amountCents).toBe(Math.round((rentOld * 10) / daysInMonth));
+
+    // Re-lease from the 20th. The unit-level materialization guard suppresses a
+    // second row for the month, so creating the lease must re-blend the
+    // existing charge — otherwise the new lease's share is never billed.
+    const newStart = addDays(periodStart, 19);
+    const newId = await makeLease(unitId, rentNew, newStart, addDays(newStart, 365));
+    await rentService.materializeExpectedPayments(accountId, period);
+
+    const rows = await prisma.rentPayment.findMany({ where: { period, lease: { unitId } } });
+    expect(rows).toHaveLength(1);
+    const blended = Math.round(
+      (rentOld * 10) / daysInMonth + (rentNew * (daysInMonth - 19)) / daysInMonth,
+    );
+    expect(rows[0]!.leaseId).toBe(oldId); // still the earliest lease's row
+    expect(rows[0]!.leaseId).not.toBe(newId);
+    expect(rows[0]!.amountCents).toBe(blended);
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { accountId, action: 'rent_payment.adjusted', entityId: rows[0]!.id },
+    });
+    expect(JSON.parse(audit!.detailJson!)).toMatchObject({
+      priorAmountCents: before.amountCents,
+      amountCents: blended,
+      reason: 'lease_created',
     });
   });
 });

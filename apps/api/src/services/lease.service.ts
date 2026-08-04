@@ -26,7 +26,7 @@ import { prisma } from '../lib/prisma';
 import { mockDocusign } from '../integrations/mock/mock-docusign';
 import { accountTimezone } from './account.service';
 import { writeAudit, type AuditActor } from './audit.service';
-import { coveredDaysInPeriod, deriveRentStatus, proratedRentShare } from './rent.service';
+import { blendedChargeCents, coveringLeases, deriveRentStatus } from './rent.service';
 import { toApiTenant, toTenantOnLease } from './tenant.service';
 
 export function toApiLease(l: DbLease): Lease {
@@ -183,20 +183,29 @@ export async function create(
     throw new BadRequestError('this unit already has a lease covering part of that date range');
   }
 
-  const row = await prisma.lease.create({
-    data: {
-      unitId: input.unitId,
-      rentCents: input.rentCents,
-      dueDay: input.dueDay,
-      // Optional per-lease late-fee override (WS7); omitted → null → account default.
-      ...(input.lateFeeCents !== undefined ? { lateFeeCents: input.lateFeeCents } : {}),
-      startDate: new Date(input.startDate),
-      endDate: new Date(input.endDate),
-      status: 'active',
-      leaseTenants: {
-        create: input.tenantIds.map((tenantId, i) => ({ tenantId, isPrimary: i === 0 })),
+  const { row, adjustments } = await prisma.$transaction(async (tx) => {
+    const created = await tx.lease.create({
+      data: {
+        unitId: input.unitId,
+        rentCents: input.rentCents,
+        dueDay: input.dueDay,
+        // Optional per-lease late-fee override (WS7); omitted → null → account default.
+        ...(input.lateFeeCents !== undefined ? { lateFeeCents: input.lateFeeCents } : {}),
+        startDate: new Date(input.startDate),
+        endDate: new Date(input.endDate),
+        status: 'active',
+        leaseTenants: {
+          create: input.tenantIds.map((tenantId, i) => ({ tenantId, isPrimary: i === 0 })),
+        },
       },
-    },
+    });
+    // A new lease can start inside a month whose charge already materialized
+    // under a prior lease (re-leasing after a mid-month termination). The
+    // unit-level materialization guard suppresses a second row for that month,
+    // so the existing charge must re-blend here or the new lease's share is
+    // never billed.
+    const changes = await reconcileUnitCharges(tx, input.unitId, tz);
+    return { row: created, adjustments: changes };
   });
   await writeAudit(accountId, {
     actor,
@@ -205,6 +214,7 @@ export async function create(
     entityId: row.id,
     detail: { unitId: row.unitId, rentCents: row.rentCents, tenantIds: input.tenantIds },
   });
+  await auditChargeAdjustments(accountId, actor, 'lease_created', adjustments);
   return toApiLease(row);
 }
 
@@ -246,30 +256,40 @@ interface ChargeAdjustment {
 }
 
 /**
- * Reconcile the open (due/failed) expected charges of a lease that was just
- * shortened to cover [lease.startDate, endExclusive): charges for months the
- * lease no longer touches are voided, and the cut month's charge re-prorates
- * to the lease's remaining days — plus, on a renewal switchover, the
- * successor lease's share of the rest of that month, rounded once on the
- * blended sum (the unit-level materialization guard then keeps the successor
- * from adding its own row for that month). Paid/processing rows are never
- * touched: money received or in flight is history, not a projection. Runs
- * inside the caller's transaction and returns what changed so the caller can
- * audit after commit.
+ * Recompute every open (due/failed) expected charge on a unit from the unit's
+ * CURRENT lease ranges — callers mutate the leases first, inside the same
+ * transaction. Scoped by UNIT, not by the lease being changed: a month's
+ * charge row belongs to the earliest lease that covered it when materialized,
+ * so a second transition inside the same month (O→S→T renewal, terminating a
+ * successor, re-leasing after a termination) must adjust a row owned by a
+ * *different* lease — a lease-scoped lookup finds nothing and silently keeps
+ * the stale amount. Each row re-blends with the exact covering/blend formula
+ * materializeExpectedPayments uses, so every path converges on one figure. A
+ * row whose owning lease no longer covers any day of its period is voided
+ * (when other leases still cover it, lazy materialization recreates it under
+ * the right owner). Paid/processing rows are never touched: money received or
+ * in flight is history, not a projection. Returns what changed so the caller
+ * can audit after commit.
  */
-async function reconcileShortenedLeaseCharges(
+async function reconcileUnitCharges(
   tx: Prisma.TransactionClient,
-  lease: { id: string; rentCents: number; startDate: Date },
-  endExclusive: Date,
+  unitId: string,
   tz: string,
-  successor?: { rentCents: number; startDate: Date; endDate: Date },
 ): Promise<ChargeAdjustment[]> {
   const open = await tx.rentPayment.findMany({
-    where: { leaseId: lease.id, status: { in: ['due', 'failed'] } },
+    where: { status: { in: ['due', 'failed'] }, lease: { unitId } },
+  });
+  if (open.length === 0) return [];
+  // 'pending_signature' (an unsigned draft) never bills, matching the
+  // materializer's lease filter.
+  const leases = await tx.lease.findMany({
+    where: { unitId, status: { in: ['active', 'ended'] } },
+    select: { id: true, rentCents: true, startDate: true, endDate: true },
   });
   const adjustments: ChargeAdjustment[] = [];
   for (const row of open) {
-    if (coveredDaysInPeriod(row.period, lease.startDate, endExclusive, tz) === 0) {
+    const covering = coveringLeases(leases, row.period, tz);
+    if (!covering.some((c) => c.lease.id === row.leaseId)) {
       await tx.rentPayment.delete({ where: { id: row.id } });
       adjustments.push({
         action: 'rent_payment.voided',
@@ -279,18 +299,7 @@ async function reconcileShortenedLeaseCharges(
       });
       continue;
     }
-    const blended = Math.round(
-      proratedRentShare(lease.rentCents, row.period, lease.startDate, endExclusive, tz) +
-        (successor
-          ? proratedRentShare(
-              successor.rentCents,
-              row.period,
-              successor.startDate,
-              addDays(startOfDayInTz(successor.endDate, tz), 1),
-              tz,
-            )
-          : 0),
-    );
+    const blended = blendedChargeCents(covering, row.period, tz);
     if (blended !== row.amountCents) {
       await tx.rentPayment.update({ where: { id: row.id }, data: { amountCents: blended } });
       adjustments.push({
@@ -308,7 +317,7 @@ async function reconcileShortenedLeaseCharges(
 async function auditChargeAdjustments(
   accountId: string,
   actor: AuditActor,
-  reason: 'lease_terminated' | 'lease_renewal_switchover',
+  reason: 'lease_terminated' | 'lease_renewal_switchover' | 'lease_created',
   adjustments: ChargeAdjustment[],
 ): Promise<void> {
   for (const a of adjustments) {
@@ -349,12 +358,7 @@ export async function terminate(
       where: { id },
       data: { status: 'ended', endDate },
     });
-    const changes = await reconcileShortenedLeaseCharges(
-      tx,
-      existing,
-      addDays(startOfDayInTz(endDate, tz), 1),
-      tz,
-    );
+    const changes = await reconcileUnitCharges(tx, existing.unitId, tz);
     return { row: updated, adjustments: changes };
   });
   await writeAudit(accountId, {
@@ -506,12 +510,10 @@ export async function createRenewal(
       where: { id: leaseId },
       data: { status: 'ended', endDate: startDate },
     });
-    // The old lease now covers only the days before the switchover.
-    const changes = await reconcileShortenedLeaseCharges(tx, source, startDate, tz, {
-      rentCents: newLease.rentCents,
-      startDate: newLease.startDate,
-      endDate: newLease.endDate,
-    });
+    // The old lease now covers only the days before the switchover. Unit-wide
+    // recompute (not source-scoped): if an earlier same-month transition
+    // already blended this month, the row is owned by that earlier lease.
+    const changes = await reconcileUnitCharges(tx, source.unitId, tz);
     return { created: newLease, adjustments: changes };
   });
 
