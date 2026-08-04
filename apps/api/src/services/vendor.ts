@@ -1,9 +1,34 @@
 // Vendor-string normalization, shared by contractor matching and the
 // vendor→category memory (TRUSTWORTHY_TRANSACTIONS_PLAN.md §A3).
 
+import { prisma } from '../lib/prisma';
+
 /** Match key for contractor ↔ transaction-vendor joins (ARCHITECTURE §4). */
 export function vendorKey(name: string): string {
   return name.trim().toLowerCase();
+}
+
+/**
+ * The contractor a vendor string links to: exactly one ACTIVE contractor whose
+ * name shares the vendorKey — zero or several matches link nothing (ambiguity
+ * suppresses, mirroring rent matching). Every write path that sets `vendor`
+ * stamps the result on `Transaction.contractorId`; contractor stats then
+ * derive from that FK, never by re-matching strings at read time — so a
+ * contractor rename or an unrelated vendor edit can't silently rewrite
+ * already-linked history (ARCHITECTURE §4).
+ */
+export async function matchContractorId(
+  accountId: string,
+  vendor: string | null | undefined,
+): Promise<string | null> {
+  if (!vendor) return null;
+  const key = vendorKey(vendor);
+  const contractors = await prisma.contractor.findMany({
+    where: { accountId, archivedAt: null },
+    select: { id: true, name: true },
+  });
+  const matches = contractors.filter((c) => vendorKey(c.name) === key);
+  return matches.length === 1 ? matches[0]!.id : null;
 }
 
 /**

@@ -34,9 +34,12 @@ export function toApiContractor(c: DbContractor): Contractor {
 
 /**
  * Derivation rule (ARCHITECTURE §4, binding): jobsCount/avgCostCents/lastUsedAt
- * derive from confirmed expense transactions whose vendor matches the
- * contractor name case/whitespace-insensitively; no history → jobsCount 0 with
- * avgCostCents/lastUsedAt null. avgCostCents = round(total/count).
+ * derive from confirmed, ordinary (classification-null) expense transactions
+ * linked via Transaction.contractorId; no history → jobsCount 0 with
+ * avgCostCents/lastUsedAt null. avgCostCents = round(total/count). The link
+ * itself is stamped at write time by vendor-name match (services/vendor.ts
+ * matchContractorId) and by adoptMatchingTransactions below — reads never
+ * re-match strings, so a rename can't orphan history.
  */
 export async function list(accountId: string): Promise<ContractorListRow[]> {
   const contractors = await prisma.contractor.findMany({
@@ -45,26 +48,21 @@ export async function list(accountId: string): Promise<ContractorListRow[]> {
   });
 
   const groups = await prisma.transaction.groupBy({
-    by: ['vendor'],
-    where: { accountId, type: 'expense', status: 'confirmed', classification: null, vendor: { not: null } },
+    by: ['contractorId'],
+    where: { accountId, type: 'expense', status: 'confirmed', classification: null, contractorId: { not: null } },
     _count: true,
     _sum: { amountCents: true },
     _max: { date: true },
   });
-  // Fold casing/whitespace variants of the same vendor into one bucket.
-  const statsByVendor = new Map<string, { count: number; totalCents: number; lastDate: Date }>();
-  for (const g of groups) {
-    const key = vendorKey(g.vendor as string);
-    const existing = statsByVendor.get(key);
-    const count = (existing?.count ?? 0) + g._count;
-    const totalCents = (existing?.totalCents ?? 0) + (g._sum.amountCents ?? 0);
-    const gMax = g._max.date as Date;
-    const lastDate = existing && existing.lastDate > gMax ? existing.lastDate : gMax;
-    statsByVendor.set(key, { count, totalCents, lastDate });
-  }
+  const statsByContractor = new Map(
+    groups.map((g) => [
+      g.contractorId as string,
+      { count: g._count, totalCents: g._sum.amountCents ?? 0, lastDate: g._max.date as Date },
+    ]),
+  );
 
   return contractors.map((c) => {
-    const stats = statsByVendor.get(vendorKey(c.name));
+    const stats = statsByContractor.get(c.id);
     return {
       id: c.id,
       name: c.name,
@@ -88,10 +86,10 @@ async function getOwned(accountId: string, id: string): Promise<DbContractor> {
 }
 
 /**
- * Every active contractor with its matched jobs, newest first — the same
- * vendor-name match as list()/detail() (ARCHITECTURE §4), factored out so the
- * insight rules can reason about individual jobs (latest vs. prior average)
- * without re-deriving the match. One transaction scan for the whole account.
+ * Every active contractor with its linked jobs, newest first — the same
+ * contractorId derivation as list()/detail() (ARCHITECTURE §4), factored out
+ * so the insight rules can reason about individual jobs (latest vs. prior
+ * average) without re-deriving the set. One transaction scan for the account.
  */
 export async function activeContractorsWithJobs(
   accountId: string,
@@ -102,20 +100,19 @@ export async function activeContractorsWithJobs(
   });
   if (contractors.length === 0) return [];
   const candidates = await prisma.transaction.findMany({
-    where: { accountId, type: 'expense', status: 'confirmed', classification: null, vendor: { not: null } },
-    select: { vendor: true, date: true, amountCents: true, description: true },
+    where: { accountId, type: 'expense', status: 'confirmed', classification: null, contractorId: { not: null } },
+    select: { contractorId: true, date: true, amountCents: true, description: true },
     orderBy: { date: 'desc' },
   });
-  const byVendor = new Map<string, Array<{ date: Date; amountCents: number; description: string }>>();
+  const byContractor = new Map<string, Array<{ date: Date; amountCents: number; description: string }>>();
   for (const t of candidates) {
-    const key = vendorKey(t.vendor as string);
-    const list = byVendor.get(key) ?? [];
+    const list = byContractor.get(t.contractorId as string) ?? [];
     list.push({ date: t.date, amountCents: t.amountCents, description: t.description });
-    byVendor.set(key, list);
+    byContractor.set(t.contractorId as string, list);
   }
   return contractors.map((contractor) => ({
     contractor,
-    jobs: byVendor.get(vendorKey(contractor.name)) ?? [],
+    jobs: byContractor.get(contractor.id) ?? [],
   }));
 }
 
@@ -136,20 +133,18 @@ function toJobRow(t: JobCandidate): ContractorJobRow {
 
 /**
  * Detail view: the contractor plus its derived job history — the same
- * vendor-name match as list() (ARCHITECTURE §4), so stats always agree with
- * the list row. Archived contractors stay viewable here (this is where a
+ * contractorId derivation as list() (ARCHITECTURE §4), so stats always agree
+ * with the list row. Archived contractors stay viewable here (this is where a
  * restore surface would live). Read-only, no audit.
  */
 export async function detail(accountId: string, id: string): Promise<ContractorDetailResponse> {
   const contractor = await getOwned(accountId, id);
-  const key = vendorKey(contractor.name);
 
-  const candidates = await prisma.transaction.findMany({
-    where: { accountId, type: 'expense', status: 'confirmed', classification: null, vendor: { not: null } },
+  const matched = await prisma.transaction.findMany({
+    where: { accountId, contractorId: id, type: 'expense', status: 'confirmed', classification: null },
     include: { property: { select: { nickname: true, addressLine1: true } } },
     orderBy: { date: 'desc' },
   });
-  const matched = candidates.filter((t) => vendorKey(t.vendor as string) === key);
 
   const totalCents = matched.reduce((sum, t) => sum + t.amountCents, 0);
   return {
@@ -162,30 +157,29 @@ export async function detail(accountId: string, id: string): Promise<ContractorD
 }
 
 /**
- * Confirmed expense transactions for other contractors/dates that could be
- * the same job re-logged: same vendor-name match as list()/detail(), dated
- * within `windowDays` of `date`. Mirrors the review queue's rent-match
- * heuristic — computed at request time, never stored (ARCHITECTURE §4).
+ * Confirmed expense transactions already linked to this contractor that could
+ * be the same job re-logged: dated within `windowDays` of `date`. Mirrors the
+ * review queue's rent-match heuristic — computed at request time, never
+ * stored (ARCHITECTURE §4).
  */
 async function findDuplicateCandidates(
   accountId: string,
-  contractorName: string,
+  contractorId: string,
   date: Date,
   windowDays = 3,
 ): Promise<ContractorJobRow[]> {
-  const key = vendorKey(contractorName);
   const candidates = await prisma.transaction.findMany({
     where: {
       accountId,
+      contractorId,
       type: 'expense',
       status: 'confirmed',
-      vendor: { not: null },
       date: { gte: addDays(date, -windowDays), lte: addDays(date, windowDays) },
     },
     include: { property: { select: { nickname: true, addressLine1: true } } },
     orderBy: { date: 'desc' },
   });
-  return candidates.filter((t) => vendorKey(t.vendor as string) === key).map(toJobRow);
+  return candidates.map(toJobRow);
 }
 
 /**
@@ -204,7 +198,7 @@ export async function logJob(
   const contractor = await getOwned(accountId, contractorId);
 
   if (!input.confirmDuplicate) {
-    const duplicates = await findDuplicateCandidates(accountId, contractor.name, new Date(input.date));
+    const duplicates = await findDuplicateCandidates(accountId, contractor.id, new Date(input.date));
     if (duplicates.length > 0) {
       return { status: 'possible_duplicate', duplicates };
     }
@@ -227,7 +221,9 @@ export async function logJob(
       propertyId: input.propertyId,
       categoryId: repairsCategory?.id,
     },
-    { source: 'manual', status: 'confirmed', actor },
+    // Explicit link: the caller chose this contractor, so no vendor-name
+    // round-trip (which would null out on an ambiguous directory name).
+    { source: 'manual', status: 'confirmed', actor, contractorId: contractor.id },
   );
 
   const property = created.propertyId
@@ -249,6 +245,39 @@ export async function logJob(
   };
 }
 
+/**
+ * Adopt every not-yet-linked transaction whose vendor matches this
+ * contractor's name (same vendorKey rule as write-time matching) — run when a
+ * contractor is created, renamed, or restored, so directory changes pick up
+ * history the same way it always has. Two guards: rows already linked (to
+ * anyone) are never stolen, and if several ACTIVE contractors share the name
+ * key nothing links (ambiguity suppresses, matching matchContractorId). Also
+ * used by the seed after the demo ledger exists.
+ */
+export async function adoptMatchingTransactions(
+  accountId: string,
+  contractorId: string,
+): Promise<void> {
+  const contractor = await prisma.contractor.findUniqueOrThrow({ where: { id: contractorId } });
+  const key = vendorKey(contractor.name);
+  const active = await prisma.contractor.findMany({
+    where: { accountId, archivedAt: null },
+    select: { name: true },
+  });
+  if (active.filter((c) => vendorKey(c.name) === key).length !== 1) return;
+  const unlinked = await prisma.transaction.findMany({
+    where: { accountId, contractorId: null, vendor: { not: null } },
+    select: { id: true, vendor: true },
+  });
+  const ids = unlinked.filter((t) => vendorKey(t.vendor as string) === key).map((t) => t.id);
+  if (ids.length > 0) {
+    await prisma.transaction.updateMany({
+      where: { id: { in: ids } },
+      data: { contractorId },
+    });
+  }
+}
+
 export async function create(
   accountId: string,
   input: CreateContractorInput,
@@ -266,6 +295,7 @@ export async function create(
       notes: input.notes ?? null,
     },
   });
+  await adoptMatchingTransactions(accountId, row.id);
   await writeAudit(accountId, {
     actor,
     action: 'create',
@@ -282,7 +312,7 @@ export async function update(
   input: UpdateContractorInput,
   actor: AuditActor = 'user',
 ): Promise<Contractor> {
-  await getOwned(accountId, id);
+  const prior = await getOwned(accountId, id);
   const row = await prisma.contractor.update({
     where: { id },
     data: {
@@ -295,6 +325,13 @@ export async function update(
       ...(input.notes !== undefined ? { notes: input.notes } : {}),
     },
   });
+  // A rename NEVER unlinks existing history (the jobs were done by this
+  // contractor; the name is a label — that's the point of the FK). It only
+  // adopts unlinked rows matching the NEW name, e.g. renaming the directory
+  // entry to match how the bank feed spells the vendor.
+  if (input.name !== undefined && vendorKey(input.name) !== vendorKey(prior.name)) {
+    await adoptMatchingTransactions(accountId, id);
+  }
   await writeAudit(accountId, {
     actor,
     action: 'update',
@@ -323,6 +360,9 @@ export async function restore(
 ): Promise<Contractor> {
   await getOwned(accountId, id);
   const row = await prisma.contractor.update({ where: { id }, data: { archivedAt: null } });
+  // Vendor rows written while this contractor was archived didn't match
+  // anything at write time — pick them up now that it's back in the directory.
+  await adoptMatchingTransactions(accountId, id);
   await writeAudit(accountId, { actor, action: 'restore', entityType: 'contractor', entityId: id });
   return toApiContractor(row);
 }

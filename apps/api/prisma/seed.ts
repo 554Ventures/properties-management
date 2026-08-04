@@ -427,6 +427,17 @@ async function main(): Promise<void> {
   if (!okaforLease) throw new Error('seed: Okafor lease missing');
   await createSeedDocument(SEED_DOCUMENTS.signedLease, 'lease', okaforLease.leaseId);
 
+  // ── contractor links: adopt vendor-matched rows now the whole ledger exists.
+  // Seed writes transactions with raw prisma creates (no write-time matching),
+  // so run the same adoption the directory uses in production — this is what
+  // links Summit Roofing's M−1 roof repair and GreenScape's grounds rows, and
+  // deliberately leaves "Apex Handyman" unlinked (no name match). Must run
+  // before insight generation (contractor_cost_spike derives from the links).
+  const seededContractors = await prisma.contractor.findMany({ where: { accountId: account.id } });
+  for (const c of seededContractors) {
+    await contractorService.adoptMatchingTransactions(account.id, c.id);
+  }
+
   // ── insights (via the real rules) + last month's monthly review
   const created = await insightService.generateInsights(account.id);
   await insightService.generateMonthlyReview(account.id, addMonthsToPeriod(period, -1));

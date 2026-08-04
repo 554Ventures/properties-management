@@ -62,7 +62,7 @@ import {
   materializeExpectedPayments,
   pickRentMatch,
 } from './rent.service';
-import { vendorMemoryKey } from './vendor';
+import { matchContractorId, vendorMemoryKey } from './vendor';
 
 /** Every producer of an API transaction reads the split lines with it, so
  *  `splits` is never guessed at (empty array = an unsplit row). */
@@ -396,7 +396,14 @@ function assertClassificationValid(
 export async function create(
   accountId: string,
   input: CreateTransactionInput,
-  opts: { source?: TransactionSource; status?: TransactionStatus; actor?: AuditActor } = {},
+  opts: {
+    source?: TransactionSource;
+    status?: TransactionStatus;
+    actor?: AuditActor;
+    // Explicit contractor link (contractor.service logJob) — skips the
+    // vendor-name match, which would null out on an ambiguous directory name.
+    contractorId?: string;
+  } = {},
 ): Promise<CreateTransactionResponse> {
   await assertAttributionOwned(accountId, input.propertyId, input.unitId);
   assertClassificationValid(input.classification, input.type);
@@ -424,6 +431,7 @@ export async function create(
       type: input.type,
       description: input.description,
       vendor: input.vendor ?? null,
+      contractorId: opts.contractorId ?? (await matchContractorId(accountId, input.vendor)),
       source: opts.source ?? 'manual',
       status: opts.status ?? 'confirmed',
       classification: input.classification ?? null,
@@ -513,6 +521,14 @@ export async function update(
     }
   }
   const splitPlan = await planSplits(accountId, prior, input);
+  // Editing the vendor re-derives the contractor link (vendor is the signal:
+  // moving the row to another contractor's name moves the job; a non-matching
+  // vendor unlinks). Untouched vendor → untouched link, so a contractor
+  // rename can't orphan history through unrelated edits.
+  const relink =
+    input.vendor !== undefined
+      ? { contractorId: await matchContractorId(accountId, input.vendor) }
+      : {};
   const row = await prisma.$transaction(async (tx) => {
     const updated = await tx.transaction.update({
       where: { id },
@@ -525,6 +541,7 @@ export async function update(
         ...(input.unitId !== undefined ? { unitId: input.unitId } : {}),
         ...(input.categoryId !== undefined ? { categoryId: input.categoryId } : {}),
         ...(input.vendor !== undefined ? { vendor: input.vendor } : {}),
+        ...relink,
         ...(input.receiptUrl !== undefined ? { receiptUrl: input.receiptUrl } : {}),
         ...(input.classification !== undefined ? { classification: input.classification } : {}),
         // Splits ARE the categorization: the parent's single category goes.
@@ -1389,6 +1406,7 @@ async function createBankTransaction(
         type: t.type,
         description: t.description,
         vendor: t.vendor,
+        contractorId: await matchContractorId(accountId, t.vendor),
         externalId: t.externalId,
         source: 'bank',
         status: 'pending_review',
@@ -1478,6 +1496,7 @@ async function applySyncBatch(
         type: t.type,
         description: t.description,
         vendor: t.vendor,
+        contractorId: await matchContractorId(accountId, t.vendor),
         aiSuggestedCategoryId: suggestion?.categoryId ?? null,
         aiConfidence: suggestion?.confidence ?? null,
       },

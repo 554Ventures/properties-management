@@ -1,7 +1,9 @@
 // Contractor directory: derived usage stats against the pinned seed constants
-// (jobsCount/avgCostCents/lastUsedAt from confirmed expense txns matched by
-// vendor name, ARCHITECTURE §4), vendor-match folding across casing/whitespace
-// variants, route CRUD with the shared schemas, and audit actor attribution.
+// (jobsCount/avgCostCents/lastUsedAt from confirmed expense txns linked via
+// Transaction.contractorId, ARCHITECTURE §4 — the link is stamped at write
+// time by case/whitespace-insensitive vendor-name match), link stability
+// across contractor renames and vendor edits, route CRUD with the shared
+// schemas, and audit actor attribution.
 // Everything created here is cleaned up so the seeded portfolio stays pristine.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
@@ -23,6 +25,7 @@ import { addDays, addMonthsToPeriod, currentPeriod, periodOf } from '../lib/date
 import { prisma } from '../lib/prisma';
 import { getDemoAccountId } from '../plugins/auth';
 import * as contractorService from '../services/contractor.service';
+import * as transactionService from '../services/transaction.service';
 
 let app: FastifyInstance;
 let accountId: string;
@@ -91,20 +94,16 @@ describe('contractorService.list — derived stats equal the pinned seed constan
     }
   });
 
-  it('matches vendors case/whitespace-insensitively (folding casing variants into one bucket)', async () => {
+  it('matches vendors case/whitespace-insensitively at link time (casing variants land on the same contractor)', async () => {
     // Same amount as Rivera's history so the pinned avg is unchanged; dated at
-    // the history anchor so no pinned MTD/trailing figure moves either.
-    const txn = await prisma.transaction.create({
-      data: {
-        accountId,
-        date: contractorHistoryAnchor(),
-        amountCents: 21000,
-        type: 'expense',
-        description: 'Casing-variant plumbing job',
-        vendor: '  rivera plumbing ',
-        source: 'manual',
-        status: 'confirmed',
-      },
+    // the history anchor so no pinned MTD/trailing figure moves either. Created
+    // through the service: that's where the vendor→contractor link is stamped.
+    const txn = await transactionService.create(accountId, {
+      date: contractorHistoryAnchor().toISOString(),
+      amountCents: 21000,
+      type: 'expense',
+      description: 'Casing-variant plumbing job',
+      vendor: '  rivera plumbing ',
     });
     createdTransactionIds.push(txn.id);
 
@@ -152,18 +151,13 @@ describe('GET /contractors/:id — derived job history agrees with the list stat
     expect(property).not.toBeNull();
     // Same amount/date as Rivera's history so no pinned figure moves; deleted
     // again below so later assertions see the pristine seed.
-    const txn = await prisma.transaction.create({
-      data: {
-        accountId,
-        propertyId: property!.id,
-        date: contractorHistoryAnchor(),
-        amountCents: 21000,
-        type: 'expense',
-        description: 'Property-scoped plumbing job',
-        vendor: 'Rivera Plumbing',
-        source: 'manual',
-        status: 'confirmed',
-      },
+    const txn = await transactionService.create(accountId, {
+      propertyId: property!.id,
+      date: contractorHistoryAnchor().toISOString(),
+      amountCents: 21000,
+      type: 'expense',
+      description: 'Property-scoped plumbing job',
+      vendor: 'Rivera Plumbing',
     });
     createdTransactionIds.push(txn.id);
 
@@ -422,6 +416,95 @@ describe('POST /contractors/:id/jobs — manually log a job (creates a real conf
     });
     expect(blankDescription.statusCode).toBe(400);
     expect(blankDescription.json().error.code).toBe('validation_error');
+  });
+});
+
+describe('contractor links are FK-stable — renames keep history, vendor edits move it', () => {
+  it('renaming a contractor keeps its job history (the old string match lost it)', async () => {
+    const contractor = await contractorService.create(accountId, {
+      name: 'Rename Roofing',
+      trade: 'Roofing',
+    });
+    createdContractorIds.push(contractor.id);
+    const txn = await transactionService.create(accountId, {
+      date: contractorHistoryAnchor().toISOString(),
+      amountCents: 50000,
+      type: 'expense',
+      description: 'Roof patch before the rename',
+      vendor: 'Rename Roofing',
+    });
+    createdTransactionIds.push(txn.id);
+    expect((await contractorService.detail(accountId, contractor.id)).jobsCount).toBe(1);
+
+    await contractorService.update(accountId, contractor.id, { name: 'Rename Roofing LLC' });
+
+    const detail = await contractorService.detail(accountId, contractor.id);
+    expect(detail.jobsCount).toBe(1);
+    expect(detail.jobs[0]!.id).toBe(txn.id);
+    const listRow = (await contractorService.list(accountId)).find((r) => r.id === contractor.id)!;
+    expect(listRow.name).toBe('Rename Roofing LLC');
+    expect(listRow.jobsCount).toBe(1);
+  });
+
+  it('creating a contractor adopts existing unlinked expenses matching its name', async () => {
+    const txn = await transactionService.create(accountId, {
+      date: contractorHistoryAnchor().toISOString(),
+      amountCents: 40000,
+      type: 'expense',
+      description: 'Job logged before the directory entry existed',
+      vendor: '  ADOPT hvac  ', // casing/whitespace variant still adopts
+    });
+    createdTransactionIds.push(txn.id);
+
+    const contractor = await contractorService.create(accountId, {
+      name: 'Adopt HVAC',
+      trade: 'HVAC',
+    });
+    createdContractorIds.push(contractor.id);
+
+    const detail = await contractorService.detail(accountId, contractor.id);
+    expect(detail.jobsCount).toBe(1);
+    expect(detail.jobs[0]!.id).toBe(txn.id);
+  });
+
+  it('editing a transaction vendor moves the job; a non-matching vendor unlinks it', async () => {
+    const a = await contractorService.create(accountId, { name: 'Mover A Painting', trade: 'Painting' });
+    const b = await contractorService.create(accountId, { name: 'Mover B Painting', trade: 'Painting' });
+    createdContractorIds.push(a.id, b.id);
+    const txn = await transactionService.create(accountId, {
+      date: contractorHistoryAnchor().toISOString(),
+      amountCents: 30000,
+      type: 'expense',
+      description: 'Paint job that changes hands',
+      vendor: 'Mover A Painting',
+    });
+    createdTransactionIds.push(txn.id);
+    expect((await contractorService.detail(accountId, a.id)).jobsCount).toBe(1);
+
+    await transactionService.update(accountId, txn.id, { vendor: 'Mover B Painting' });
+    expect((await contractorService.detail(accountId, a.id)).jobsCount).toBe(0);
+    expect((await contractorService.detail(accountId, b.id)).jobsCount).toBe(1);
+
+    await transactionService.update(accountId, txn.id, { vendor: 'Nobody In The Directory' });
+    expect((await contractorService.detail(accountId, b.id)).jobsCount).toBe(0);
+  });
+
+  it('an ambiguous vendor (two active contractors sharing a name) links nothing', async () => {
+    const first = await contractorService.create(accountId, { name: 'Twin Electric', trade: 'Electrical' });
+    const second = await contractorService.create(accountId, { name: 'twin electric', trade: 'Electrical' });
+    createdContractorIds.push(first.id, second.id);
+
+    const txn = await transactionService.create(accountId, {
+      date: contractorHistoryAnchor().toISOString(),
+      amountCents: 25000,
+      type: 'expense',
+      description: 'Which twin did this?',
+      vendor: 'Twin Electric',
+    });
+    createdTransactionIds.push(txn.id);
+
+    expect((await contractorService.detail(accountId, first.id)).jobsCount).toBe(0);
+    expect((await contractorService.detail(accountId, second.id)).jobsCount).toBe(0);
   });
 });
 

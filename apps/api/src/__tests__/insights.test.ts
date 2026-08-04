@@ -391,6 +391,9 @@ describe('contractor_cost_spike rule', () => {
           type: 'expense',
           description: `Fixture job ${i}`,
           vendor: 'Testy Plumbing',
+          // Raw insert bypasses the service's write-time vendor match, so
+          // stamp the link the way transaction.service would have.
+          contractorId: contractor.id,
           source: 'manual',
           status: 'confirmed',
         },

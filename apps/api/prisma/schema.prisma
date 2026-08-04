@@ -282,6 +282,12 @@ model Transaction {
   type                  String // TransactionType (@hearth/shared): income | expense
   description           String
   vendor                String?
+  // Stable contractor link, stamped wherever `vendor` is written (exactly one
+  // active contractor sharing the vendorKey → link; zero or several → null) and
+  // when a contractor is created/renamed/restored (it adopts matching unlinked
+  // rows). Contractor stats derive from THIS, not from re-matching the vendor
+  // string at read time, so a contractor rename can't orphan its history.
+  contractorId          String?
   source                String // TransactionSource (@hearth/shared): manual | receipt | bank
   status                String // TransactionStatus (@hearth/shared): pending_review | confirmed | dismissed
   // TransactionClassification (@hearth/shared): transfer | owner_contribution | refund.
@@ -299,6 +305,7 @@ model Transaction {
   property    Property?    @relation(fields: [propertyId], references: [id], onDelete: SetNull)
   unit        Unit?        @relation(fields: [unitId], references: [id], onDelete: SetNull)
   category    Category?    @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  contractor  Contractor?  @relation(fields: [contractorId], references: [id], onDelete: SetNull)
   rentPayment RentPayment?
   rentDeposit RentPaymentDeposit?
   bankSyncDiscrepancies BankSyncDiscrepancy[]
@@ -306,6 +313,7 @@ model Transaction {
 
   @@index([accountId, date])
   @@index([accountId, status])
+  @@index([contractorId])
   @@unique([accountId, externalId])
 }
 
@@ -419,8 +427,10 @@ model RentPaymentDeposit {
 
 // Contractor directory. Usage stats (jobsCount/avgCostCents/lastUsedAt) are
 // never stored — they derive at query time from confirmed expense Transactions
-// whose vendor matches the contractor name (case/whitespace-insensitive;
-// ARCHITECTURE §4).
+// linked via Transaction.contractorId (ARCHITECTURE §4). The link itself is
+// assigned by vendor-name match (case/whitespace-insensitive) at write time,
+// so renaming a contractor or editing a vendor string never silently rewrites
+// already-linked history.
 model Contractor {
   id         String    @id @default(cuid())
   accountId  String
@@ -435,7 +445,8 @@ model Contractor {
   updatedAt  DateTime  @updatedAt
   archivedAt DateTime?
 
-  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account      Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
 
   @@index([accountId])
 }
