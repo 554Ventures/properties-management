@@ -20,6 +20,7 @@ import type { SseHandlers } from '../api/sse';
 import { postSse } from '../api/sse';
 import { AppShell } from '../components/shell/AppShell';
 import { ToastProvider } from '../components/ui/Toast';
+import { readLocal, removeLocal, writeLocal } from '../native/storage';
 
 vi.mock('../api/sse', () => ({
   postSse: vi.fn(() => new AbortController()),
@@ -219,6 +220,11 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  // The session-restore tests seed the device-local session pointer; every
+  // other test depends on it being absent (fresh-session behavior). Cleared
+  // through the storage wrapper — this environment has no real localStorage,
+  // so the wrapper's in-memory fallback is the store under test.
+  removeLocal('hearth.chatSessionId');
 });
 
 describe('ChatDrawer', () => {
@@ -548,4 +554,134 @@ describe('ChatDrawer', () => {
       ),
     ).toEqual([]);
   }, 20_000);
+});
+
+// ── session restore on reload (WHATS_NEXT §5) ────────────────────────────────
+// The provider stores the last session id device-locally and, on the panel's
+// first open, resolves it against GET /chat/sessions before loading messages.
+
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+/** Fetch stub for the restore path: a session LIST plus s1's message history.
+ *  POST /chat/sessions still creates the `session` fixture so a send after a
+ *  failed restore can lazily create a fresh session, as in production. */
+function stubRestoreFetch(sessions: ChatSession[], history: ChatMessage[] = []) {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      calls.push({ url, init });
+      if (url === '/api/v1/chat/sessions' && init?.method === 'POST') {
+        return jsonResponse(session);
+      }
+      if (url === '/api/v1/chat/sessions') {
+        return jsonResponse(sessions);
+      }
+      if (url === '/api/v1/chat/sessions/s1/messages') {
+        return jsonResponse(history);
+      }
+      return jsonResponse(
+        { error: { code: 'not_found', message: `No fixture for ${url}` } },
+        404,
+      );
+    }),
+  );
+  return calls;
+}
+
+const restoredHistory: ChatMessage[] = [
+  {
+    id: 'u1',
+    sessionId: 's1',
+    role: 'user',
+    blocks: [{ type: 'text', text: 'Help me get ready for taxes' }],
+    createdAt: '2026-07-03T12:00:00.000Z',
+  },
+  {
+    id: 'm1',
+    sessionId: 's1',
+    role: 'assistant',
+    blocks: [
+      // Answered in a previous page load — persisted server-side, no client state.
+      { ...questionBlock, answeredOptionIds: ['y2026'] },
+      { type: 'text', text: 'Your Schedule E is ready.' },
+    ],
+    createdAt: '2026-07-03T12:00:30.000Z',
+  },
+];
+
+describe('session restore', () => {
+  it('restores the last transcript when the panel opens, without creating a session', async () => {
+    writeLocal('hearth.chatSessionId', 's1');
+    const calls = stubRestoreFetch([{ ...session, title: 'Help me get ready for taxes' }], restoredHistory);
+    renderShell();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Roost' }));
+    await screen.findByText('Your Schedule E is ready.');
+    expect(screen.getByText('Help me get ready for taxes')).toBeInTheDocument();
+
+    // The question renders answered purely from the persisted block fields.
+    expect(screen.getByText('Answered')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument();
+
+    // Restored, not recreated: no POST /chat/sessions happened.
+    expect(calls.some((c) => c.init?.method === 'POST')).toBe(false);
+
+    // Clear forgets the conversation AND the stored pointer.
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    expect(readLocal('hearth.chatSessionId')).toBeNull();
+    expect(screen.queryByText('Your Schedule E is ready.')).not.toBeInTheDocument();
+  });
+
+  it('re-arms the pending question of an awaiting_user session', async () => {
+    writeLocal('hearth.chatSessionId', 's1');
+    stubRestoreFetch(
+      [{ ...session, status: 'awaiting_user' }],
+      [
+        {
+          id: 'm1',
+          sessionId: 's1',
+          role: 'assistant',
+          blocks: [questionBlock], // unanswered — no answeredOptionIds
+          createdAt: '2026-07-03T12:00:30.000Z',
+        },
+      ],
+    );
+    renderShell();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Roost' }));
+    await screen.findByText('Which tax year?');
+
+    // The restored question is live: answer it and the resume stream starts
+    // against the restored session id.
+    fireEvent.click(screen.getByRole('radio', { name: /2025/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    await waitFor(() => expect(postSseMock).toHaveBeenCalledTimes(1));
+    expect(streams[0]!.path).toBe('/chat/sessions/s1/answer');
+    expect(streams[0]!.body).toMatchObject({ questionId: 'q1', selectedOptionIds: ['y2025'] });
+  });
+
+  it('forgets a stored id the server no longer lists and starts fresh on the next send', async () => {
+    writeLocal('hearth.chatSessionId', 'gone-session');
+    const calls = stubRestoreFetch([], []);
+    renderShell();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Roost' }));
+    await waitFor(() => expect(readLocal('hearth.chatSessionId')).toBeNull());
+
+    // The next send lazily creates a fresh session, exactly as before.
+    const input = screen.getByLabelText('Message Roost');
+    fireEvent.change(input, { target: { value: 'How is my cash flow doing?' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(postSseMock).toHaveBeenCalledTimes(1));
+    expect(calls.some((c) => c.init?.method === 'POST')).toBe(true);
+    expect(streams[0]!.path).toBe('/chat/sessions/s1/messages');
+    expect(readLocal('hearth.chatSessionId')).toBe('s1');
+  });
 });

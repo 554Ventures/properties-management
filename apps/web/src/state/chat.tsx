@@ -29,8 +29,15 @@ import { useLocation, useSearchParams } from 'react-router';
 import { api } from '../api/client';
 import { postSse } from '../api/sse';
 import { useToast } from '../components/ui/Toast';
+import { readLocal, removeLocal, writeLocal } from '../native/storage';
 
 export type ChatStatus = 'idle' | 'streaming' | 'awaiting_input' | 'error';
+
+/** Device-local pointer to the last conversation, so a reload (or an iOS
+ *  relaunch — WKWebView is killed often) reopens the same transcript instead
+ *  of silently starting over. The transcript itself always comes from the
+ *  server; only the id is stored. */
+const SESSION_STORAGE_KEY = 'hearth.chatSessionId';
 
 /** `{ screen, entityId? }` — the screen context sent on session creation. */
 export type ScreenContext = NonNullable<CreateChatSessionInput['context']>;
@@ -309,12 +316,50 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const pendingContextRef = useRef<ScreenContext | null>(null);
   const locationRef = useRef(location.pathname);
   const abortRef = useRef<AbortController | null>(null);
+  const restoreAttemptedRef = useRef(false);
   locationRef.current = location.pathname;
 
   // ?chat=open deep link — opening is driven by the URL; closing clears it.
   useEffect(() => {
     if (searchParams.get('chat') === 'open') setOpen(true);
   }, [searchParams]);
+
+  // Restore the last conversation the first time the panel opens: the stored
+  // id resolves against the server's session list (ownership check for free —
+  // an id the server doesn't list is dropped and forgotten), the transcript
+  // comes from GET /messages with its persisted answers, and an awaiting_user
+  // session re-arms its pending question through the same session_resynced
+  // path the 409 recovery uses. The in-flight restore doubles as
+  // sessionPromiseRef so a send racing it reuses the restored session instead
+  // of creating a second one. Failure is silent by design — the panel just
+  // starts fresh, exactly as every load did before this existed.
+  useEffect(() => {
+    if (!open || restoreAttemptedRef.current || sessionIdRef.current) return;
+    restoreAttemptedRef.current = true;
+    const storedId = readLocal(SESSION_STORAGE_KEY);
+    if (!storedId) return;
+    sessionPromiseRef.current = (async () => {
+      const sessions = await api.get<ChatSession[]>('/chat/sessions');
+      const stored = sessions.find((s) => s.id === storedId);
+      if (!stored) {
+        removeLocal(SESSION_STORAGE_KEY);
+        throw new Error('stored chat session no longer exists');
+      }
+      const history = await api.get<ChatMessage[]>(`/chat/sessions/${stored.id}/messages`);
+      sessionIdRef.current = stored.id;
+      dispatch({ type: 'session_created', session: stored });
+      if (stored.status === 'awaiting_user') {
+        dispatch({ type: 'session_resynced', messages: history });
+      } else if (history.length > 0) {
+        dispatch({ type: 'messages_loaded', messages: history });
+      }
+      return stored.id;
+    })();
+    sessionPromiseRef.current.catch(() => {
+      sessionPromiseRef.current = null;
+      sessionIdRef.current = null;
+    });
+  }, [open]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -358,6 +403,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     sessionIdRef.current = null;
     sessionPromiseRef.current = null;
     pendingContextRef.current = null;
+    removeLocal(SESSION_STORAGE_KEY);
     dispatch({ type: 'session_cleared' });
   }, []);
 
@@ -369,6 +415,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       sessionPromiseRef.current = (async () => {
         const session = await api.post<ChatSession>('/chat/sessions', { context });
         sessionIdRef.current = session.id;
+        writeLocal(SESSION_STORAGE_KEY, session.id);
         dispatch({ type: 'session_created', session });
         const history = await api
           .get<ChatMessage[]>(`/chat/sessions/${session.id}/messages`)
