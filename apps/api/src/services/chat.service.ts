@@ -51,6 +51,55 @@ async function getOwned(accountId: string, id: string): Promise<DbChatSession> {
   return row;
 }
 
+// TTL sweep bounds (WHATS_NEXT §2 session hygiene). A question can sit
+// unanswered for days legitimately — the web/iOS clients restore the last
+// session, so "answer it next week" is a real flow — hence the generous
+// awaiting_user window. A running turn is bounded by MAX_ITERATIONS and
+// finishes in minutes; anything 'running' for an hour is a zombie from a
+// crash between the claim and finalize, and every send on it 409s forever.
+const AWAITING_USER_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const RUNNING_TTL_MS = 60 * 60 * 1000;
+
+/**
+ * Expire sessions stuck in a claimed state, called by the daily jobs run.
+ * awaiting_user past its TTL reopens as idle with the paused resume state
+ * dropped (screen context kept) — the unanswered question block stays in the
+ * transcript and renders frozen, and sends work again instead of 409ing
+ * forever. running past its TTL releases the claim untouched otherwise.
+ * Each row flips through a conditional updateMany keyed on its current
+ * status, so a sweep racing a genuine answer/turn loses cleanly.
+ */
+export async function expireStaleSessions(
+  now: Date = new Date(),
+): Promise<{ awaitingExpired: number; runningReleased: number }> {
+  const result = { awaitingExpired: 0, runningReleased: 0 };
+
+  const staleAwaiting = await prisma.chatSession.findMany({
+    where: { status: 'awaiting_user', updatedAt: { lt: new Date(now.getTime() - AWAITING_USER_TTL_MS) } },
+  });
+  for (const session of staleAwaiting) {
+    let context: unknown = null;
+    try {
+      context = (JSON.parse(session.providerStateJson ?? '{}') as { context?: unknown }).context ?? null;
+    } catch {
+      // Unparseable state — nothing to preserve.
+    }
+    const claimed = await prisma.chatSession.updateMany({
+      where: { id: session.id, status: 'awaiting_user' },
+      data: { status: 'idle', providerStateJson: context ? JSON.stringify({ context }) : null },
+    });
+    result.awaitingExpired += claimed.count;
+  }
+
+  const staleRunning = await prisma.chatSession.updateMany({
+    where: { status: 'running', updatedAt: { lt: new Date(now.getTime() - RUNNING_TTL_MS) } },
+    data: { status: 'idle' },
+  });
+  result.runningReleased = staleRunning.count;
+
+  return result;
+}
+
 export async function createSession(
   accountId: string,
   input: CreateChatSessionInput,

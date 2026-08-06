@@ -13,6 +13,7 @@ import { addMonthsToPeriod, currentPeriodInTz, monthStartInTz } from '../lib/dat
 import { ImportRateLimitedError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { processScheduledDeletions } from './account.service';
+import { expireStaleSessions } from './chat.service';
 import * as insightService from './insight.service';
 import { notifyCategory } from './notification.service';
 import { generateWeeklyBriefReport, lastCompletedWeekStartInTz } from './report.service';
@@ -25,6 +26,10 @@ export interface DailyJobsResult {
   insightsCreated: number;
   bankTransactionsImported: number;
   accountsDeleted: number;
+  /** awaiting_user sessions past their TTL, reopened as idle (paused state dropped). */
+  chatSessionsExpired: number;
+  /** Zombie running sessions released back to idle (crash between claim and finalize). */
+  chatSessionsReleased: number;
   errors: Array<{ accountId: string; message: string }>;
 }
 
@@ -56,6 +61,19 @@ async function doRunDailyJobs(): Promise<DailyJobsResult> {
   // Deletions first: an account past its grace period shouldn't get a fresh
   // monthly review/insight refresh moments before being hard-deleted.
   const deletions = await processScheduledDeletions();
+  // Session TTL sweep (account-agnostic, one pass): reopen chat sessions
+  // stuck awaiting_user past their TTL and release zombie running claims. A
+  // sweep failure never blocks the per-account work below.
+  let sessionSweep = { awaitingExpired: 0, runningReleased: 0 };
+  const sweepErrors: DailyJobsResult['errors'] = [];
+  try {
+    sessionSweep = await expireStaleSessions();
+  } catch (err) {
+    sweepErrors.push({
+      accountId: 'system',
+      message: `session sweep: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
   // Timezone loaded per account so each review's target month is computed on
   // that landlord's local calendar (WS4).
   const accounts = await prisma.account.findMany({ select: { id: true, timezone: true } });
@@ -66,7 +84,9 @@ async function doRunDailyJobs(): Promise<DailyJobsResult> {
     insightsCreated: 0,
     bankTransactionsImported: 0,
     accountsDeleted: deletions.deleted,
-    errors: [...deletions.errors],
+    chatSessionsExpired: sessionSweep.awaitingExpired,
+    chatSessionsReleased: sessionSweep.runningReleased,
+    errors: [...deletions.errors, ...sweepErrors],
   };
   const now = new Date();
   for (const { id: accountId, timezone } of accounts) {
