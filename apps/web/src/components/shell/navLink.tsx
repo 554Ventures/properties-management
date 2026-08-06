@@ -1,7 +1,7 @@
 // Shared nav-link presentation used by both the desktop SideNav and the mobile
 // "More" sheet, so active/hover states and the AI-accent styling for AI Insights
 // stay identical across surfaces.
-import { NavLink } from 'react-router-dom';
+import { NavLink } from 'react-router';
 import { cx } from '../../lib/cx';
 import type { NavItem } from './navItems';
 

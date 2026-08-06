@@ -3,7 +3,7 @@
 // one AI element is the single most recent contractor_cost_spike insight
 // (clearly marked via AiSurface) — this is the page that insight is about.
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { formatUsdWhole } from '@hearth/shared';
 import {
   useArchiveContractor,

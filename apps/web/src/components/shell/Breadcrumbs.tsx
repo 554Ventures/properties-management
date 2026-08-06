@@ -1,6 +1,6 @@
 // <nav aria-label="Breadcrumb"> with aria-current="page" on the leaf; on
 // mobile it collapses to a back-arrow link to the parent crumb.
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { IconArrowLeft, IconChevronRight } from '../ui/icons';
 
 export interface Crumb {

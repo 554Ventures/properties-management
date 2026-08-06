@@ -2,7 +2,7 @@
 // headline figures and callouts before the detail table (ReportBody), CSV/PDF
 // export, "Email accountant", and the persistent tax disclaimer on tax
 // surfaces (PRD §7.3 / §13.4).
-import { useParams } from 'react-router-dom';
+import { useParams } from 'react-router';
 import { useReportDetail } from '../api/queries';
 import { AiSurface } from '../components/ai/AiSurface';
 import { EmailAccountantButton, ExportLinks } from '../components/reports/ReportActions';

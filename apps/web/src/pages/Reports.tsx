@@ -4,7 +4,7 @@
 // the "Ask AI to build a custom report" entry (AiSurface card).
 import { useState } from 'react';
 import type { GenerateReportInput, Report, ReportTypeInfo } from '@hearth/shared';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router';
 import {
   useGenerateReport,
   useProperties,

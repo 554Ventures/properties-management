@@ -1,7 +1,7 @@
 // A unit's lease history in a modal on the property page — fetched lazily via
 // the existing unit-detail endpoint only once opened, rendered with the same
 // LeaseHistoryTable the unit page uses.
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { useUnitDetail } from '../../api/queries';
 import { buttonClasses } from '../ui/Button';
 import { ErrorNotice } from '../ui/ErrorNotice';

@@ -3,7 +3,7 @@
 // and auto-attaches the route the user was on; the API stores it and emails
 // the owner (fire-and-forget server-side).
 import { useEffect, useState, type FormEvent } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation } from 'react-router';
 import { FeedbackCategorySchema } from '@hearth/shared';
 import type { FeedbackCategory } from '@hearth/shared';
 import { useSubmitFeedback } from '../../api/queries';

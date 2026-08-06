@@ -7,7 +7,7 @@
 // drawer is a docked sibling — the content column shifts left instead of
 // being covered.
 import { useState } from 'react';
-import { Outlet, useLocation } from 'react-router-dom';
+import { Outlet, useLocation } from 'react-router';
 import { cx } from '../../lib/cx';
 import { ChatProvider, useChat } from '../../state/chat';
 import { ChatDrawer } from '../chat/ChatDrawer';

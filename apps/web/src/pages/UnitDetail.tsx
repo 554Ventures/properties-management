@@ -8,7 +8,7 @@
 import { useState } from 'react';
 import { formatUsd, formatUsdWhole } from '@hearth/shared';
 import type { Lease, LeaseWithTenants, RenewalDraftResponse } from '@hearth/shared';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router';
 import {
   useArchiveUnit,
   useDraftRenewal,

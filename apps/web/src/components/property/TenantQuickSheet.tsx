@@ -4,7 +4,7 @@
 // permission gating: everything here is a read or a device-level action.
 import { formatUsd } from '@hearth/shared';
 import type { TenantOnLease } from '@hearth/shared';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { cx } from '../../lib/cx';
 import { useMediaQuery } from '../../lib/useMediaQuery';
 import { BottomSheet } from '../ui/BottomSheet';

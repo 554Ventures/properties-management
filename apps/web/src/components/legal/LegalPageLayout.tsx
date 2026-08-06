@@ -5,7 +5,7 @@
 // and email footers all link here directly, with no assumption about
 // session state.
 import type { ReactNode } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 
 export function LegalPageLayout({
   title,

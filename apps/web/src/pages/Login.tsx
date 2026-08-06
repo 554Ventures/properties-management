@@ -7,7 +7,7 @@
 // update_password (set a new one after following the link — AuthGate mounts us
 // in this mode when a recovery session is active).
 import { useState, type FormEvent } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { LoginArtPanel } from '../components/login/LoginArtPanel';
 import { Button } from '../components/ui/Button';
 import { FormField, Input } from '../components/ui/FormField';

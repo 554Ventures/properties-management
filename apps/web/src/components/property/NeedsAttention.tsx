@@ -11,7 +11,7 @@
 import type { ReactNode } from 'react';
 import { RENEW_SOON_DAYS } from '@hearth/shared';
 import type { Insight, LeaseWithTenants, PropertyDetailUnit } from '@hearth/shared';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { AiSurface } from '../ai/AiSurface';
 import { useInsightActions } from '../ai/useInsightActions';
 import { Button, buttonClasses } from '../ui/Button';

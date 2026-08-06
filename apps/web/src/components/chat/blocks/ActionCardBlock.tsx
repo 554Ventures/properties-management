@@ -11,7 +11,7 @@ import type {
   SendRemindersResponse,
 } from '@hearth/shared';
 import { useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { api, ApiClientError } from '../../../api/client';
 import { useChat } from '../../../state/chat';
 import {

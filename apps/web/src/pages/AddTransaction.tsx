@@ -9,7 +9,7 @@ import {
   type RentMatchSuggestion,
   type TransactionType,
 } from '@hearth/shared';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import {
   useCategories,
   useConfirmTransaction,

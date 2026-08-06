@@ -11,7 +11,7 @@ import type {
   TransactionStatus,
   TransactionType,
 } from '@hearth/shared';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router';
 import { ApiClientError } from '../api/client';
 import {
   useCategories,

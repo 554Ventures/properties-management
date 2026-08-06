@@ -5,7 +5,7 @@
 import { useState } from 'react';
 import type { PropertyWithStats } from '@hearth/shared';
 import { formatUsdWhole } from '@hearth/shared';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { useArchiveProperty, useProperties, useTenants } from '../api/queries';
 import { PropertyFormModal } from '../components/forms/PropertyFormModal';
 import { TenantFormModal } from '../components/forms/TenantFormModal';

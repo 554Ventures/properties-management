@@ -25,7 +25,7 @@ import {
   type SseToolActivity,
 } from '@hearth/shared';
 import { useQueryClient } from '@tanstack/react-query';
-import { useLocation, useSearchParams } from 'react-router-dom';
+import { useLocation, useSearchParams } from 'react-router';
 import { api } from '../api/client';
 import { postSse } from '../api/sse';
 import { useToast } from '../components/ui/Toast';

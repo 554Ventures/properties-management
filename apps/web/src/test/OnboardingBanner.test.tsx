@@ -7,7 +7,7 @@ import type { OnboardingState, OnboardingStepId, OnboardingStepState } from '@he
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OnboardingBanner } from '../components/onboarding/OnboardingBanner';
 import { ToastProvider } from '../components/ui/Toast';

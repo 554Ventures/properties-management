@@ -1,4 +1,4 @@
-import { createBrowserRouter, Navigate, useParams } from 'react-router-dom';
+import { createBrowserRouter, Navigate, useParams } from 'react-router';
 import { AppShell } from './components/shell/AppShell';
 import { NativeBridge } from './native/NativeBridge';
 import { AddTransaction } from './pages/AddTransaction';

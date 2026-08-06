@@ -2,7 +2,7 @@
 // mode omits them (units are managed via the unit endpoints on PropertyDetail).
 import { useEffect, useState, type FormEvent } from 'react';
 import type { Property } from '@hearth/shared';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { useCreateProperty, useUpdateProperty } from '../../api/queries';
 import { fromDateInputValue, toDateInputValue } from '../../lib/format';
 import { Button } from '../ui/Button';

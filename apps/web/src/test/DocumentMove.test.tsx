@@ -12,7 +12,7 @@ import type {
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ToastProvider, ToastViewport } from '../components/ui/Toast';
 import { DocumentsPage } from '../pages/DocumentsPage';

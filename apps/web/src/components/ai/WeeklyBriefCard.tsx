@@ -12,7 +12,7 @@
 import { useState } from 'react';
 import type { SendRemindersResponse, WeeklyBriefItem } from '@hearth/shared';
 import { useQueryClient } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { api, ApiClientError } from '../../api/client';
 import { useLatestWeeklyBrief } from '../../api/queries';
 import {

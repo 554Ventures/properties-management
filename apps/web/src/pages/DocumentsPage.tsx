@@ -5,7 +5,7 @@
 import { useMemo, useState } from 'react';
 import { DocumentTypeSchema } from '@hearth/shared';
 import type { DocumentListQuery, DocumentListRow, DocumentType } from '@hearth/shared';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { downloadFile } from '../api/client';
 import { useDeleteDocument, useDocuments, useProperties, useTenants } from '../api/queries';
 import {

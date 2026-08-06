@@ -2,7 +2,7 @@
 // job history matched from confirmed expense transactions (ARCHITECTURE §4).
 import { useState } from 'react';
 import { formatUsd, formatUsdWhole } from '@hearth/shared';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router';
 import { useArchiveContractor, useContractor } from '../api/queries';
 import { ContractorFormModal } from '../components/forms/ContractorFormModal';
 import { LogJobModal } from '../components/forms/LogJobModal';

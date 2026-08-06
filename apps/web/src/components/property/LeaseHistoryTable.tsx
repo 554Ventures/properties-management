@@ -3,7 +3,7 @@
 // surrounding chrome (section/Card on UnitDetail, Modal on PropertyDetail).
 import { formatUsd } from '@hearth/shared';
 import type { LeaseWithTenants } from '@hearth/shared';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { formatDate } from '../../lib/format';
 import { leaseStatusBadge } from '../../lib/statusBadges';
 import { StatusBadge } from '../ui/StatusBadge';

@@ -3,7 +3,7 @@
 // opens a bottom sheet with every remaining destination (+ Settings/Sign out),
 // so nothing in the desktop sidebar is unreachable on mobile.
 import { useState } from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
+import { NavLink, useLocation } from 'react-router';
 import { cx } from '../../lib/cx';
 import { useAuth } from '../../state/auth';
 import { BottomSheet } from '../ui/BottomSheet';

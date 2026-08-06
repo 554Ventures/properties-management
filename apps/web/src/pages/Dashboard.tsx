@@ -3,7 +3,7 @@
 // original single-card slot, 2026-07-11), 6-month income-vs-expense chart,
 // activity feed.
 import { ASSISTANT_NAME, formatUsd, formatUsdWhole } from '@hearth/shared';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import {
   useActivity,
   useCashflowSeries,

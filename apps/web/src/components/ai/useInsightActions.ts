@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { Insight } from '@hearth/shared';
 import { useQueryClient } from '@tanstack/react-query';
-import { useLocation } from 'react-router-dom';
+import { useLocation } from 'react-router';
 import { api, ApiClientError } from '../../api/client';
 import { useDismissInsight, useMarkInsightActioned } from '../../api/queries';
 import { useToast } from '../ui/Toast';

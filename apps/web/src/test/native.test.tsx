@@ -4,7 +4,7 @@
 // (a11y is merge-blocking).
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import axe from 'axe-core';
-import { MemoryRouter, useLocation } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BiometricGate } from '../native/BiometricGate';
 import { setBiometricLockEnabled } from '../native/biometric';

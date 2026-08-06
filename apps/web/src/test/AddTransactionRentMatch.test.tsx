@@ -4,7 +4,7 @@
 // match-less save) goes straight to the ledger.
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { CreateTransactionResponse, RentMatchSuggestion } from '@hearth/shared';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as queries from '../api/queries';
 import { ToastProvider } from '../components/ui/Toast';

@@ -12,7 +12,7 @@
 // them to discover the Money page's "Import from bank" button.
 import { loadStripe } from '@stripe/stripe-js';
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { ApiClientError } from '../api/client';
 import { useCompleteStripeFcSession, useCreateStripeFcSession, useImportTransactions } from '../api/queries';
 import { useToast } from '../components/ui/Toast';

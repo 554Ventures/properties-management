@@ -2,7 +2,7 @@
 // registration (once per launch, after a session exists — it sits inside
 // AuthGate) and the Face ID lock overlay. Renders nothing in plain browsers.
 import { useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { BiometricGate } from './BiometricGate';
 import { isNativeApp } from './platform';
 import { initPushRegistration } from './push';

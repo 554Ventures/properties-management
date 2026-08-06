@@ -13,7 +13,7 @@ import type {
   RenewalDraftResponse,
   TenantOnLease,
 } from '@hearth/shared';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router';
 import {
   useArchiveProperty,
   useArchiveUnit,

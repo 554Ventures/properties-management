@@ -13,7 +13,7 @@
 import { useState } from 'react';
 import type { Insight } from '@hearth/shared';
 import { useQueryClient } from '@tanstack/react-query';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation } from 'react-router';
 import { api } from '../../api/client';
 import { useDismissInsight, useMarkInsightActioned } from '../../api/queries';
 import { Button, buttonClasses } from '../ui/Button';

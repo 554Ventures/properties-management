@@ -5,7 +5,7 @@
 // property-app-deployment-plan.md §8), so it has no UI here.
 import { useEffect, useState, type FormEvent } from 'react';
 import { usePlaidLink } from 'react-plaid-link';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router';
 import type {
   AccountMember,
   AccountSettings,

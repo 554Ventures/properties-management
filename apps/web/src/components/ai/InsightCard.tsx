@@ -16,7 +16,7 @@
 // page you're on is noise, so navigation actions whose target pathname is the
 // current pathname are hidden. Executable actions and Dismiss always show.
 import type { Insight } from '@hearth/shared';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { Button, buttonClasses } from '../ui/Button';
 import { StatusBadge, type BadgeTone } from '../ui/StatusBadge';
 import { AiSurface } from './AiSurface';

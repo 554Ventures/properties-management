@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { formatUsd } from '@hearth/shared';
 import type { RenewalDraftResponse, TenantLease } from '@hearth/shared';
-import { useParams } from 'react-router-dom';
+import { useParams } from 'react-router';
 import {
   useArchiveTenant,
   useDraftRenewal,
