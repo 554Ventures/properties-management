@@ -21,9 +21,11 @@ describe('isAllowedApiCall', () => {
     expect(isAllowedApiCall('POST', '/rent/payments/rp1/late-fee/extra')).toBe(false);
   });
 
-  it('allows adding and editing properties, tenants, contractors and transactions', () => {
+  it('allows adding and editing properties, units, tenants, contractors and transactions', () => {
     expect(isAllowedApiCall('POST', '/properties')).toBe(true);
     expect(isAllowedApiCall('PATCH', '/properties/clx0f2q9d0001abcdWXYZ123')).toBe(true);
+    expect(isAllowedApiCall('POST', '/properties/clx0f2q9d0001abcdWXYZ123/units')).toBe(true);
+    expect(isAllowedApiCall('PATCH', '/units/cm4ktz8yq000108l5f1a2b3c4')).toBe(true);
     expect(isAllowedApiCall('POST', '/tenants')).toBe(true);
     expect(isAllowedApiCall('PATCH', '/tenants/cm4ktz8yq000108l5f1a2b3c4')).toBe(true);
     expect(isAllowedApiCall('POST', '/contractors')).toBe(true);
@@ -46,6 +48,9 @@ describe('isAllowedApiCall', () => {
     expect(isAllowedApiCall('PATCH', '/leases/l1')).toBe(false);
     expect(isAllowedApiCall('DELETE', '/transactions/t1')).toBe(false);
     expect(isAllowedApiCall('DELETE', '/properties/p1')).toBe(false);
+    expect(isAllowedApiCall('DELETE', '/units/u1')).toBe(false);
+    expect(isAllowedApiCall('POST', '/units/u1/restore')).toBe(false);
+    expect(isAllowedApiCall('PATCH', '/units')).toBe(false);
     expect(isAllowedApiCall('DELETE', '/tenants/t1')).toBe(false);
     expect(isAllowedApiCall('DELETE', '/contractors/c1')).toBe(false);
     expect(isAllowedApiCall('PATCH', '/contractors')).toBe(false);
@@ -59,6 +64,7 @@ describe('isAllowedApiCall', () => {
     expect(isAllowedApiCall('POST', '/transactions/a/b/confirm')).toBe(false);
     expect(isAllowedApiCall('POST', '/reports/generate/email')).toBe(false);
     expect(isAllowedApiCall('PATCH', '/properties/p1/units/u1')).toBe(false);
+    expect(isAllowedApiCall('POST', '/properties/p1/units/extra')).toBe(false);
     expect(isAllowedApiCall('PATCH', '/tenants/t1/leases')).toBe(false);
   });
 });

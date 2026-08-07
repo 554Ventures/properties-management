@@ -30,6 +30,8 @@ const ALLOWED_API_CALLS: ReadonlyArray<{ method: string; pathPattern: RegExp }> 
   { method: 'POST', pathPattern: new RegExp(`^/transactions/${ID}/confirm$`) },
   { method: 'POST', pathPattern: /^\/properties$/ },
   { method: 'PATCH', pathPattern: new RegExp(`^/properties/${ID}$`) },
+  { method: 'POST', pathPattern: new RegExp(`^/properties/${ID}/units$`) },
+  { method: 'PATCH', pathPattern: new RegExp(`^/units/${ID}$`) },
   { method: 'POST', pathPattern: /^\/tenants$/ },
   { method: 'PATCH', pathPattern: new RegExp(`^/tenants/${ID}$`) },
   { method: 'POST', pathPattern: /^\/contractors$/ },
