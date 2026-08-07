@@ -47,6 +47,10 @@ async function callToolJson(client: Client, name: string, args: Record<string, u
 const WRITE_TOOLS = [
   'create_transaction',
   'confirm_transaction',
+  'create_property',
+  'update_property',
+  'create_unit',
+  'update_unit',
   'record_rent_payment',
   'send_rent_reminders',
   'generate_report',

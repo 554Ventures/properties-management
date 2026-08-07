@@ -9,7 +9,9 @@ import {
   ChartBlockSchema,
   ConfirmTransactionInputSchema,
   CreateContractorInputSchema,
+  CreatePropertyInputSchema,
   CreateTransactionInputSchema,
+  CreateUnitInputSchema,
   DataTableBlockSchema,
   DocumentEntityTypeSchema,
   DocumentTypeSchema,
@@ -21,6 +23,8 @@ import {
   ReportTypeSchema,
   SendRemindersInputSchema,
   TransactionListQuerySchema,
+  UpdatePropertyInputSchema,
+  UpdateUnitInputSchema,
 } from '@hearth/shared';
 import type {
   ContentBlock,
@@ -115,7 +119,7 @@ export const serviceTools: ServiceToolDef[] = [
   {
     name: 'get_property',
     description:
-      'Full detail for one property: units with current lease + tenants, MTD/YTD P&L and any active insights.',
+      'Full detail for one property: address, acquisition date/cost (cents), units with current lease + tenants, MTD/YTD P&L and any active insights.',
     inputSchema: z.object({ propertyId: z.string() }),
     write: false,
     execute: (accountId, input) =>
@@ -293,6 +297,54 @@ export const serviceTools: ServiceToolDef[] = [
       contractorService.create(accountId, input as z.infer<typeof CreateContractorInputSchema>, actor),
   },
   {
+    name: 'create_property',
+    description:
+      'WRITES: adds a property to the portfolio with its initial units (units array, at least one). Optional nickname, acquisition date (ISO)/cost (cents) and notes. The property immediately counts in every dashboard figure and derivation.',
+    inputSchema: CreatePropertyInputSchema,
+    write: true,
+    execute: (accountId, input, actor) =>
+      propertyService.create(accountId, input as z.infer<typeof CreatePropertyInputSchema>, actor),
+  },
+  {
+    name: 'update_property',
+    description:
+      "WRITES: edits a property's fields (nickname, address, acquisition date/cost, notes). Only the provided fields change; units are managed with create_unit/update_unit. Archiving is not available from chat.",
+    inputSchema: UpdatePropertyInputSchema.extend({ propertyId: z.string() }),
+    write: true,
+    execute: (accountId, input, actor) => {
+      const { propertyId, ...patch } = input as z.infer<typeof UpdatePropertyInputSchema> & {
+        propertyId: string;
+      };
+      return propertyService.update(accountId, propertyId, patch, actor);
+    },
+  },
+  {
+    name: 'create_unit',
+    description:
+      'WRITES: adds a unit to an existing property (label required; optional bedrooms, bathrooms, market rent in cents). The unit starts vacant until a lease is created.',
+    inputSchema: CreateUnitInputSchema.extend({ propertyId: z.string() }),
+    write: true,
+    execute: (accountId, input, actor) => {
+      const { propertyId, ...unitInput } = input as z.infer<typeof CreateUnitInputSchema> & {
+        propertyId: string;
+      };
+      return unitService.create(accountId, propertyId, unitInput, actor);
+    },
+  },
+  {
+    name: 'update_unit',
+    description:
+      "WRITES: edits a unit's fields (label, bedrooms, bathrooms, market rent in cents). Only the provided fields change. Archiving is not available from chat.",
+    inputSchema: UpdateUnitInputSchema.extend({ unitId: z.string() }),
+    write: true,
+    execute: (accountId, input, actor) => {
+      const { unitId, ...patch } = input as z.infer<typeof UpdateUnitInputSchema> & {
+        unitId: string;
+      };
+      return unitService.update(accountId, unitId, patch, actor);
+    },
+  },
+  {
     name: 'confirm_transaction',
     description:
       'WRITES: confirms (categorizes) a pending-review transaction, moving it into the ledger. Pass categoryId to override the AI suggestion; omit it to accept the suggestion. Pass propertyId/unitId to attribute the transaction. Pass rentPaymentId to link an income transaction (a bank deposit or an already-confirmed manual entry) to that expected rent payment and mark it paid — amounts must match exactly, and property/unit then come from the lease.',
@@ -437,6 +489,10 @@ export const WRITE_TOOL_PERMISSIONS: Partial<Record<string, MemberPermission>> =
   create_transaction: 'money',
   confirm_transaction: 'money',
   create_contractor: 'properties',
+  create_property: 'properties',
+  update_property: 'properties',
+  create_unit: 'properties',
+  update_unit: 'properties',
   record_rent_payment: 'rent',
   apply_late_fee: 'rent',
   send_rent_reminders: 'rent',
