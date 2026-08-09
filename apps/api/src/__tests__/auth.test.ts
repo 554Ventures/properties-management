@@ -16,9 +16,13 @@ const TEST_SECRET = 'test-jwt-secret-with-at-least-32-characters!';
 async function signToken(
   sub: string,
   email?: string,
-  opts: { expired?: boolean; audience?: string; secret?: string } = {},
+  opts: { expired?: boolean; audience?: string; secret?: string; clientId?: string } = {},
 ): Promise<string> {
-  let jwt = new SignJWT({ ...(email ? { email } : {}), aud: opts.audience ?? 'authenticated' })
+  let jwt = new SignJWT({
+    ...(email ? { email } : {}),
+    ...(opts.clientId ? { client_id: opts.clientId } : {}),
+    aud: opts.audience ?? 'authenticated',
+  })
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(sub)
     .setIssuedAt(opts.expired ? Math.floor(Date.now() / 1000) - 7200 : undefined);
@@ -95,6 +99,43 @@ describe('supabase mode: rejections', () => {
   it('healthz stays open', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/v1/healthz' });
     expect(res.statusCode).toBe(200);
+  });
+
+  // Supabase's OAuth 2.1 server has open dynamic client registration, so anyone
+  // can register a client; the only gate is a user consenting on our screen.
+  // Such a token must unlock the MCP connector it was granted for and nothing
+  // else. First-party sessions never carry `client_id` (gotrue declares the
+  // claim `omitempty` and fills it only from the session's OAuth client), so
+  // the presence of the claim is what distinguishes the two.
+  it('401s a client_id-bearing OAuth token on a REST route', async () => {
+    const token = await signToken('sub-oauth-client', 'oauth.client@authtest.example', {
+      clientId: 'some-registered-client',
+    });
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/properties',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.statusCode).toBe(401);
+    expect(res.json().error.code).toBe('unauthorized');
+  });
+
+  it('accepts the same token on /mcp', async () => {
+    const token = await signToken('sub-oauth-client', 'oauth.client@authtest.example', {
+      clientId: 'some-registered-client',
+    });
+    // inject() cannot read a hijacked response body (mcp-http.test.ts drives a
+    // real client for that) — what matters here is that it is not a 401.
+    const res = await app.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: 'application/json, text/event-stream',
+      },
+      payload: { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
+    });
+    expect(res.statusCode).not.toBe(401);
   });
 });
 

@@ -308,9 +308,16 @@ Client sends the answer via POST `/chat/sessions/:id/answer`, whose response is 
 
 ---
 
-## 7. MCP server (`apps/api/src/mcp/`, stdio; run `npm run mcp -w apps/api`)
+## 7. MCP server (`apps/api/src/mcp/`) — two transports, one registry
 
-Reuses the tool definitions/bindings in `ai/tools.ts` (single source, PRD §10). v1 auth: local single-user, same demo account; per-client OAuth is v2.
+Reuses the tool definitions/bindings in `ai/tools.ts` (single source, PRD §10). The same `createMcpServer()` factory backs both surfaces:
+
+- **stdio** — `npm run mcp -w apps/api`. Local single-user against the seeded demo account; writes behind `HEARTH_MCP_ENABLE_WRITE=true`.
+- **Streamable HTTP** — `POST /mcp` (`routes/mcp.ts`), root-mounted because the connector URL is `https://app.554properties.com/mcp`. Stateless: one server + transport per request, torn down on response close (the container scales to zero, so no session could outlive a request). `GET`/`DELETE` → 405.
+
+**Remote authorization (OAuth 2.1).** Supabase Auth is the authorization server; this API is the resource server. Claude discovers it via RFC 9728 metadata at `/.well-known/oauth-protected-resource[/mcp]` (`routes/well-known.ts`, exempt from the auth hook), pointed to by the `WWW-Authenticate: Bearer resource_metadata="…"` header on a 401 from `/mcp`. Supabase's scope list is fixed (`openid profile email phone offline_access`) and supports no custom scopes, so **scopes grant no write authority**: the bearer token resolves to a `User` exactly as on REST, and the tool set is narrowed per request by `deniedWriteTools(role, permissions)` — the identical rule the chat agent applies. Consent is *not* hosted by Supabase; `/oauth/consent` in `apps/web` renders it (§8).
+
+Because dynamic client registration is open, a token carrying a `client_id` claim (Supabase stamps these only on third-party OAuth grants) is accepted **on `/mcp` only** and rejected elsewhere — a consented AI client is not a general REST credential. `PUBLIC_APP_URL` is authoritative for the resource identifiers in production; dev falls back to the request host.
 
 **Resources (read):** `hearth://portfolio/summary` (text summary + KPIs) · `hearth://properties` and `hearth://properties/{id}` · `hearth://rent/{period}` (tracker JSON) · `hearth://reports` and `hearth://reports/{id}` · `hearth://insights/active`.
 

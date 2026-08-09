@@ -16,11 +16,17 @@ import { serviceTools } from '../ai/tools';
 export interface McpToolOptions {
   accountId: string;
   allowWrites: boolean;
+  /** Names the caller may not run (remote surface: `deniedWriteTools(...)`). */
+  deniedTools?: Set<string>;
 }
 
-export function registerMcpTools(server: McpServer, { accountId, allowWrites }: McpToolOptions): void {
+export function registerMcpTools(
+  server: McpServer,
+  { accountId, allowWrites, deniedTools }: McpToolOptions,
+): void {
   for (const tool of serviceTools) {
     if (tool.write && !allowWrites) continue;
+    if (deniedTools?.has(tool.name)) continue;
     server.registerTool(
       tool.name,
       { description: tool.description, inputSchema: tool.inputSchema },

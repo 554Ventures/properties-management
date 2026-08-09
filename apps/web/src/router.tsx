@@ -9,6 +9,7 @@ import { DocumentsPage } from './pages/DocumentsPage';
 import { Money } from './pages/Money';
 import { MoneyReview } from './pages/MoneyReview';
 import { NotFound } from './pages/NotFound';
+import { OAuthConsent } from './pages/OAuthConsent';
 import { PrivacyPolicy } from './pages/PrivacyPolicy';
 import { PropertiesList } from './pages/PropertiesList';
 import { PropertyDetail } from './pages/PropertyDetail';
@@ -36,9 +37,23 @@ export function LegacyInsightRedirect() {
 // OAuth consent screen, app-store listings, and email footers all link here
 // directly). AuthGate wraps only AppShell now, not the whole router, so the
 // app's own routes are unaffected.
+//
+// /oauth/consent is also a top-level sibling — it's where Supabase's OAuth
+// 2.1 server redirects for user consent (it doesn't host its own consent
+// screen). Unlike /privacy and /terms it does need a signed-in session, so it
+// gets its own <AuthGate> wrapper rather than sharing AppShell's — the
+// consent screen has no app chrome (nav, breadcrumbs) of its own.
 export const router = createBrowserRouter([
   { path: '/privacy', element: <PrivacyPolicy /> },
   { path: '/terms', element: <TermsOfService /> },
+  {
+    path: '/oauth/consent',
+    element: (
+      <AuthGate>
+        <OAuthConsent />
+      </AuthGate>
+    ),
+  },
   {
     path: '/',
     element: (

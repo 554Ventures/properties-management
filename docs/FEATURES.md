@@ -53,9 +53,12 @@ Complete inventory of what Hearth v1 does today (as of 2026-07-03). Companion to
 
 ## MCP server (PRD §10)
 
-- Stdio entrypoint (`npm run mcp -w apps/api`), server name `hearth`, reusing the chat tool registry.
-- **19 read tools** always on (portfolio summary, KPIs, series, properties, tenants, leases, renewal draft, transactions, review queue, categories, contractors, rent status, insights, reports, documents).
-- **8 write tools** only with `HEARTH_MCP_ENABLE_WRITE=true` (create/confirm transaction, create contractor, record payment, send reminders, generate/email report, dismiss insight) — all audit-logged as `system`.
+- **Two transports, one registry** (`createMcpServer()` backs both), reusing the chat tool registry; server name `hearth`.
+  - **stdio** — `npm run mcp -w apps/api`, demo account, writes behind `HEARTH_MCP_ENABLE_WRITE=true`.
+  - **Remote (Streamable HTTP)** — `POST /mcp`, stateless, one server per request; `GET`/`DELETE` → 405. This is the Claude Desktop custom-connector URL (`https://app.554properties.com/mcp`). *Added 2026-08-09.*
+- **Remote OAuth 2.1** (*added 2026-08-09*): Supabase Auth is the authorization server, this API the resource server. RFC 9728 metadata at `/.well-known/oauth-protected-resource[/mcp]`, advertised by `WWW-Authenticate` on a 401 from `/mcp`; Claude self-registers via Supabase's dynamic client registration. Consent is **not** hosted by Supabase — `/oauth/consent` in the web app renders it, and Settings → **Connected AI clients** lists and revokes grants (`supabase.auth.oauth.listGrants`/`revokeGrant`). Supabase's scope list is fixed and admits no custom scopes, so scopes convey no write authority: the token resolves to a real `User` and the tool set is narrowed per request by the same `deniedWriteTools(role, permissions)` the chat agent uses. Tokens carrying a `client_id` claim (third-party OAuth grants only) are accepted on `/mcp` and rejected on every other route.
+- **20 read tools** always on (portfolio summary, KPIs, series, properties, tenants, leases, renewal draft, transactions, review queue, categories, contractors, rent status, insights, reports, documents).
+- **13 write tools** (create/confirm transaction, create contractor, create/update property, create/update unit, record payment, apply late fee, send reminders, generate/email report, dismiss insight) — all audit-logged as `system`.
 - **Resources**: `hearth://portfolio/summary`, `hearth://properties[/{id}]`, `hearth://rent/{period}`, `hearth://reports[/{id}]`, `hearth://insights/active`.
 - Claude Desktop/Code config example in the root README.
 

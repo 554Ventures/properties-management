@@ -1,6 +1,9 @@
-// 554 Properties MCP server entrypoint (ARCHITECTURE §7) — stdio transport.
-// Run: `npm run mcp -w apps/api`. Same demo account and service layer as the
-// REST API; write tools are gated behind HEARTH_MCP_ENABLE_WRITE=true.
+// 554 Properties MCP server factory + stdio entrypoint (ARCHITECTURE §7).
+// Run the stdio server: `npm run mcp -w apps/api`. Same demo account and
+// service layer as the REST API; write tools are gated behind
+// HEARTH_MCP_ENABLE_WRITE=true. The same factory backs the remote Streamable
+// HTTP surface (routes/mcp.ts), which builds one server per request from the
+// caller's own account and permissions.
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,12 +21,20 @@ const pkg = JSON.parse(readFileSync(path.resolve(here, '../../package.json'), 'u
 export interface CreateMcpServerOptions {
   accountId: string;
   allowWrites: boolean;
+  /** Tool names to leave unregistered for this caller — the remote surface
+   *  passes `deniedWriteTools(role, permissions)` so a member can't reach a
+   *  write tool their REST route would refuse. Stdio omits it (owner-equivalent). */
+  deniedTools?: Set<string>;
 }
 
 /** Build the server without connecting a transport (tests pass options directly). */
-export function createMcpServer({ accountId, allowWrites }: CreateMcpServerOptions): McpServer {
+export function createMcpServer({
+  accountId,
+  allowWrites,
+  deniedTools,
+}: CreateMcpServerOptions): McpServer {
   const server = new McpServer({ name: 'hearth', version: pkg.version });
-  registerMcpTools(server, { accountId, allowWrites });
+  registerMcpTools(server, { accountId, allowWrites, deniedTools });
   registerMcpResources(server, { accountId });
   return server;
 }

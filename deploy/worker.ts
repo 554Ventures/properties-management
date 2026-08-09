@@ -31,6 +31,11 @@ export class HearthApi extends Container<Env> {
   envVars = definedEnvVars({
     DATABASE_URL: secrets.DATABASE_URL,
     SUPABASE_URL: secrets.SUPABASE_URL,
+    // Public origin (https://app.554properties.com) — the container sees the
+    // Worker's internal Host, so this is the only way it can build the OAuth
+    // resource identifiers the remote MCP connector advertises. Unset falls
+    // back to the request host (fine in dev, wrong behind the Worker).
+    PUBLIC_APP_URL: secrets.PUBLIC_APP_URL,
     ANTHROPIC_API_KEY: secrets.ANTHROPIC_API_KEY,
     CRON_SECRET: secrets.CRON_SECRET,
     PLAID_CLIENT_ID: secrets.PLAID_CLIENT_ID,
@@ -68,6 +73,7 @@ interface Env {
   ASSETS: Fetcher;
   DATABASE_URL: string;
   SUPABASE_URL: string;
+  PUBLIC_APP_URL: string;
   ANTHROPIC_API_KEY: string;
   CRON_SECRET: string;
   PLAID_CLIENT_ID: string;
@@ -93,7 +99,16 @@ interface Env {
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
-    if (url.pathname.startsWith('/api/')) {
+    // /mcp is the remote MCP connector and /.well-known/oauth-protected-resource*
+    // its OAuth discovery document — both must reach Fastify. Without this they
+    // would fall through to ASSETS and its single-page-application fallback
+    // would answer discovery with index.html, breaking it silently.
+    if (
+      url.pathname.startsWith('/api/') ||
+      url.pathname === '/mcp' ||
+      url.pathname === '/mcp/' ||
+      url.pathname.startsWith('/.well-known/oauth-protected-resource')
+    ) {
       // Single named instance — one warm container serves all API traffic
       // (instance sizing revisited after load testing; plan open item #2).
       return getContainer(env.HEARTH_API, 'api').fetch(request);

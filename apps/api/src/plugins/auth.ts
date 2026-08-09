@@ -8,9 +8,10 @@
 //     and the test suite working with no Supabase project.
 // Env is read per request so tests can flip modes without rebuilding the app.
 import { ALL_MEMBER_PERMISSIONS, type MemberPermission, type UserRole } from '@hearth/shared';
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
 import { prisma } from '../lib/prisma';
+import { mcpResourceMetadataUrl } from '../lib/public-url';
 import { resolveAccountForIdentity } from '../services/auth.service';
 import { DEMO_EMAIL } from '../../prisma/seed-constants';
 
@@ -69,7 +70,18 @@ async function verifySupabaseToken(token: string): Promise<JWTPayload> {
   return payload;
 }
 
-function unauthorized(reply: FastifyReply, message: string): FastifyReply {
+/** The remote MCP endpoint, ignoring any query string. */
+function isMcpRequest(url: string): boolean {
+  const path = url.split('?')[0];
+  return path === '/mcp' || path === '/mcp/';
+}
+
+function unauthorized(req: FastifyRequest, reply: FastifyReply, message: string): FastifyReply {
+  // RFC 9728 §5.1: an MCP client's whole OAuth discovery starts from this
+  // header, so a bare 401 leaves Claude with no way in.
+  if (isMcpRequest(req.url)) {
+    reply.header('WWW-Authenticate', `Bearer resource_metadata="${mcpResourceMetadataUrl(req)}"`);
+  }
   return reply.code(401).send({ error: { code: 'unauthorized', message } });
 }
 
@@ -86,19 +98,32 @@ export function registerAuth(app: FastifyInstance): void {
     // Internal automation endpoints authenticate with their own shared secret
     // (routes/internal.ts) — cron callers have no user JWT.
     if (req.url.startsWith('/api/v1/internal/')) return;
+    // OAuth discovery (routes/well-known.ts) necessarily precedes any token.
+    if (req.url.startsWith('/.well-known/oauth-protected-resource')) return;
 
     if (supabaseModeEnabled()) {
       const header = req.headers.authorization;
       if (!header?.startsWith('Bearer ')) {
-        return unauthorized(reply, 'Missing bearer token');
+        return unauthorized(req, reply, 'Missing bearer token');
       }
       let payload: JWTPayload;
       try {
         payload = await verifySupabaseToken(header.slice('Bearer '.length));
       } catch {
-        return unauthorized(reply, 'Invalid or expired token');
+        return unauthorized(req, reply, 'Invalid or expired token');
       }
-      if (!payload.sub) return unauthorized(reply, 'Token has no subject');
+      if (!payload.sub) return unauthorized(req, reply, 'Token has no subject');
+      // Supabase's OAuth 2.1 server stamps `client_id` on the tokens it issues
+      // to third-party clients, and only those: gotrue's AccessTokenClaims
+      // declares it `omitempty` and populates it solely from the session's
+      // OAuth client id (supabase/auth internal/tokens/service.go), so
+      // first-party web/iOS sessions never carry the claim. Dynamic client
+      // registration is open, so a token obtained that way must stay confined
+      // to the MCP surface the user consented to — it is not a general REST
+      // credential.
+      if (typeof payload.client_id === 'string' && payload.client_id && !isMcpRequest(req.url)) {
+        return unauthorized(req, reply, 'OAuth client tokens are only accepted on /mcp');
+      }
       const email = typeof payload.email === 'string' ? payload.email : undefined;
       const identity = await resolveAccountForIdentity(payload.sub, email);
       req.accountId = identity.accountId;
@@ -110,7 +135,7 @@ export function registerAuth(app: FastifyInstance): void {
 
     const token = process.env.DEV_BEARER_TOKEN;
     if (token && req.headers.authorization !== `Bearer ${token}`) {
-      return unauthorized(reply, 'Missing or invalid bearer token');
+      return unauthorized(req, reply, 'Missing or invalid bearer token');
     }
     req.accountId = await getDemoAccountId();
     req.userId = null;

@@ -15,6 +15,7 @@ import { feedbackRoutes } from './routes/feedback';
 import { insightsRoutes } from './routes/insights';
 import { internalRoutes } from './routes/internal';
 import { leasesRoutes } from './routes/leases';
+import { mcpRoutes } from './routes/mcp';
 import { onboardingRoutes } from './routes/onboarding';
 import { propertiesRoutes } from './routes/properties';
 import { rentRoutes } from './routes/rent';
@@ -24,6 +25,7 @@ import { teamRoutes } from './routes/team';
 import { tenantsRoutes } from './routes/tenants';
 import { transactionsRoutes } from './routes/transactions';
 import { unitsRoutes } from './routes/units';
+import { wellKnownRoutes } from './routes/well-known';
 
 export async function buildApp(opts: { logger?: boolean } = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: opts.logger ?? false });
@@ -67,6 +69,10 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
   });
 
   app.get('/api/v1/healthz', async () => ({ status: 'ok' }));
+
+  // Root-mounted (paths fixed by the MCP spec / RFC 9728, not ours to prefix).
+  await app.register(wellKnownRoutes);
+  await app.register(mcpRoutes);
 
   await app.register(
     async (api) => {

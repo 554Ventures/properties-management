@@ -183,6 +183,16 @@ Document/receipt uploads store file bytes in Supabase Storage; Postgres holds on
 2. **Service-role key** — dashboard → **Settings → API** → `service_role`. 📋 collect → `npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY`. *Done.* Without it (or `SUPABASE_URL`) the API silently falls back to the container-local filesystem adapter and uploads vanish on every container restart.
 3. ⚠️ Do **not** `wrangler secret put` optional secrets "just in case": an unset Worker secret used to reach the container as the literal string `"undefined"` (the runtime stringifies env values), which made the API upload to a bucket named `undefined` — every prod upload 500'd while the real bucket sat empty. `deploy/worker.ts` now drops unset/empty secrets before forwarding (*fixed 2026-07-19*), but the rule stands: set a secret only when it has a real value.
 
+## 11. Supabase OAuth 2.1 server (remote MCP connector) — *added 2026-08-09*
+
+Claude Desktop reaches `POST /mcp` with a Supabase-issued OAuth token. Supabase Auth is the authorization server; the API is the resource server (`docs/ARCHITECTURE.md` §7).
+
+1. **Enable it** — dashboard → **Authentication → OAuth Server**. *Done for this project* (the project advertises a `registration_endpoint`, so **dynamic client registration is on** — Claude registers itself and nothing is pre-registered by hand).
+2. **Authorization URL** — set it to `https://app.554properties.com/oauth/consent`. ⚠️ **Supabase does not host a consent screen**; it redirects here with `?authorization_id=`, and `apps/web/src/pages/OAuthConsent.tsx` renders approve/deny. Get this wrong and the OAuth flow dead-ends on a 404 with no error from Supabase.
+3. **`PUBLIC_APP_URL`** — `npx wrangler secret put PUBLIC_APP_URL` → `https://app.554properties.com`. ⚠️ Required before the connector will work: the container sits behind the Worker, so without it the discovery documents advertise the container's *internal* host and Claude's OAuth flow fails at discovery. Dev leaves it unset and falls back to the request host.
+4. **Verify from the edge** after deploying — `curl -si https://app.554properties.com/mcp -X POST` must return 401 **with** a `WWW-Authenticate: Bearer resource_metadata="…"` header, and `curl -s https://app.554properties.com/.well-known/oauth-protected-resource/mcp` must return JSON (not the SPA's `index.html` — that's the failure mode if the Worker routing regresses).
+5. Nothing to collect: no client id, no client secret. Claude's redirect URI is `https://claude.ai/api/mcp/auth_callback`.
+
 ## Values you should have collected
 
 | # | Value | Goes to |

@@ -1,0 +1,154 @@
+# PLAN-REAL-EQUITY.md — Property-Finance-Depth Workstream
+
+*Authored 2026-08-06 from the properties gap analysis (WHATS_NEXT §4). Phases 1–2 are buildable now; Phase 3 is gated on decision D1.*
+
+## 1. Overview & goals
+
+Three coupled WHATS_NEXT §4 items, designed as one system, shipped in three independently-deployable phases: (a) mortgages + manual valuations so `buildBalanceSheet` (apps/api/src/services/report.service.ts:500) stops reporting `equity = cost basis`, (b) recurring transaction templates drafting into the existing review queue via the daily jobs loop (apps/api/src/services/jobs.service.ts), and (c) a fixed-asset registry computing straight-line depreciation for Schedule E Line 18, replacing the `Category.irsScheduleELine` passthrough only when assets exist. The linchpin is the mortgage-payment representation (§3): one ledger row with an integer `principalCents` carve-out, excluded from P&L exclusively through `lib/pnl.ts` — the codebase's designated classification choke point. Everything is additive: new models, nullable new columns, extended (never changed) shared schemas.
+
+## 2. Data model
+
+All enums are shared Zod enums in `packages/shared/src/enums.ts` backing String columns (schema header convention, apps/api/prisma/schema.prisma:6-16). All money integer cents. All new root entities carry `accountId` + cuid ids.
+
+**`Mortgage`** (new model; multiple per property allowed — HELOCs/seconds exist)
+- `id`, `accountId`, `propertyId` (FK, Cascade), `lender String`
+- `balanceCents Int` + `balanceAsOfDate DateTime` — a **statement checkpoint**, not a running total. Current balance is *derived*: checkpoint minus confirmed principal paid after the checkpoint date (ARCHITECTURE §4 derive-don't-store). Re-checkpointing (user enters a fresh statement balance) updates both fields, audited.
+- `originalPrincipalCents Int?`, `startDate DateTime?` — context only
+- `interestRateMilliPct Int?` — thousandths of a percent (6.375% = 6375). Integer-safe per the no-`Decimal` convention; basis points can't represent eighth-point rates. Display-only in v1 — no amortization math depends on it.
+- `escrowNote String?`, `notes String?`, `createdAt`, `updatedAt`, `archivedAt DateTime?` (soft-archive convention, = paid off/removed; archived mortgages drop out of the balance sheet)
+- Relation: `transactions Transaction[]` via new `Transaction.mortgageId`
+
+**`PropertyValuation`** (new model; append-only history, latest-as-of derives)
+- `id`, `accountId`, `propertyId` (FK, Cascade), `valueCents Int`, `asOfDate DateTime`
+- `source String` — new enum `ValuationSource`: `owner_estimate | appraisal | tax_assessment | other` (PRD excludes external estimate integrations; every value is manually entered)
+- `notes String?`, `createdAt`. Hard delete allowed (it's a correction of your own estimate), audited.
+- Index `@@index([accountId, propertyId, asOfDate])`
+
+**`RecurringTemplate`** (new model)
+- `id`, `accountId`, `description String`, `vendor String?`, `propertyId String?`, `unitId String?`, `categoryId String?`
+- `type String` (existing `TransactionType`), `amountCents Int`
+- `cadence String` — new enum `RecurrenceCadence`: `monthly | quarterly | annual` (insurance is often annual, HOA quarterly)
+- `anchorDate DateTime` — first occurrence; subsequent occurrences derived by adding the cadence, day-of-month clamped to month end (reuse `lib/dates.ts` tz helpers; occurrences computed in the account's timezone like all period math)
+- `mortgageId String?` + `principalCents Int?` — a mortgage template stamps the breakdown onto drafted rows (see §3); service validates `principalCents ≤ amountCents`, requires `mortgageId`, `type = 'expense'`
+- `lastDraftedOccurrence String?` — `YYYY-MM-DD` of the last occurrence drafted; idempotency marker that survives deletion/dismissal of the drafted row (same idea as `Report` period uniqueness in jobs.service.ts:36-41)
+- `createdAt`, `updatedAt`, `archivedAt DateTime?` (archive = pause; restore = resume; **no backfill** on resume — only the most recent due occurrence ever drafts, mirroring the weekly-brief rule at jobs.service.ts:177-180)
+
+**`FixedAsset`** (new model)
+- `id`, `accountId`, `propertyId` (FK, Cascade), `description String`
+- `kind String` — new enum `FixedAssetKind`: `building | improvement`
+- `costCents Int`, `landCents Int @default(0)` — non-depreciable portion (building kind: the land split of acquisition cost; improvements: normally 0). Depreciable basis derives = `costCents − landCents`.
+- `inServiceDate DateTime`, `recoveryMonths Int @default(330)` — 27.5 years as **integer months**; keeps all math integer, and lets a user's accountant override (15-yr land improvements etc.) without a schema change
+- `transactionId String?` — provenance link when created from a Capital Improvements ledger row (plain string, `Document.entityId` precedent — no FK cascade concerns)
+- `disposedDate DateTime?` (stops depreciation; sale proceeds/recapture out of scope), `notes`, `createdAt`, `archivedAt DateTime?`
+
+**`Transaction` — three additive nullable columns**
+- `mortgageId String?` (FK → Mortgage, SetNull) + `principalCents Int?` — see §3
+- `recurringTemplateId String?` (FK → RecurringTemplate, SetNull) — provenance badge + duplicate handling
+- `TransactionSource` enum gains `'recurring'` (additive; audit `source` detail at transaction.service.ts:449 passes through unchanged)
+
+**Shared schemas** (`packages/shared/src/schemas/`): new files `mortgage.ts`, `valuation.ts`, `recurring.ts`, `fixed-asset.ts` with Create/Update/Response shapes; `transaction.ts` gains optional `mortgageId`/`principalCents`/`recurringTemplateId` on the Transaction shape and `mortgageId`/`principalCents` on `ConfirmTransactionInput` + `CreateTransactionInput` (extension, not change). Report `data` stays `z.unknown()` (packages/shared/src/schemas/report.ts:22), so balance-sheet/Schedule-E snapshot shape changes are not contract breaks — but old persisted snapshots lack the new sections, so the web viewer renders them conditionally.
+
+**Security-deposit forward-compatibility (out of scope, shapes the design):** the balance-sheet builder gets a generic internal `LiabilityLine { item, kind, amountCents }` list where `kind` is currently only `'mortgage'`. Deposits later add `kind: 'security_deposit'` rows without touching the report shape.
+
+## 3. Mortgage-payment semantics — the decision
+
+**Decision: one ledger row per bank debit, with an integer `principalCents` carve-out, excluded from money aggregates inside `lib/pnl.ts`.**
+
+A payment of $2,400 = $1,100 interest + $800 principal + $500 escrow is **one** Transaction: `type: 'expense'`, `amountCents: 240000`, `mortgageId` set, `principalCents: 80000`, and the non-principal remainder ($1,600) categorized normally — either a single category (Mortgage Interest → Line 12 via existing passthrough at report.service.ts:453) or `TransactionSplit` rows (Mortgage Interest $1,100 + Property Taxes/Insurance escrow lines), with the split-sum invariant extended to **"splits sum exactly to `amountCents − (principalCents ?? 0)`"** (validated in `planSplits`, transaction.service.ts:523).
+
+`lib/pnl.ts` changes (the file's entire reason to exist):
+- `pnlBucket` input gains `principalCents: number | null`; expense contribution becomes `amountCents − (principalCents ?? 0)`. Signature change **deliberately breaks every callsite at compile time**, forcing each `groupBy` to add `principalCents` to its `_sum` — exactly the safety mechanism the contract-first tests give the API layer.
+- `pnlCategoryLines`: unsplit rows contribute `amountCents − principalCents`; split rows already sum to the remainder by the new invariant, so no change.
+- `pnlSums`: subtract `_sum.principalCents ?? 0` on expense groups.
+
+Validation rules (transaction.service): `principalCents` requires `mortgageId` and `type: 'expense'`; `0 ≤ principalCents ≤ amountCents`; mutually exclusive with `classification` (a principal-bearing row is neither transfer nor refund) and with rent links; changing `amountCents` revalidates. `principalCents === amountCents` (principal-only payment) is legal — the row contributes $0 to P&L, like a transfer, but still decrements the mortgage.
+
+Mortgage balance derivation: `balance(t) = balanceCents − Σ principalCents` of **confirmed** rows with this `mortgageId` dated in `(balanceAsOfDate, t]` (signed the other way when `t < balanceAsOfDate`). Only confirmed rows count — a drafted template row in review moves nothing.
+
+**Rejected alternatives:**
+1. **Template drafts 2–3 separate rows** (interest expense / escrow expense / principal row with a new excluded classification). Rejected: the bank feed delivers **one** debit; `@@unique([accountId, externalId])` (schema.prisma:317) and the duplicate-defense fingerprint (exact-amount match) both assume 1:1 ledger↔bank rows. Component rows at $1,100/$800/$500 would never fingerprint-match the $2,400 bank row, guaranteeing double-counting for every bank-connected user — the exact trust failure the Trustworthy-Transactions initiative existed to kill.
+2. **New `classification` value alone** (e.g. `'principal_payment'` on the whole row). Rejected: classification is all-or-nothing per row (pnl.ts:37-39); a real payment is *partly* deductible expense, so a whole-row exclusion is wrong in both directions.
+3. **Model principal as a `TransactionSplit` line with a magic "Mortgage Principal" category excluded in aggregation.** Rejected: splits are documented as refining *per-category* aggregation only — "the parent row still owns the money, so totals/KPIs/NOI are untouched" (schema.prisma:326-328). Principal changes the parent's money contribution, which is a per-row concern; hiding it in split semantics would break the totals/lines agreement `pnlCategoryLines` documents.
+4. **New `TransactionType` `'liability'`.** Rejected: `type` drives sign everywhere and is a frozen two-value contract; the blast radius (every type switch in both apps) is disproportionate.
+
+Schedule E Line 12 needs no new code: the remainder categorized "Mortgage Interest" flows through the existing seeded category (seed-constants.ts already maps `Mortgage Interest → 'Line 12 – Mortgage interest'`).
+
+## 4. API surface & AI surface
+
+**Permission areas** (guards from `lib/authz.ts`, pattern per routes/properties.ts:16):
+- Mortgages, valuations, fixed assets → **`requirePermission('properties')`** — they are property-attached records edited from the Property hub, exactly like units/leases; they don't mint ledger rows.
+- Recurring templates → **`requirePermission('money')`** — their entire job is creating ledger rows; a member without money-write must not schedule money writes.
+- Confirm-with-mortgage rides the existing `/transactions/:id/confirm` guard (`money`) unchanged.
+
+**Routes** (nested-under-parent pattern of `POST /properties/:id/units` / `PATCH /units/:id`):
+- `POST /properties/:id/mortgages` · `PATCH /mortgages/:id` (incl. re-checkpoint: `balanceCents` + `balanceAsOfDate` together) · `DELETE /mortgages/:id` (archive) · `POST /mortgages/:id/restore`
+- `POST /properties/:id/valuations` · `DELETE /valuations/:id`
+- `POST /properties/:id/assets` · `PATCH /assets/:id` · `DELETE /assets/:id` (archive) · `POST /assets/:id/restore`
+- `GET /recurring-templates` · `POST /recurring-templates` · `PATCH /recurring-templates/:id` · `DELETE /recurring-templates/:id` (archive) · `POST /recurring-templates/:id/restore`
+- Reads ride existing surfaces additively: `PropertyDetailResponse` gains `mortgages[]` (with derived `currentBalanceCents`), `latestValuation`, `equityCents`, `assets[]`; the review-queue item shape gains `recurringTemplateId` + mortgage-breakdown prefill.
+- Every write audits (`mortgage.created`, `mortgage.checkpointed`, `valuation.recorded`, `recurring_template.created`, `fixed_asset.created`, …) with the actor threaded through; scheduler-drafted transactions audit `actor: 'system'` (jobs pattern).
+
+**AI tools** (`ai/tools.ts`; MCP inherits automatically; write flags + `WRITE_TOOL_PERMISSIONS` entries):
+- Reads: extend `get_property` result + description (acquisition-data precedent, WHATS_NEXT §4); new `list_recurring_templates`.
+- Writes: `create_mortgage`, `update_mortgage` (checkpoint use-case: "my statement says the balance is $310k") → `properties`; `record_property_valuation` → `properties`; `create_recurring_template` → `money`; `create_fixed_asset` → `properties`. Each executes the audited service function (`system` actor), tested like `property-unit-tools.test.ts` (registry flags, permission denial, cross-account isolation, MCP roundtrip).
+- Action-card allowlist (`apps/web/src/components/chat/actionAllowlist.ts`, explicit entries only, no DELETEs — matching the archive/restore exclusion precedent): `POST /properties/{id}/mortgages`, `PATCH /mortgages/{id}`, `POST /properties/{id}/valuations`, `POST /recurring-templates`, `POST /properties/{id}/assets`; lookalike-path negatives in `src/test/actionAllowlist.test.ts`; system-prompt action-card catalog updated in the same change.
+- Mock mode: no existing mock script touches these; add one deterministic script (e.g. /equity|worth/i → `get_property` + text summary) and a matching composer suggested prompt, keeping the offline demo honest. Existing scripts unaffected.
+
+## 5. Derivation / report changes
+
+**Balance sheet** (`buildBalanceSheet`, report.service.ts:500):
+- Assets: per property, latest `PropertyValuation.asOfDate ≤ range.to` → `"… (market value, owner-provided)"`; fallback `"… (at cost)"` as today; plus existing period-cash line.
+- Liabilities: one line per non-archived mortgage, `kind: 'mortgage'`, amount = derived balance as of `range.to` (§3 formula).
+- `equityCents = totalAssetsCents − totalLiabilitiesCents`; `simplified` flag stays until valuations+mortgages exist for the account. Snapshot shape is additive; the web viewer must tolerate old snapshots without `liabilities` detail rows (they render today's empty array fine) and label valuation-based lines as owner-provided (never imply market data).
+
+**Schedule E** (`buildScheduleE`, report.service.ts:411): Line 12 works via category passthrough with the new confirm semantics (no code change). Line 18: when the account has ≥1 non-archived `FixedAsset`, per-property computed depreciation from a new pure module `apps/api/src/lib/depreciation.ts` — straight-line, mid-month convention, all-integer: per asset, `monthlyCents = floor(depreciableBasis / recoveryMonths)`, months-in-service overlap with the report range, half-month for the in-service and disposal months, remainder absorbed in the final recovery month so lifetime totals sum exactly to basis. Simultaneously **exclude the "Capital Improvements" category from expense-line passthrough for that account** (otherwise capex double-counts as both an expensed line and a depreciated asset) and surface those rows in a separate "capitalized, not deducted" note section. Zero assets → today's passthrough behavior, untouched. The existing disclaimer string (report.service.ts:483-484) stays on Schedule E and is added verbatim to any UI surface showing computed depreciation; copy must say "computed estimate" — never "your deduction" (PRD §13.1 legal review is open; see §7).
+
+**Dashboard/KPIs**: no new KPIs in this workstream. All existing aggregates change *only* via the `pnl.ts` principal carve-out — which is the point: a confirmed mortgage payment contributes only its interest+escrow portion to expenses/NOI/cashflow/tax set-aside, everywhere, automatically. Depreciation is non-cash and deliberately touches no P&L/cashflow surface.
+
+## 6. Phased delivery
+
+Sequencing constraint throughout: shared schema → migration → service+routes+tools (backend) must land before frontend integration; within a phase, frontend can start from the agreed shared-schema PR.
+
+**Phase 1 — Mortgages, valuations, real equity** *(shippable alone; no pnl.ts changes)*
+1. `[backend]` Shared: `mortgage.ts`, `valuation.ts` schemas, `ValuationSource` enum; extend `PropertyDetailResponse` additively. Files: `packages/shared/src/schemas/`, `enums.ts`, `index.ts`.
+2. `[backend]` Migration `add_mortgage_and_valuation` (two tables, all-additive). New `services/mortgage.service.ts`, `valuation.service.ts` (accountId-first, audited, ownership-checked like `assertAttributionOwned`); routes with `requirePermission('properties')`; balance derivation helper (checkpoint only — no principal rows exist yet, the term is `Σ = 0`, code written once for Phase 2).
+3. `[backend]` `buildBalanceSheet` rewrite per §5; property detail equity fields.
+4. `[backend]` Tools `create_mortgage`/`update_mortgage`/`record_property_valuation` + `WRITE_TOOL_PERMISSIONS`; mock script + composer prompt.
+5. `[frontend]` Property hub "Financing & value" card (mortgage list w/ balance + as-of date, add/checkpoint modals, valuation history, equity figure with "owner-provided value" note — not color-alone); permission-gated controls (2026-07-13 gating pattern). Allowlist entries + negative tests. Balance-sheet report viewer: liabilities/equity sections, old-snapshot tolerance.
+6. Tests/seed: mortgage on Maple (e.g. checkpoint $182,000) + one valuation + none on other properties (exercises both fallbacks). **No Transaction rows added → every pinned KPI in seed-constants.ts holds.** New pinned constants: `MAPLE_MORTGAGE_BALANCE_CENTS`, `MAPLE_VALUATION_CENTS`, expected balance-sheet totals; repin the balance-sheet test only.
+
+**Phase 2 — Payment semantics + recurring templates** *(depends on Phase 1's Mortgage model)*
+1. `[backend]` Shared: `recurring.ts` schema, `RecurrenceCadence`, `'recurring'` source value; `ConfirmTransactionInput`/`CreateTransactionInput`/`Transaction` gain `mortgageId`/`principalCents` (+`recurringTemplateId` on Transaction).
+2. `[backend]` Migration `add_recurring_and_principal` (RecurringTemplate table; three nullable Transaction columns).
+3. `[backend]` **pnl.ts carve-out** (§3) — its own PR: signature change + every compile-broken callsite adds `principalCents` to `_sum`/selects (report.service, dashboard.service, insight.service, contractor stats, monthly review…). Test: a seeded-style payment row asserts P&L/KPI/Schedule-E/GL totals count only the non-principal remainder.
+4. `[backend]` transaction.service: principal validation rules (§3), split-invariant extension in `planSplits`, `confirm` mortgage path (sets `mortgageId`/`principalCents`, default-categorizes remainder as Mortgage Interest when uncategorized), edit/rent-link/classification mutual exclusions.
+5. `[backend]` `recurring.service.ts` + routes (`requirePermission('money')`); drafting in `runDailyJobs` per account (occurrence math in account tz; `lastDraftedOccurrence` idempotency; draft-on-create when the current occurrence date already passed — decision D2; `pending_review`, `source: 'recurring'`, actor `system`, never auto-confirm); `recurringDrafted` counter on `DailyJobsResult`; mortgage templates stamp breakdown onto drafted rows.
+6. `[backend]` Duplicate defense: drafted recurring row ↔ bank row fingerprint — extend the match so vendor disagreement doesn't hide it when one side is template-drafted at the same amount (review-queue copy: "possibly your auto-drafted mortgage payment — confirm one, dismiss the other").
+7. `[backend]` Tools `create_recurring_template`, `list_recurring_templates`.
+8. `[frontend]` Money page "Recurring" section (list/create/edit/pause-restore); review-queue: "Auto-drafted" badge (text, not color-alone), mortgage confirm card with principal input + remainder category/splits; allowlist entry.
+9. Tests/seed: **seed template must not draft during test jobs runs** — seed it with `lastDraftedOccurrence` = current occurrence, so `REVIEW_QUEUE_ITEMS` count (3) and the pending-review insight stay pinned; drafting tests create their own template and run `runDailyJobs` twice (idempotency). If a confirmed seed mortgage-payment row is wanted for demo realism, it must ride the trailing-expense constants machinery with explicit repins — recommend **not** seeding one initially (add behind a deliberate constants update).
+
+**Phase 3 — Fixed assets & depreciation** *(depends only on Phase 1 conceptually; gated on decision D1)*
+1. `[backend]` Shared `fixed-asset.ts`, `FixedAssetKind`; migration `add_fixed_asset`.
+2. `[backend]` `lib/depreciation.ts` pure module + exhaustive unit tests (mid-month, partial years, disposal, remainder-in-final-year, land split).
+3. `[backend]` `fixed-asset.service.ts` + routes (`properties` guard); Schedule E Line 18 computed + capex passthrough exclusion + fallback (§5); tax-package export gains the depreciation schedule table (PRD §5.6).
+4. `[backend]` Tool `create_fixed_asset`; post-confirm nudge: confirming a Capital Improvements row returns an "add to asset registry?" suggestion (AiChip in the queue — suggested, never auto, like rent-match).
+5. `[frontend]` Asset registry card on the Property hub; Schedule E viewer Line 18 rows + disclaimer + "view as table" (a11y); capex nudge UI.
+6. Tests/seed: building assets for 1–2 properties using their **fixed** seed acquisition dates (seed.ts:130 — `Date.UTC(year, 4, 15)`, years past, so a full-tax-year report yields a constant annual amount) with pinned land splits; pin `MAPLE_ANNUAL_DEPRECIATION_CENTS` etc.; Schedule E reconciliation tests extended (capex-exclusion asserted both ways: with and without assets).
+
+## 7. Risks & open product decisions
+
+**Risks**
+- **pnl.ts ripple** is the widest change: mitigated by the compile-breaking signature (a missed callsite fails typecheck, not silently at runtime) and a cross-surface totals test. Any aggregate added between now and Phase 2 must be re-audited.
+- **Old balance-sheet snapshots** ("a filed year never silently changes", schema.prisma:463): viewer must render pre-equity snapshots as-is; never regenerate them.
+- **Seed/constants drift**: two traps named above — a due-at-seed recurring template moving the pinned review-queue count, and a seeded payment row moving MTD/trailing KPIs. Both handled by construction (pre-stamped `lastDraftedOccurrence`; no seeded payment row).
+- **Duplicate double-count window** (Phase 2 item 6) is the highest product-trust risk: a bank-connected user with a template sees two rows for one payment until they act. The extended fingerprint + explicit queue copy is the mitigation; monitor via prod feedback triage.
+- **Depreciation correctness liability**: an off-by-a-convention figure looks authoritative. Mid-month/27.5 covers the common case only; the disclaimer and "computed estimate" framing are load-bearing, and Phase 3 should not ship before D1.
+
+**Open decisions for the owner (do not proceed on these silently)**
+1. **D1 — Legal disclaimer review (PRD §13.1)**: computed depreciation is the first *derived tax figure* Hearth invents rather than sums. Ship Phase 3 before or only after the legal-language review? (Phases 1–2 are unaffected.)
+2. **D2 — Draft-on-create**: when a template is created after this period's occurrence date, draft immediately (plan's default) or wait for the next occurrence?
+3. **D3 — Escrow depth**: v1 treats the escrow portion as directly-categorized expense (Property Taxes/Insurance splits) at payment time. True escrow accounting (asset until disbursed; PRD lists an "Escrow Ledger" report) — later phase or never?
+4. **D4 — Amortization assist**: with `interestRateMilliPct` + balance we *could* suggest the interest/principal split on the confirm card (suggested, never auto). In scope for Phase 2 or deferred?
+5. **D5 — Accumulated depreciation on the balance sheet**: show as a contra-asset line for cost-basis properties (accounting-correct, potentially confusing) or omit (plan's default)?
+6. **D6 — Valuation cadence nudge**: should a stale valuation (>12 months) surface an insight prompting a refresh, or is that noise for this user base?

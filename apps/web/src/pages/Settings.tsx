@@ -6,6 +6,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { usePlaidLink } from 'react-plaid-link';
 import { Link, useLocation, useNavigate } from 'react-router';
+import type { OAuthGrant } from '@supabase/supabase-js';
 import type {
   AccountMember,
   AccountSettings,
@@ -45,6 +46,7 @@ import { StatusBadge } from '../components/ui/StatusBadge';
 import { useToast } from '../components/ui/Toast';
 import { IconAlertCircle, IconAlertTriangle } from '../components/ui/icons';
 import { formatDateTime } from '../lib/format';
+import { supabase } from '../lib/supabase';
 import { usePageTitle } from '../lib/usePageTitle';
 import { useStripeFcConnect } from '../lib/useStripeFcConnect';
 import {
@@ -143,6 +145,8 @@ export function Settings() {
           </section>
 
           <TeamSection />
+
+          <ConnectedClientsSection />
 
           <section aria-label="Legal">
             <Card>
@@ -618,6 +622,133 @@ function InviteForm() {
         </Button>
       </div>
     </form>
+  );
+}
+
+/** Connected AI clients (remote MCP OAuth): owner-only revoke panel for
+ *  clients (e.g. Claude Desktop) that have completed the /oauth/consent flow
+ *  (OAuthConsent.tsx). Pure client-side against Supabase's OAuth 2.1 server —
+ *  no 554 Properties API route backs this, so it doesn't go through
+ *  api/queries.ts like the rest of the page. Mirrors TeamSection's
+ *  enabled + owner-vs-member gating. */
+function ConnectedClientsSection() {
+  const { enabled } = useAuth();
+  const me = useCurrentUser();
+
+  if (!enabled) {
+    return (
+      <section aria-label="Connected AI clients">
+        <Card>
+          <h2 className="mb-2 text-sm font-semibold text-ink">Connected AI clients</h2>
+          <p className="text-sm text-ink-muted">
+            Sign in to connect and manage AI clients like Claude Desktop.
+          </p>
+        </Card>
+      </section>
+    );
+  }
+
+  return (
+    <section aria-label="Connected AI clients">
+      <Card>
+        <h2 className="mb-3 text-sm font-semibold text-ink">Connected AI clients</h2>
+        {me.isPending ? (
+          <Skeleton className="h-24 w-full" />
+        ) : me.isError ? (
+          <ErrorNotice error={me.error} onRetry={() => void me.refetch()} />
+        ) : me.data.role !== 'owner' ? (
+          <p className="text-sm text-ink-muted">
+            Only the account owner can manage AI clients connected to this account.
+          </p>
+        ) : (
+          <OwnerConnectedClientsView />
+        )}
+      </Card>
+    </section>
+  );
+}
+
+/** Lists clients granted access via the /oauth/consent flow and lets the
+ *  owner revoke any of them (the only in-app way to cut off a connector). */
+function OwnerConnectedClientsView() {
+  const { toast } = useToast();
+  const [grants, setGrants] = useState<OAuthGrant[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [revokingClientId, setRevokingClientId] = useState<string | null>(null);
+
+  const load = () => {
+    if (!supabase) return;
+    setLoading(true);
+    setLoadError(null);
+    void supabase.auth.oauth.listGrants().then(({ data, error }) => {
+      setLoading(false);
+      if (error) {
+        setLoadError(error.message);
+        return;
+      }
+      setGrants(data);
+    });
+  };
+
+  useEffect(load, []);
+
+  const revoke = async (grant: OAuthGrant) => {
+    if (!supabase) return;
+    setRevokingClientId(grant.client.id);
+    const { error } = await supabase.auth.oauth.revokeGrant({ clientId: grant.client.id });
+    setRevokingClientId(null);
+    if (error) {
+      toast(error.message, 'danger');
+      return;
+    }
+    setGrants((prev) => prev?.filter((g) => g.client.id !== grant.client.id) ?? prev);
+    toast(`${grant.client.name} disconnected.`, 'neutral');
+  };
+
+  if (loading) return <Skeleton className="h-24 w-full" />;
+  if (loadError) {
+    return (
+      <div role="alert" className="flex items-center gap-3 rounded-md bg-danger-soft px-4 py-3 text-sm text-danger">
+        <IconAlertCircle />
+        <span className="flex-1">{loadError}</span>
+        <Button variant="secondary" size="sm" onClick={load}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
+
+  if (!grants || grants.length === 0) {
+    return (
+      <p className="text-sm text-ink-muted">
+        No AI clients are connected to this account yet. When you approve one (e.g. from Claude
+        Desktop), it appears here.
+      </p>
+    );
+  }
+
+  return (
+    <ul className="flex flex-col divide-y divide-border">
+      {grants.map((grant) => (
+        <li key={grant.client.id} className="flex items-center justify-between gap-3 py-3 first:pt-0 last:pb-0">
+          <div>
+            <p className="text-sm font-medium text-ink">{grant.client.name}</p>
+            <p className="mt-0.5 text-xs text-ink-muted">
+              Connected {formatDateTime(grant.granted_at)}
+            </p>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            busy={revokingClientId === grant.client.id}
+            onClick={() => void revoke(grant)}
+          >
+            Revoke
+          </Button>
+        </li>
+      ))}
+    </ul>
   );
 }
 

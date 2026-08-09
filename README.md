@@ -31,7 +31,17 @@ npm run mcp --workspace apps/api    # stdio transport
 
 Read tools (portfolio summary, KPIs, properties, tenants, rent status, transactions, insights, reports) and resources (`hearth://portfolio/summary`, `hearth://properties[/{id}]`, `hearth://rent/{period}`, `hearth://reports[/{id}]`, `hearth://insights/active`) are always available. Write tools (create/confirm transaction, record rent payment, send reminders, generate/email report, dismiss insight) are registered only when `HEARTH_MCP_ENABLE_WRITE=true`; every write is audit-logged.
 
-### Connect from Claude Desktop / Claude Code
+### Connect from Claude Desktop — the deployed app (recommended)
+
+Add a **custom connector** in Claude Desktop pointing at:
+
+```
+https://app.554properties.com/mcp
+```
+
+Claude registers itself with Supabase Auth automatically, sends you to the 554 Properties consent screen, and from then on acts as *you*: it sees your real portfolio and may take any action your account permissions allow. Every write lands in the audit log as `system`. Revoke access anytime under **Settings → Connected AI clients**.
+
+### Connect to a local checkout (stdio)
 
 ```json
 {
