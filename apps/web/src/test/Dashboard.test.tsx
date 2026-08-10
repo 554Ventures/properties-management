@@ -89,7 +89,7 @@ function renderDashboard() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      {/* ToastProvider matches the app shell — WeeklyBriefCard uses useToast. */}
+      {/* ToastProvider matches the app shell — insight cards use useToast. */}
       <ToastProvider>
         <MemoryRouter>
           <Dashboard />

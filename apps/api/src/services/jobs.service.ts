@@ -7,11 +7,12 @@
 // cron-triggered internal endpoint (routes/internal.ts). One account's
 // failure never blocks the others. Scheduler notifications route through
 // notification.service per-recipient prefs (F2).
-import type { Report } from '@hearth/shared';
+import { WeeklyBriefDataSchema, type Report } from '@hearth/shared';
 import { Prisma } from '@prisma/client';
 import { addMonthsToPeriod, currentPeriodInTz, monthStartInTz } from '../lib/dates';
 import { ImportRateLimitedError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
+import { buildWeeklyBriefEmail } from '../lib/weekly-brief-email';
 import { processScheduledDeletions } from './account.service';
 import { expireStaleSessions } from './chat.service';
 import * as insightService from './insight.service';
@@ -154,7 +155,9 @@ async function doRunDailyJobs(): Promise<DailyJobsResult> {
             },
             email: {
               subject: review.title,
-              // No deep links in email (no public-base-URL env var exists).
+              // Opt-in and unchanged: the monthly review still has its report
+              // page in the app, so its email stays a pointer (unlike the
+              // weekly brief below, which is delivered by email).
               body: `${bottomLine ? `${bottomLine}\n\n` : ''}Open 554 Properties → Reports for the full review.`,
             },
           });
@@ -191,23 +194,22 @@ async function doRunDailyJobs(): Promise<DailyJobsResult> {
         }
         if (brief) {
           result.weeklyBriefsCreated += 1;
+          // Email is the brief's delivery surface (it has no dashboard card),
+          // so the body carries the whole digest. A snapshot that doesn't
+          // parse still notifies, just with the report title and no digest —
+          // never skip the notification over a formatting problem.
           const briefRow = await prisma.report.findUnique({ where: { id: brief.id } });
           let headline = brief.title;
-          let emailBody = 'Open 554 Properties → Reports for the full brief.';
+          let email = {
+            subject: brief.title,
+            body: 'Open 554 Properties → Reports for the full brief.',
+          };
           try {
-            const data = JSON.parse(briefRow?.dataJson ?? '{}') as {
-              headline?: string;
-              summary?: string;
-              items?: Array<{ text?: string }>;
-            };
-            if (data.headline) headline = data.headline;
-            const itemLines = (data.items ?? [])
-              .map((i) => (i.text ? `• ${i.text}` : null))
-              .filter(Boolean)
-              .join('\n');
-            emailBody = `${data.headline ?? ''}\n\n${data.summary ?? ''}\n\n${itemLines}\n\nOpen 554 Properties → Reports for the full brief.`.trim();
+            const data = WeeklyBriefDataSchema.parse(JSON.parse(briefRow?.dataJson ?? '{}'));
+            headline = data.headline;
+            email = buildWeeklyBriefEmail(brief.id, data);
           } catch {
-            // Fall back to the generic body.
+            // Fall back to the generic subject/body.
           }
           await notifyCategory(accountId, 'weekly_brief', {
             push: {
@@ -215,7 +217,7 @@ async function doRunDailyJobs(): Promise<DailyJobsResult> {
               body: headline,
               deepLink: `/reports/${brief.id}`,
             },
-            email: { subject: brief.title, body: emailBody },
+            email,
           });
         }
       }

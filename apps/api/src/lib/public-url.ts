@@ -19,9 +19,21 @@ function isLoopbackHost(host: string): boolean {
   return name === 'localhost' || name === '127.0.0.1' || name === '::1' || name === '[::1]';
 }
 
-export function publicBaseUrl(req: FastifyRequest): string {
+/**
+ * The configured origin with no request to fall back on — for code that builds
+ * user-facing links outside a request (the scheduler's notification emails).
+ * Null when PUBLIC_APP_URL is unset: there is no safe guess without a Host
+ * header, so callers must degrade to link-free copy rather than emit a link
+ * into localhost.
+ */
+export function configuredPublicAppUrl(): string | null {
   const configured = process.env.PUBLIC_APP_URL?.trim();
-  if (configured) return configured.replace(/\/+$/, '');
+  return configured ? configured.replace(/\/+$/, '') : null;
+}
+
+export function publicBaseUrl(req: FastifyRequest): string {
+  const configured = configuredPublicAppUrl();
+  if (configured) return configured;
   const host = req.headers.host ?? 'localhost';
   const forwarded = String(req.headers['x-forwarded-proto'] ?? '')
     .split(',')[0]

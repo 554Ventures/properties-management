@@ -98,7 +98,6 @@ import type {
   UpdateTenantInput,
   UpdateTransactionInput,
   UpdateUnitInput,
-  WeeklyBriefLatestResponse,
 } from '@hearth/shared';
 import { OnboardingStepIdSchema } from '@hearth/shared';
 import { api, toQuery } from './client';
@@ -919,14 +918,10 @@ export function useEmailReport() {
   });
 }
 
-/** Latest AI weekly brief (W1) — null until the first weekly job has run. */
-export function useLatestWeeklyBrief() {
-  return useQuery({
-    queryKey: ['reports', 'weekly-brief', 'latest'],
-    queryFn: () => api.get<WeeklyBriefLatestResponse>('/reports/weekly-brief/latest'),
-    staleTime: STALE_LONG, // a new brief appears at most once a week
-  });
-}
+// No hook for GET /reports/weekly-brief/latest: the brief is delivered as the
+// weekly notification email, not rendered in the web app. The endpoint stays —
+// it backs the assistant's get_latest_weekly_brief tool — and the brief itself
+// is readable as a normal report under /reports/:id.
 
 // ----------------------------------------------------------------- insights
 

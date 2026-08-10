@@ -188,7 +188,7 @@ const NOTIFICATION_CATEGORIES: {
   {
     key: 'weekly_brief',
     label: 'Weekly brief',
-    hint: 'The AI weekly digest: what changed and what to look at.',
+    hint: 'Every Monday: what changed last week and what to look at. Delivered here, not on the dashboard.',
   },
   {
     key: 'monthly_review',

@@ -137,28 +137,36 @@ describe('notifyCategory (per-user routing)', () => {
     await pushService.registerDevice(accountId, { platform: 'ios', token: memberToken }, memberId);
     // Legacy/demo-era row: no userId — must follow the OWNER's prefs.
     await pushService.registerDevice(accountId, { platform: 'ios', token: legacyToken }, null);
-    // Member opts weekly_brief to email-only HERE (not in a sibling it()) so
-    // every routing test below holds under `vitest -t` single-test filtering.
+    // Both users get an EXPLICIT weekly_brief override HERE (not in a sibling
+    // it()) so every routing test below holds under `vitest -t` single-test
+    // filtering — and so routing is asserted against stored prefs rather than
+    // whatever DEFAULT_NOTIFICATION_PREFS happens to say. Opposite channels:
+    // member email-only, owner push-only.
     await notificationService.updatePrefs(accountId, memberId, {
       ...DEFAULT_NOTIFICATION_PREFS,
       weekly_brief: { push: false, email: true },
     });
+    await notificationService.updatePrefs(accountId, ownerId, {
+      ...DEFAULT_NOTIFICATION_PREFS,
+      weekly_brief: { push: true, email: false },
+    });
   });
 
   it('getPrefs/updatePrefs read and write the per-user row', async () => {
-    // beforeAll wrote the member's override via updatePrefs; it round-trips
-    // and the owner's row is untouched defaults.
+    // beforeAll wrote each user's override via updatePrefs; both round-trip
+    // and neither write leaked into the other's row.
     expect(await notificationService.getPrefs(accountId, memberId)).toEqual({
       ...DEFAULT_NOTIFICATION_PREFS,
       weekly_brief: { push: false, email: true },
     });
-    expect(await notificationService.getPrefs(accountId, ownerId)).toEqual(
-      DEFAULT_NOTIFICATION_PREFS,
-    );
+    expect(await notificationService.getPrefs(accountId, ownerId)).toEqual({
+      ...DEFAULT_NOTIFICATION_PREFS,
+      weekly_brief: { push: true, email: false },
+    });
   });
 
   it('pushes to opted-in users only; null-userId devices follow the owner', async () => {
-    // Member opted out of weekly_brief push (beforeAll); owner is default on.
+    // Member opted out of weekly_brief push (beforeAll); owner opted in.
     await notificationService.notifyCategory(accountId, 'weekly_brief', {
       push: { title: 'Brief', body: 'ready', deepLink: '/reports/x' },
     });
@@ -173,7 +181,7 @@ describe('notifyCategory (per-user routing)', () => {
       push: { title: 'Brief', body: 'ready' },
       email: { subject: 'Weekly brief', body: 'The brief.' },
     });
-    // Member opted into weekly_brief email; owner default is email off.
+    // Member opted into weekly_brief email; owner opted out of it.
     expect(sentEmails.map((e) => e.to)).toEqual([`member${EMAIL_DOMAIN}`]);
   });
 
