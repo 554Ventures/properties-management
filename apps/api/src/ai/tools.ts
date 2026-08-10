@@ -117,6 +117,31 @@ export const serviceTools: ServiceToolDef[] = [
       dashboardService.getIncomeExpenseSeries(accountId, (input as { months: number }).months),
   },
   {
+    name: 'get_expense_breakdown',
+    description:
+      'Month-to-date expenses grouped by category (cents per category). Follows the P&L classification rules, so transfers and owner contributions are excluded and refunds net against their category.',
+    inputSchema: NoInputSchema,
+    write: false,
+    execute: (accountId) => dashboardService.getExpenseBreakdown(accountId),
+  },
+  {
+    name: 'get_noi_by_property',
+    description:
+      'Net operating income per property for the current period (income minus ordinary expenses, integer cents) — the comparison used to rank which properties are carrying the portfolio.',
+    inputSchema: NoInputSchema,
+    write: false,
+    execute: (accountId) => dashboardService.getNoiByProperty(accountId),
+  },
+  {
+    name: 'get_recent_activity',
+    description:
+      'Recent account activity feed (most recent first) — what changed lately across properties, tenants, money and rent.',
+    inputSchema: z.object({ limit: z.number().int().min(1).max(50).default(10) }),
+    write: false,
+    execute: (accountId, input) =>
+      dashboardService.getActivity(accountId, (input as { limit: number }).limit),
+  },
+  {
     name: 'list_properties',
     description:
       'All properties with derived stats: unit count, occupied count, monthly rent (cents) and a status label like "Full" or "1 late".',
@@ -219,12 +244,29 @@ export const serviceTools: ServiceToolDef[] = [
     execute: (accountId) => transactionService.getReviewQueue(accountId),
   },
   {
+    name: 'list_bank_discrepancies',
+    description:
+      'Imported bank transactions that disagree with what the ledger already records (amount or date mismatches against a matched entry) — the reconciliation exceptions awaiting a decision.',
+    inputSchema: NoInputSchema,
+    write: false,
+    execute: (accountId) => transactionService.listBankDiscrepancies(accountId),
+  },
+  {
     name: 'list_contractors',
     description:
       'Contractor directory with usage stats derived from confirmed expense transactions matched by vendor name: jobsCount, avgCostCents and lastUsedAt per contractor. All amounts in integer cents.',
     inputSchema: NoInputSchema,
     write: false,
     execute: (accountId) => contractorService.list(accountId),
+  },
+  {
+    name: 'get_contractor',
+    description:
+      'One contractor in full detail, including the confirmed expense transactions matched to them (their job history) and the derived usage stats.',
+    inputSchema: z.object({ contractorId: z.string() }),
+    write: false,
+    execute: (accountId, input) =>
+      contractorService.detail(accountId, (input as { contractorId: string }).contractorId),
   },
   {
     name: 'list_categories',
@@ -241,6 +283,23 @@ export const serviceTools: ServiceToolDef[] = [
     write: false,
     execute: (accountId, input) =>
       rentService.getMonthStatus(accountId, (input as { period?: string }).period),
+  },
+  {
+    name: 'list_open_charges',
+    description:
+      'Every rent charge with a positive remaining balance (amountCents minus paidCents), across all periods — what is actually still owed. Use this rather than get_rent_status when picking a charge to apply a payment to.',
+    inputSchema: NoInputSchema,
+    write: false,
+    execute: (accountId) => rentService.listOpenCharges(accountId),
+  },
+  {
+    name: 'list_unlinked_deposits',
+    description:
+      'Confirmed income transactions for a period ("YYYY-MM", default current month) that look like rent but are not linked to a rent charge yet — the reconciliation gap between the bank feed and the rent tracker.',
+    inputSchema: z.object({ period: PeriodSchema.optional() }),
+    write: false,
+    execute: (accountId, input) =>
+      rentService.findUnlinkedRentDeposits(accountId, (input as { period?: string }).period),
   },
   {
     name: 'list_insights',
@@ -271,6 +330,22 @@ export const serviceTools: ServiceToolDef[] = [
     write: false,
     execute: (accountId, input) =>
       reportService.getById(accountId, (input as { reportId: string }).reportId),
+  },
+  {
+    name: 'list_monthly_reviews',
+    description:
+      'The AI-generated monthly review archive (metadata only). Fetch one in full with get_report — a monthly review IS a report, so it needs no separate detail tool.',
+    inputSchema: NoInputSchema,
+    write: false,
+    execute: (accountId) => reportService.listGenerated(accountId, { type: 'monthly_review' }),
+  },
+  {
+    name: 'get_latest_weekly_brief',
+    description:
+      'The most recent weekly brief for this account, or null if none has been generated yet.',
+    inputSchema: NoInputSchema,
+    write: false,
+    execute: (accountId) => reportService.getLatestWeeklyBrief(accountId),
   },
   {
     name: 'list_documents',
