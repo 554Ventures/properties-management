@@ -11,12 +11,12 @@ import {
   WeeklyBriefDataSchema,
   WeeklyBriefLatestResponseSchema,
 } from '@hearth/shared';
-import { DEMO_EMAIL } from '../../prisma/seed-constants';
 import { deterministicBrief } from '../ai/weekly-brief';
 import { buildApp } from '../app';
 import { resetMockEmail, sentEmails } from '../integrations/mock/mock-email';
 import { resetMockPush, sentPushes } from '../integrations/mock/mock-push';
 import { prisma } from '../lib/prisma';
+import { buildWeeklyBriefEmail } from '../lib/weekly-brief-email';
 import { getDemoAccountId } from '../plugins/auth';
 import { accountTimezone } from '../services/account.service';
 import { runDailyJobs } from '../services/jobs.service';
@@ -127,7 +127,7 @@ describe('runDailyJobs weekly brief generation', () => {
 });
 
 describe('weekly brief delivery through notification prefs', () => {
-  it('default prefs: push goes out, email does not', async () => {
+  it('default prefs: push goes out', async () => {
     await pushService.registerDevice(accountId, { platform: 'ios', token: TOKEN }, null);
     await deleteDemoBriefs();
     resetMockPush();
@@ -141,21 +141,18 @@ describe('weekly brief delivery through notification prefs', () => {
     expect(push).toBeDefined();
     const [row] = await demoBriefRows();
     expect(push!.message.deepLink).toBe(`/reports/${row!.id}`);
-    expect(sentEmails.filter((e) => e.to === DEMO_EMAIL)).toHaveLength(0);
   });
 
-  it('with weekly_brief email opted in, the brief is emailed to the account address', async () => {
+  // The brief has no in-app card, so email is its delivery surface: it must go
+  // out on the DEFAULT prefs (empty overrides), not only when opted in.
+  it('emails the full digest on default prefs, with no stored opt-in', async () => {
     // A dedicated account (no User rows, so the account-level store governs):
     // the demo account may carry a leftover Supabase-linked User row from
     // auth.test.ts in a full-suite run, which correctly flips notifyCategory
     // into per-user routing there.
     const emailTo = 'weekly-brief-email@brieftest.example';
     const account = await prisma.account.create({
-      data: {
-        name: 'Weekly Brief Email',
-        email: emailTo,
-        notificationPrefsJson: JSON.stringify({ weekly_brief: { push: true, email: true } }),
-      },
+      data: { name: 'Weekly Brief Email', email: emailTo, notificationPrefsJson: '{}' },
     });
     resetMockEmail();
     try {
@@ -163,9 +160,97 @@ describe('weekly brief delivery through notification prefs', () => {
       const email = sentEmails.find((e) => e.to === emailTo);
       expect(email).toBeDefined();
       expect(email!.subject).toMatch(/^Weekly brief — /);
-      expect(email!.body).toContain('Open 554 Properties');
+      // The digest itself, not a teaser: the composed headline and the brief's
+      // item lines both ride in the body.
+      const row = await prisma.report.findFirst({
+        where: { accountId: account.id, type: 'weekly_brief' },
+      });
+      const data = WeeklyBriefDataSchema.parse(JSON.parse(row!.dataJson));
+      expect(email!.body).toContain(data.headline);
+      for (const item of data.items) expect(email!.body).toContain(item.text);
+      expect(email!.body).toContain('Settings → Notifications');
     } finally {
       await prisma.account.delete({ where: { id: account.id } });
+    }
+  });
+
+  it('an explicit email opt-out still suppresses the brief email', async () => {
+    const emailTo = 'weekly-brief-optout@brieftest.example';
+    const account = await prisma.account.create({
+      data: {
+        name: 'Weekly Brief Opt Out',
+        email: emailTo,
+        notificationPrefsJson: JSON.stringify({ weekly_brief: { push: true, email: false } }),
+      },
+    });
+    resetMockEmail();
+    try {
+      await runDailyJobs();
+      expect(sentEmails.filter((e) => e.to === emailTo)).toHaveLength(0);
+    } finally {
+      await prisma.account.delete({ where: { id: account.id } });
+    }
+  });
+});
+
+describe('weekly brief email body', () => {
+  const brief = {
+    weekStart: '2026-07-06T04:00:00.000Z',
+    weekEnd: '2026-07-13T04:00:00.000Z',
+    weekLabel: 'Jul 6 – Jul 12, 2026',
+    headline: '1 tenant is behind on rent',
+    summary: 'First paragraph.\n\nSecond paragraph.',
+    items: [
+      {
+        text: 'T. Okafor is 6 days late.',
+        action: {
+          label: 'Send reminder',
+          action: {
+            kind: 'api_call' as const,
+            method: 'POST' as const,
+            path: '/rent/reminders',
+            body: { rentPaymentIds: ['rp1'] },
+          },
+        },
+      },
+      { text: '3 transactions are waiting for review.', action: null },
+    ],
+    stats: {
+      rentCollectedCents: 1254500,
+      rentOutstandingCents: 115000,
+      lateCount: 1,
+      newTransactionCount: 6,
+      pendingReviewCount: 3,
+      leasesEndingSoonCount: 0,
+    },
+  };
+
+  it('carries the whole digest — headline, summary, every item, action labels', () => {
+    const { subject, body } = buildWeeklyBriefEmail('r-brief', brief);
+    expect(subject).toBe('Weekly brief — Jul 6 – Jul 12, 2026');
+    expect(body).toContain('1 tenant is behind on rent');
+    expect(body).toContain('First paragraph.');
+    expect(body).toContain('Second paragraph.');
+    expect(body).toContain('• T. Okafor is 6 days late. (Send reminder)');
+    expect(body).toContain('• 3 transactions are waiting for review.');
+    // Labels only — an email must never carry an executable route.
+    expect(body).not.toContain('/rent/reminders');
+  });
+
+  it('links to the report when PUBLIC_APP_URL is set, degrades when it is not', () => {
+    const before = process.env.PUBLIC_APP_URL;
+    try {
+      process.env.PUBLIC_APP_URL = 'https://app.554properties.com/';
+      expect(buildWeeklyBriefEmail('r-brief', brief).body).toContain(
+        'https://app.554properties.com/reports/r-brief',
+      );
+      delete process.env.PUBLIC_APP_URL;
+      const body = buildWeeklyBriefEmail('r-brief', brief).body;
+      expect(body).not.toContain('http');
+      expect(body).toContain('Open 554 Properties');
+    } finally {
+      if (before === undefined) delete process.env.PUBLIC_APP_URL;
+      else process.env.PUBLIC_APP_URL = before;
     }
   });
 });

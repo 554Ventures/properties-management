@@ -16,12 +16,14 @@ export const NotificationPrefsSchema = z.object({
 });
 export type NotificationPrefs = z.infer<typeof NotificationPrefsSchema>;
 
-// Conservative defaults (production has real users): all email off, and only
-// the pushes that already happened today (warning insights) plus the new
-// weekly brief default on — a deploy must not start emailing/pushing new
-// things without opt-in.
+// Conservative defaults (production has real users): a deploy must not start
+// emailing/pushing new things without a reason. The one exception is the
+// weekly brief — it no longer has a home in the app's UI (the Dashboard card
+// was removed as a distraction), so email IS its delivery surface; defaulting
+// it off would mean generating a brief nobody ever sees. Stored prefs are
+// merged OVER these, so an explicit opt-out still wins.
 export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
   warning_insights: { push: true, email: false }, // preserves today's behavior exactly
-  weekly_brief: { push: true, email: false }, // email opt-in
+  weekly_brief: { push: true, email: true }, // email is how the brief is delivered
   monthly_review: { push: false, email: false }, // no new default noise for existing users
 };
