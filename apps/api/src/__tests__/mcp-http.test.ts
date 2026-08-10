@@ -192,6 +192,32 @@ describe('protected-resource metadata (RFC 9728)', () => {
       delete process.env.PUBLIC_APP_URL;
     }
   });
+
+  // Regression: behind the Cloudflare Worker the container is reached over
+  // plain HTTP, so req.protocol reports "http" for an https site. Advertising
+  // http://app.554properties.com/mcp fails discovery, because it does not match
+  // the https connector URL the client called (RFC 9728 §3). Without
+  // PUBLIC_APP_URL the fallback must still say https for any non-loopback host.
+  // These two drive app.inject rather than the bound socket: undici refuses to
+  // override the Host header on a real fetch, and Host is precisely the input
+  // under test. The well-known route never hijacks the reply, so inject sees it.
+  it('assumes https for a non-loopback host when PUBLIC_APP_URL is unset', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/.well-known/oauth-protected-resource/mcp',
+      headers: { host: 'app.554properties.com' },
+    });
+    expect(res.json().resource).toBe('https://app.554properties.com/mcp');
+  });
+
+  it('honours x-forwarded-proto when the proxy sets it', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/.well-known/oauth-protected-resource/mcp',
+      headers: { host: 'staging.internal', 'x-forwarded-proto': 'http' },
+    });
+    expect(res.json().resource).toBe('http://staging.internal/mcp');
+  });
 });
 
 describe('POST /mcp: authorized', () => {

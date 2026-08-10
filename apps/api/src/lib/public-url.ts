@@ -2,17 +2,32 @@
 // resource identifiers Claude discovers (RFC 9728 protected-resource metadata
 // and the `resource_metadata` hint on a 401 from /mcp).
 //
-// In production the container sits behind the Cloudflare Worker, so the
-// inbound Host/proto are not the public ones — PUBLIC_APP_URL
-// (https://app.554properties.com) is authoritative there. Dev and the test
-// suite leave it unset and fall back to the request's own host, so
-// `npm run dev` and `app.listen({ port: 0 })` need no configuration.
+// PUBLIC_APP_URL (https://app.554properties.com) is authoritative when set.
+//
+// The fallback must never report http:// for a public host. The container sits
+// behind the Cloudflare Worker and is reached over plain HTTP, so req.protocol
+// says "http" for a site that is https to the outside world — and a resource
+// identifier that disagrees with the URL the client actually called fails OAuth
+// discovery outright (RFC 9728 §3: it must match). So only loopback stays http;
+// anything else is assumed https unless a forwarded proto says otherwise. That
+// keeps `npm run dev` and `app.listen({ port: 0 })` config-free while making a
+// missing/unpropagated PUBLIC_APP_URL a non-event in production.
 import type { FastifyRequest } from 'fastify';
+
+function isLoopbackHost(host: string): boolean {
+  const name = host.replace(/:\d+$/, '').toLowerCase();
+  return name === 'localhost' || name === '127.0.0.1' || name === '::1' || name === '[::1]';
+}
 
 export function publicBaseUrl(req: FastifyRequest): string {
   const configured = process.env.PUBLIC_APP_URL?.trim();
   if (configured) return configured.replace(/\/+$/, '');
-  return `${req.protocol}://${req.headers.host ?? 'localhost'}`;
+  const host = req.headers.host ?? 'localhost';
+  const forwarded = String(req.headers['x-forwarded-proto'] ?? '')
+    .split(',')[0]
+    ?.trim();
+  const protocol = forwarded || (isLoopbackHost(host) ? req.protocol : 'https');
+  return `${protocol}://${host}`;
 }
 
 /** RFC 9728 metadata document for the /mcp resource. */
