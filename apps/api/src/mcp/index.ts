@@ -1,22 +1,46 @@
-// 554 Properties MCP server factory + stdio entrypoint (ARCHITECTURE §7).
-// Run the stdio server: `npm run mcp -w apps/api`. Same demo account and
-// service layer as the REST API; write tools are gated behind
-// HEARTH_MCP_ENABLE_WRITE=true. The same factory backs the remote Streamable
-// HTTP surface (routes/mcp.ts), which builds one server per request from the
-// caller's own account and permissions.
+// 554 Properties MCP server factory (ARCHITECTURE §7). Backs both surfaces:
+// the stdio entrypoint (./stdio.ts, `npm run mcp -w apps/api`) and the remote
+// Streamable HTTP route (routes/mcp.ts), which builds one server per request
+// from the caller's own account and permissions.
+//
+// This module must stay free of import-time side effects: routes/mcp.ts pulls
+// it into the API server bundle, so anything that runs (or throws) at import
+// takes the whole API down at boot. The stdio entrypoint lives in ./stdio.ts
+// for exactly that reason — when bundled, `process.argv[1]` and
+// `import.meta.url` both point at dist/server.js, so an "am I the entrypoint?"
+// guard here would evaluate true inside the API process and start a stdio
+// server against a demo account production does not have.
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { getDemoAccountId } from '../plugins/auth';
 import { registerMcpResources } from './resources';
 import { registerMcpTools } from './tools';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(readFileSync(path.resolve(here, '../../package.json'), 'utf8')) as {
-  version: string;
-};
+
+// `here` is src/mcp/ when running from source (dev, tests) but apps/api/dist/
+// in the esbuild bundle, so apps/api/package.json sits two levels up in one
+// layout and one level up in the other. Resolved lazily and never allowed to
+// throw: this module is imported by routes/mcp.ts, so a top-level readFileSync
+// that missed took down the whole API at boot — the container's runtime stage
+// ships apps/api/package.json but no apps/package.json, so the src-relative
+// path resolved to a file that does not exist there.
+let cachedVersion: string | null = null;
+function serverVersion(): string {
+  if (cachedVersion) return cachedVersion;
+  for (const rel of ['../../package.json', '../package.json']) {
+    try {
+      const parsed = JSON.parse(readFileSync(path.resolve(here, rel), 'utf8')) as {
+        version?: string;
+      };
+      if (parsed.version) return (cachedVersion = parsed.version);
+    } catch {
+      // Wrong layout — try the next candidate.
+    }
+  }
+  return (cachedVersion = '0.0.0');
+}
 
 export interface CreateMcpServerOptions {
   accountId: string;
@@ -33,26 +57,8 @@ export function createMcpServer({
   allowWrites,
   deniedTools,
 }: CreateMcpServerOptions): McpServer {
-  const server = new McpServer({ name: 'hearth', version: pkg.version });
+  const server = new McpServer({ name: 'hearth', version: serverVersion() });
   registerMcpTools(server, { accountId, allowWrites, deniedTools });
   registerMcpResources(server, { accountId });
   return server;
-}
-
-async function main(): Promise<void> {
-  // Resolve the seeded demo account once at startup (same lookup as plugins/auth.ts).
-  const accountId = await getDemoAccountId();
-  const allowWrites = process.env.HEARTH_MCP_ENABLE_WRITE === 'true';
-  const server = createMcpServer({ accountId, allowWrites });
-  await server.connect(new StdioServerTransport());
-  // stdout is the JSON-RPC channel — human output goes to stderr only.
-  console.error(`hearth MCP server ready on stdio (write tools ${allowWrites ? 'ENABLED' : 'disabled'})`);
-}
-
-// Only start stdio when run as the entrypoint (tests import createMcpServer).
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch((err) => {
-    console.error(err);
-    process.exit(1);
-  });
 }

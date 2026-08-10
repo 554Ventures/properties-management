@@ -39,6 +39,14 @@ jobs:
       - name: Build (web bundle + API dist)
         run: npm run build
 
+      # The vitest suites import TypeScript source, so they cannot catch bugs
+      # that only exist in the esbuild bundle (module-level paths resolved
+      # relative to import.meta.url, entrypoint guards that match dist/server.js).
+      # Both shipped once and crash-looped the container while `npm run build`
+      # stayed green — so boot the artifact and require it to serve.
+      - name: Smoke-test the built API artifact
+        run: npm run smoke:dist --workspace apps/api
+
       - name: Build API container image
         run: docker build -f apps/api/Dockerfile -t hearth-api:${{ github.sha }} .
 

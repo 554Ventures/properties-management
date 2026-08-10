@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "tsx scripts/wait-for-db.ts && tsx watch src/server.ts",
     "build": "tsx scripts/build.ts",
+    "smoke:dist": "tsx scripts/smoke-dist.ts",
     "start": "node dist/server.js",
-    "mcp": "tsx src/mcp/index.ts",
+    "mcp": "tsx src/mcp/stdio.ts",
     "db:serve": "tsx scripts/dev-postgres.ts",
     "db:setup": "tsx scripts/db-setup.ts",
     "db:seed": "tsx prisma/seed.ts",

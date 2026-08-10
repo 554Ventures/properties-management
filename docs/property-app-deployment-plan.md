@@ -183,7 +183,7 @@ Flow: `feature/*` → PR (CI + preview URL) → review → merge to `main` → d
 
 ## 8. AI Chatbot + MCP Layer
 
-- **MCP stays local-only in Phase 1.** The MCP server is a stdio transport (`src/mcp/index.ts`) wrapping the same tool registry as chat — it's a local-process integration surface, not a deployable service. Exposing it remotely means adding a streamable-HTTP transport plus auth; defer until there's a concrete consumer. (Write tools stay gated by `HEARTH_MCP_ENABLE_WRITE`.)
+- ~~**MCP stays local-only in Phase 1.**~~ — **superseded 2026-08-09**: the concrete consumer arrived (Claude Desktop custom connectors), so the registry now also serves Streamable HTTP at `POST /mcp` behind Supabase's OAuth 2.1 server (`docs/ARCHITECTURE.md` §7). The stdio entrypoint (`src/mcp/stdio.ts`) remains for local use with `HEARTH_MCP_ENABLE_WRITE`; the shared factory lives in `src/mcp/index.ts` and must stay free of import-time side effects, since the API bundle imports it.
 - **Streaming:** SSE-over-POST works unchanged through the Worker → container path (§3).
 - **Tool-use safety:** chat tools already route through the same service layer and `accountId` scoping as REST — no separate permission model to build, just make sure the chat routes sit behind the same auth plugin (§4.1). Write auditing (`AuditLog` actor attribution) is already in place and tested.
 - **Cost control:** token-usage logging per §4.5.
