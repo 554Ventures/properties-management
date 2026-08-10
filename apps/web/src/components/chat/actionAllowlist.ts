@@ -8,13 +8,15 @@
 // renders as a disabled button with a visible note — never a silent drop,
 // and never executed.
 //
-// Adding/editing core records (properties, tenants, contractors, transactions) is
-// explicitly supported: the assistant fills in the body and the USER clicks
-// to save, so each PATCH below edits data within the user's own account —
-// a visible, reversible, click-gated change, not an exfiltration channel.
+// Adding/editing core records (properties, tenants, leases, contractors,
+// transactions) is explicitly supported: the assistant fills in the body and
+// the USER clicks to save, so each PATCH below edits data within the user's
+// own account — a visible, reversible, click-gated change, not an
+// exfiltration channel.
 // Still deliberately excluded: /reports/:id/email (data leaves the account),
 // anything under /settings (security-sensitive config), every DELETE (we
-// never let the assistant destroy records), and any PATCH not listed here.
+// never let the assistant destroy records), lease termination (it ends a
+// tenancy and the UI offers no undo), and any PATCH not listed here.
 
 /** One path segment (cuid or similar id) — never crosses a `/`. */
 const ID = '[A-Za-z0-9_-]+';
@@ -38,6 +40,17 @@ const ALLOWED_API_CALLS: ReadonlyArray<{ method: string; pathPattern: RegExp }> 
   { method: 'PATCH', pathPattern: new RegExp(`^/contractors/${ID}$`) },
   { method: 'POST', pathPattern: /^\/reports\/generate$/ },
   { method: 'POST', pathPattern: new RegExp(`^/insights/${ID}/dismiss$`) },
+  // Leases. Same rationale as the record edits above — click-gated changes to
+  // the user's own data — plus the assistant now has matching tools, so chat
+  // and the MCP connector stop diverging. Renewal is included because
+  // draft_lease_renewal could already propose terms it had no way to enact.
+  // Terminating a lease is deliberately NOT here: it ends a tenancy and is not
+  // undoable from the UI, so it stays a decision the user makes on the lease
+  // itself. Removing a tenant from a lease is a DELETE and excluded with them.
+  { method: 'POST', pathPattern: /^\/leases$/ },
+  { method: 'PATCH', pathPattern: new RegExp(`^/leases/${ID}$`) },
+  { method: 'POST', pathPattern: new RegExp(`^/leases/${ID}/renewal$`) },
+  { method: 'POST', pathPattern: new RegExp(`^/leases/${ID}/tenants$`) },
 ];
 
 /** True when an api_call action may execute. Patterns match the path without

@@ -3,13 +3,17 @@
 // schema to a service function; render tools carry the shared block schemas as
 // their input and are handled by the loop itself (never executed here).
 import {
+  AcceptRenewalInputSchema,
   ActionCardBlockSchema,
+  AddLeaseTenantInputSchema,
   ApplyLateFeeInputSchema,
   AskUserQuestionBlockSchema,
   ChartBlockSchema,
   ConfirmTransactionInputSchema,
   CreateContractorInputSchema,
+  CreateLeaseInputSchema,
   CreatePropertyInputSchema,
+  CreateTenantInputSchema,
   CreateTransactionInputSchema,
   CreateUnitInputSchema,
   DataTableBlockSchema,
@@ -23,7 +27,11 @@ import {
   ReportTypeSchema,
   SendRemindersInputSchema,
   TransactionListQuerySchema,
+  UpdateContractorInputSchema,
+  UpdateLeaseInputSchema,
   UpdatePropertyInputSchema,
+  UpdateTenantInputSchema,
+  UpdateTransactionInputSchema,
   UpdateUnitInputSchema,
 } from '@hearth/shared';
 import type {
@@ -176,9 +184,18 @@ export const serviceTools: ServiceToolDef[] = [
       leaseService.list(accountId, input as { status?: LeaseStatus }),
   },
   {
+    name: 'get_lease',
+    description:
+      'Full detail for one lease: terms (rent, due day, late-fee override, dates, status), unit/property context, the tenants on it with their rent shares, and the full rent-charge history with derived status.',
+    inputSchema: z.object({ leaseId: z.string() }),
+    write: false,
+    execute: (accountId, input) =>
+      leaseService.getDetail(accountId, (input as { leaseId: string }).leaseId),
+  },
+  {
     name: 'draft_lease_renewal',
     description:
-      'Draft renewal terms for a lease (suggested rent from the market-rent heuristic, proposed dates). Returns a proposal only — nothing is sent or saved.',
+      'Draft renewal terms for a lease (suggested rent from the market-rent heuristic, proposed dates). Returns a proposal only — nothing is saved. Use renew_lease to actually enact the terms once the user has agreed to them.',
     inputSchema: z.object({ leaseId: z.string() }),
     write: false,
     execute: (accountId, input) =>
@@ -288,6 +305,19 @@ export const serviceTools: ServiceToolDef[] = [
       }),
   },
   {
+    name: 'update_transaction',
+    description:
+      "WRITES to the ledger: edits an existing transaction's fields (date, amount in cents, type, description, property/unit attribution, category, vendor, classification, splits). Only the provided fields change; every report and KPI recomputes from the new values. `classification: null` clears back to ordinary; `splits` replaces the split lines wholesale (they must sum to the amount) and `splits: null` collapses back to a single category. A row backing a rent deposit refuses amount/date/type/classification edits.",
+    inputSchema: UpdateTransactionInputSchema.extend({ transactionId: z.string() }),
+    write: true,
+    execute: (accountId, input, actor) => {
+      const { transactionId, ...patch } = input as z.infer<typeof UpdateTransactionInputSchema> & {
+        transactionId: string;
+      };
+      return transactionService.update(accountId, transactionId, patch, actor);
+    },
+  },
+  {
     name: 'create_contractor',
     description:
       'WRITES: adds a contractor to the directory (name, trade, optional 1-5 rating, phone, email, website, notes). Usage stats then derive from expense transactions whose vendor matches the name.',
@@ -295,6 +325,19 @@ export const serviceTools: ServiceToolDef[] = [
     write: true,
     execute: (accountId, input, actor) =>
       contractorService.create(accountId, input as z.infer<typeof CreateContractorInputSchema>, actor),
+  },
+  {
+    name: 'update_contractor',
+    description:
+      "WRITES: edits a contractor's directory entry (name, trade, rating, phone, email, website, notes). Only the provided fields change; an explicit null clears an optional field. Renaming a contractor re-derives their usage stats, which match expense transactions by vendor name. Archiving is not available from chat.",
+    inputSchema: UpdateContractorInputSchema.extend({ contractorId: z.string() }),
+    write: true,
+    execute: (accountId, input, actor) => {
+      const { contractorId, ...patch } = input as z.infer<typeof UpdateContractorInputSchema> & {
+        contractorId: string;
+      };
+      return contractorService.update(accountId, contractorId, patch, actor);
+    },
   },
   {
     name: 'create_property',
@@ -342,6 +385,102 @@ export const serviceTools: ServiceToolDef[] = [
         unitId: string;
       };
       return unitService.update(accountId, unitId, patch, actor);
+    },
+  },
+  {
+    name: 'create_tenant',
+    description:
+      'WRITES: adds a person to the tenant directory (full name required; optional email, phone, notes). This only creates the record — put them on a unit with create_lease or add_tenant_to_lease. Archiving is not available from chat.',
+    inputSchema: CreateTenantInputSchema,
+    write: true,
+    execute: (accountId, input, actor) =>
+      tenantService.create(accountId, input as z.infer<typeof CreateTenantInputSchema>, actor),
+  },
+  {
+    name: 'update_tenant',
+    description:
+      "WRITES: edits a tenant's contact record (full name, email, phone, notes). Only the provided fields change; leases and payment history are untouched. Archiving and PII erasure are not available from chat.",
+    inputSchema: UpdateTenantInputSchema.extend({ tenantId: z.string() }),
+    write: true,
+    execute: (accountId, input, actor) => {
+      const { tenantId, ...patch } = input as z.infer<typeof UpdateTenantInputSchema> & {
+        tenantId: string;
+      };
+      return tenantService.update(accountId, tenantId, patch, actor);
+    },
+  },
+  {
+    name: 'create_lease',
+    description:
+      'WRITES: creates a real active lease on a unit (unitId, tenantIds — the first is the primary tenant — rentCents, dueDay 1-31, startDate and endDate as ISO datetimes; endDate is the inclusive last day). Optional lateFeeCents overrides the account default (0 = no late fee for this lease). The unit counts as occupied immediately and rent charges start being billed for the covered months; a date range overlapping an existing lease on that unit is rejected.',
+    inputSchema: CreateLeaseInputSchema,
+    write: true,
+    execute: (accountId, input, actor) =>
+      leaseService.create(accountId, input as z.infer<typeof CreateLeaseInputSchema>, actor),
+  },
+  {
+    name: 'update_lease',
+    description:
+      "WRITES: edits an existing lease's terms (rentCents, dueDay, lateFeeCents, startDate, endDate, status). Only the provided fields change. Rent and date changes affect what the tenant is billed going forward; `lateFeeCents: null` clears back to the account default. To end a lease use terminate_lease and to replace it with new terms use renew_lease — don't do either by editing status or dates here.",
+    inputSchema: UpdateLeaseInputSchema.extend({ leaseId: z.string() }),
+    write: true,
+    execute: (accountId, input, actor) => {
+      const { leaseId, ...patch } = input as z.infer<typeof UpdateLeaseInputSchema> & {
+        leaseId: string;
+      };
+      return leaseService.update(accountId, leaseId, patch, actor);
+    },
+  },
+  {
+    name: 'renew_lease',
+    description:
+      'WRITES: enacts a renewal — creates a REAL new active lease on the same unit with the given terms (rentCents, dueDay, startDate, endDate) and ends the current lease on the new start date. Tenants carry over unless tenantIds overrides them. Open rent charges are re-prorated across the switchover month so the unit is never billed twice. This is the executing counterpart to draft_lease_renewal; confirm the terms with the user before calling it.',
+    inputSchema: AcceptRenewalInputSchema.extend({ leaseId: z.string() }),
+    write: true,
+    execute: (accountId, input, actor) => {
+      const { leaseId, ...renewalInput } = input as z.infer<typeof AcceptRenewalInputSchema> & {
+        leaseId: string;
+      };
+      return leaseService.createRenewal(accountId, leaseId, renewalInput, actor);
+    },
+  },
+  {
+    name: 'terminate_lease',
+    description:
+      'WRITES: ends an active lease now — status becomes "ended" and the end date moves to today (unless it was already in the past). The tenancy is over: the unit reads vacant, unpaid charges for months the lease no longer covers are voided, and the final month re-prorates to the days actually occupied. There is no undo from chat. Only do this when the user has explicitly asked to end that specific lease.',
+    inputSchema: z.object({ leaseId: z.string() }),
+    write: true,
+    execute: (accountId, input, actor) =>
+      leaseService.terminate(accountId, (input as { leaseId: string }).leaseId, actor),
+  },
+  {
+    name: 'add_tenant_to_lease',
+    description:
+      'WRITES: adds an existing tenant to a lease as a co-tenant (tenantId; isPrimary promotes them and demotes the current primary; shareCents sets their expected portion of the rent, omitted = even split). The tenant record must already exist — create it with create_tenant first.',
+    inputSchema: AddLeaseTenantInputSchema.extend({ leaseId: z.string() }),
+    write: true,
+    execute: (accountId, input, actor) => {
+      const { leaseId, ...tenantInput } = input as z.infer<typeof AddLeaseTenantInputSchema> & {
+        leaseId: string;
+      };
+      return leaseService.addTenant(accountId, leaseId, tenantInput, actor);
+    },
+  },
+  {
+    // The one removal-shaped write tool. It deletes no record — only the
+    // lease↔tenant link — is guarded so a lease always keeps at least one
+    // tenant, auto-promotes a new primary, and is fully restorable with
+    // add_tenant_to_lease. Without it, add_tenant_to_lease is a one-way door
+    // the assistant can't correct. Deliberately NOT on the web action-card
+    // allowlist (it's a DELETE at the REST layer).
+    name: 'remove_tenant_from_lease',
+    description:
+      "WRITES: takes a tenant off a lease's roster (their rent share is dropped and a co-tenant is promoted to primary if the removed one was). The tenant record, their payment history and the lease itself all stay — only the link is removed. Rejected if it would leave the lease with no tenants. Reversible with add_tenant_to_lease.",
+    inputSchema: z.object({ leaseId: z.string(), tenantId: z.string() }),
+    write: true,
+    execute: (accountId, input, actor) => {
+      const { leaseId, tenantId } = input as { leaseId: string; tenantId: string };
+      return leaseService.removeTenant(accountId, leaseId, tenantId, actor);
     },
   },
   {
@@ -487,12 +626,24 @@ export function findServiceTool(name: string): ServiceToolDef | undefined {
 // which has no gated REST area) require only the 'ai' capability below.
 export const WRITE_TOOL_PERMISSIONS: Partial<Record<string, MemberPermission>> = {
   create_transaction: 'money',
+  update_transaction: 'money',
   confirm_transaction: 'money',
   create_contractor: 'properties',
+  update_contractor: 'properties',
   create_property: 'properties',
   update_property: 'properties',
   create_unit: 'properties',
   update_unit: 'properties',
+  // Leases are part of tenant management → same 'tenants' grant the
+  // /leases and /tenants write routes use (routes/leases.ts).
+  create_tenant: 'tenants',
+  update_tenant: 'tenants',
+  create_lease: 'tenants',
+  update_lease: 'tenants',
+  renew_lease: 'tenants',
+  terminate_lease: 'tenants',
+  add_tenant_to_lease: 'tenants',
+  remove_tenant_from_lease: 'tenants',
   record_rent_payment: 'rent',
   apply_late_fee: 'rent',
   send_rent_reminders: 'rent',

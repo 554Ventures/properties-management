@@ -33,6 +33,26 @@ describe('isAllowedApiCall', () => {
     expect(isAllowedApiCall('PATCH', '/transactions/clx0f2q9d0001abcdWXYZ123')).toBe(true);
   });
 
+  it('allows creating, editing and renewing leases, and adding a tenant to one', () => {
+    expect(isAllowedApiCall('POST', '/leases')).toBe(true);
+    expect(isAllowedApiCall('PATCH', '/leases/clx0f2q9d0001abcdWXYZ123')).toBe(true);
+    expect(isAllowedApiCall('POST', '/leases/cm4ktz8yq000108l5f1a2b3c4/renewal')).toBe(true);
+    expect(isAllowedApiCall('POST', '/leases/cm4ktz8yq000108l5f1a2b3c4/tenants')).toBe(true);
+  });
+
+  it('refuses lease termination, tenant removal and lookalike lease paths', () => {
+    // Ending a tenancy is not undoable from the UI — it stays a decision the
+    // user makes on the lease itself, never a chat button.
+    expect(isAllowedApiCall('POST', '/leases/l1/terminate')).toBe(false);
+    expect(isAllowedApiCall('DELETE', '/leases/l1/tenants/t1')).toBe(false);
+    expect(isAllowedApiCall('PATCH', '/leases/l1/tenants/t1')).toBe(false);
+    expect(isAllowedApiCall('DELETE', '/leases/l1')).toBe(false);
+    // The id pattern must not cross a `/`.
+    expect(isAllowedApiCall('POST', '/leases/l1/renewal/extra')).toBe(false);
+    expect(isAllowedApiCall('POST', '/leases/l1/esign')).toBe(false);
+    expect(isAllowedApiCall('PATCH', '/leases')).toBe(false);
+  });
+
   it('ignores the query string when matching the path', () => {
     expect(isAllowedApiCall('POST', '/reports/generate?type=schedule_e')).toBe(true);
   });
@@ -45,7 +65,10 @@ describe('isAllowedApiCall', () => {
     expect(isAllowedApiCall('PATCH', '/transactions/t1/confirm')).toBe(false);
     expect(isAllowedApiCall('PATCH', '/properties')).toBe(false);
     expect(isAllowedApiCall('PATCH', '/tenants')).toBe(false);
-    expect(isAllowedApiCall('PATCH', '/leases/l1')).toBe(false);
+    // PATCH /leases/:id used to be refused here purely because leases had no
+    // tools; it is now deliberately allowed (see the lease cases above), while
+    // the collection path stays refused like every other.
+    expect(isAllowedApiCall('PATCH', '/leases')).toBe(false);
     expect(isAllowedApiCall('DELETE', '/transactions/t1')).toBe(false);
     expect(isAllowedApiCall('DELETE', '/properties/p1')).toBe(false);
     expect(isAllowedApiCall('DELETE', '/units/u1')).toBe(false);
