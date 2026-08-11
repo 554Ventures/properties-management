@@ -450,6 +450,7 @@ function moneyCategory(overrides: Partial<Category> & Pick<Category, 'id' | 'nam
 const mortgageCategories: Category[] = [
   moneyCategory({ id: 'c-interest', name: 'Mortgage Interest', type: 'expense' }),
   moneyCategory({ id: 'c-tax', name: 'Property Taxes', type: 'expense' }),
+  moneyCategory({ id: 'c-ins', name: 'Insurance', type: 'expense' }),
 ];
 
 const mortgageDetectedItem: ReviewQueueItem = {
@@ -708,5 +709,110 @@ describe('MoneyReview mortgage payment breakdown', () => {
         principalCents: 240000,
       });
     });
+  });
+
+  // Defect 1: the breakdown used to be crammed into the card's 256px action
+  // column alongside property/unit/Confirm/Dismiss. It now renders as a
+  // full-width block below the header row; only the ordinary fields stay in
+  // the narrow column.
+  it('renders the breakdown as a full-width block outside the narrow action column, which keeps property/unit/Confirm/Dismiss', async () => {
+    vi.stubGlobal(
+      'fetch',
+      makeFetch([
+        ...mortgageRoutes,
+        {
+          method: 'GET',
+          path: '/api/v1/transactions/review',
+          body: { items: [mortgageDetectedItem], nextCursor: null, total: 1 },
+        },
+      ]),
+    );
+    const { container } = renderMoneyReview();
+
+    await screen.findByText('Mortgage payment');
+    expect(screen.getByText('Total (from your bank)')).toBeInTheDocument();
+
+    const narrowColumn = container.querySelector('.md\\:w-64');
+    expect(narrowColumn).not.toBeNull();
+    const scoped = within(narrowColumn as HTMLElement);
+    // The breakdown (and its "Total" readout) lives outside the narrow
+    // column now — only the ordinary fields and the action buttons stay in
+    // it.
+    expect(scoped.queryByText('Total (from your bank)')).not.toBeInTheDocument();
+    expect(scoped.queryByLabelText(/^Principal/)).not.toBeInTheDocument();
+    expect(scoped.getByLabelText('Property')).toBeInTheDocument();
+    expect(scoped.getByLabelText('Unit')).toBeInTheDocument();
+    expect(scoped.getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+    expect(scoped.getByRole('button', { name: /^Dismiss/ })).toBeInTheDocument();
+  });
+
+  // Defect 2: there's deliberately no "Escrow" category — this affordance
+  // sets up the three rows an escrowed payment actually needs, amounts left
+  // blank (D4: never computed).
+  it('offers the interest + escrow affordance, which creates three blank-amount rows', async () => {
+    vi.stubGlobal(
+      'fetch',
+      makeFetch([
+        ...mortgageRoutes,
+        {
+          method: 'GET',
+          path: '/api/v1/transactions/review',
+          body: { items: [mortgageDetectedItem], nextCursor: null, total: 1 },
+        },
+      ]),
+    );
+    renderMoneyReview();
+
+    await screen.findByText('Mortgage payment');
+    fireEvent.change(screen.getByLabelText(/^Principal/), { target: { value: '400.00' } });
+    expect(
+      screen.getByRole('button', { name: 'Interest + escrow (taxes, insurance)' }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Interest + escrow (taxes, insurance)' }));
+
+    expect(screen.getByLabelText('Category 1')).toHaveValue('c-interest');
+    expect(screen.getByLabelText('Amount 1 (USD)')).toHaveValue(null);
+    expect(screen.getByLabelText('Category 2')).toHaveValue('c-tax');
+    expect(screen.getByLabelText('Amount 2 (USD)')).toHaveValue(null);
+    expect(screen.getByLabelText('Category 3')).toHaveValue('c-ins');
+    expect(screen.getByLabelText('Amount 3 (USD)')).toHaveValue(null);
+    // Amounts are still blank — Confirm stays disabled until the user types them.
+    expect(screen.getByRole('button', { name: 'Confirm' })).toBeDisabled();
+  });
+
+  // Defect 3: the sum check alone used to read as "fully allocated" while an
+  // untouched row left Confirm disabled with no stated reason.
+  it("names the row still blocking Confirm instead of falsely reading 'fully allocated'", async () => {
+    vi.stubGlobal(
+      'fetch',
+      makeFetch([
+        ...mortgageRoutes,
+        {
+          method: 'GET',
+          path: '/api/v1/transactions/review',
+          body: { items: [mortgageDetectedItem], nextCursor: null, total: 1 },
+        },
+      ]),
+    );
+    renderMoneyReview();
+
+    await screen.findByText('Mortgage payment');
+    // $2,400 total, $1,400 principal → $1,000 remainder, one row filled.
+    fireEvent.change(screen.getByLabelText(/^Principal/), { target: { value: '1400.00' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Split across categories' }));
+    fireEvent.change(screen.getByLabelText('Category 1'), { target: { value: 'c-interest' } });
+    fireEvent.change(screen.getByLabelText('Amount 1 (USD)'), { target: { value: '1000.00' } });
+
+    const confirmButton = screen.getByRole('button', { name: 'Confirm' });
+    expect(confirmButton).toBeDisabled();
+    expect(
+      screen.queryByText('$1,000.00 of $1,000.00 allocated · $0.00 remaining to allocate'),
+    ).not.toBeInTheDocument();
+    const describedById = confirmButton.getAttribute('aria-describedby');
+    expect(describedById).toBeTruthy();
+    expect(document.getElementById(describedById!)).toHaveTextContent(
+      '$1,000.00 of $1,000.00 allocated · row 2 still needs a category and amount',
+    );
   });
 });

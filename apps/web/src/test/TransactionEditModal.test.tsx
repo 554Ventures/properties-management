@@ -104,6 +104,10 @@ function stubFetch() {
     category({ id: 'c1', name: 'Repairs', type: 'expense' }),
     category({ id: 'c2', name: 'Rent', type: 'income' }),
     category({ id: 'c3', name: 'Utilities', type: 'expense' }),
+    // The mortgage breakdown's escrow preset matches on these names.
+    category({ id: 'cm-interest', name: 'Mortgage Interest', type: 'expense' }),
+    category({ id: 'cm-tax', name: 'Property Taxes', type: 'expense' }),
+    category({ id: 'cm-ins', name: 'Insurance', type: 'expense' }),
   ];
   const posts: Array<Record<string, unknown>> = [];
   const patches: Array<Record<string, unknown>> = [];
@@ -428,6 +432,55 @@ describe('TransactionEditModal mortgage payment breakdown', () => {
     expect(screen.queryByLabelText(/^Principal/)).not.toBeInTheDocument();
     expect(screen.getByLabelText('Category')).not.toBeDisabled();
     expect(screen.getByLabelText('Treatment')).not.toBeDisabled();
+  });
+
+  // Defect 2: no "Escrow" category exists on purpose — this mount offers the
+  // same guidance and one-click affordance as the review queue's.
+  it('offers the interest + escrow affordance here too, creating three blank-amount rows', async () => {
+    stubFetch();
+    renderModal(mortgageBlankTransaction);
+
+    await screen.findByLabelText(/^Principal/);
+    fireEvent.change(screen.getByLabelText(/^Principal/), { target: { value: '240.00' } });
+    expect(
+      screen.getByRole('button', { name: 'Interest + escrow (taxes, insurance)' }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Interest + escrow (taxes, insurance)' }));
+
+    expect(screen.getByLabelText('Category 1')).toHaveValue('cm-interest');
+    expect(screen.getByLabelText('Amount 1 (USD)')).toHaveValue(null);
+    expect(screen.getByLabelText('Category 2')).toHaveValue('cm-tax');
+    expect(screen.getByLabelText('Amount 2 (USD)')).toHaveValue(null);
+    expect(screen.getByLabelText('Category 3')).toHaveValue('cm-ins');
+    expect(screen.getByLabelText('Amount 3 (USD)')).toHaveValue(null);
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+  });
+
+  // Defect 3: the same false "fully allocated" reading applied here — the
+  // status text (the disabled Save button's aria-describedby target) must
+  // name the row still blocking it instead.
+  it("names the row still blocking Save instead of falsely reading 'fully allocated'", async () => {
+    stubFetch();
+    renderModal(mortgageBlankTransaction);
+
+    await screen.findByLabelText(/^Principal/);
+    // $640 total, $240 principal → $400 remainder, one row filled.
+    fireEvent.change(screen.getByLabelText(/^Principal/), { target: { value: '240.00' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Split across categories' }));
+    fireEvent.change(screen.getByLabelText('Category 1'), { target: { value: 'cm-interest' } });
+    fireEvent.change(screen.getByLabelText('Amount 1 (USD)'), { target: { value: '400.00' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save changes' });
+    expect(saveButton).toBeDisabled();
+    expect(
+      screen.queryByText('$400.00 of $400.00 allocated · $0.00 remaining to allocate'),
+    ).not.toBeInTheDocument();
+    const describedById = saveButton.getAttribute('aria-describedby');
+    expect(describedById).toBeTruthy();
+    expect(document.getElementById(describedById!)).toHaveTextContent(
+      '$400.00 of $400.00 allocated · row 2 still needs a category and amount',
+    );
   });
 });
 

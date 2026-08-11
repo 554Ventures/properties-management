@@ -172,6 +172,11 @@ export function TransactionEditModal({ open, onClose, transaction }: Transaction
 
   const propertyDetail = usePropertyDetail(propertyId || undefined);
   const units = propertyDetail.data?.units ?? [];
+  // Surfaced only when already loaded (the units fetch above) — never a new
+  // request just for this hint.
+  const mortgageEscrowNote = propertyDetail.data?.mortgages.find(
+    (m) => m.id === transaction?.mortgageId,
+  )?.escrowNote;
   // A refund nets against an EXPENSE category, so the picker flips type.
   // Splits only ever apply to an ordinary row, so this is just the
   // transaction's own type while splitMode is active.
@@ -589,6 +594,7 @@ export function TransactionEditModal({ open, onClose, transaction }: Transaction
               value={breakdown}
               onChange={setBreakdown}
               categoryOptions={categoryOptions}
+              escrowNote={mortgageEscrowNote}
             />
             <div>
               <Button

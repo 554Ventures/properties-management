@@ -101,10 +101,7 @@ export function MoneyReview() {
     };
   }, [categories.data]);
 
-  const items = useMemo(
-    () => (review.data?.pages ?? []).flatMap((p) => p.items),
-    [review.data],
-  );
+  const items = useMemo(() => (review.data?.pages ?? []).flatMap((p) => p.items), [review.data]);
   const total = review.data?.pages[0]?.total ?? 0;
 
   const runConfirmAll = () => {
@@ -130,7 +127,10 @@ export function MoneyReview() {
     dismissAll.mutate(filters, {
       onSuccess: (res) => {
         setBulkDialog(null);
-        toast(`Dismissed ${res.dismissed} transactions. They won't count toward reports.`, 'positive');
+        toast(
+          `Dismissed ${res.dismissed} transactions. They won't count toward reports.`,
+          'positive',
+        );
       },
       onError: (err) =>
         toast(
@@ -362,11 +362,17 @@ function ReviewItemCard({
   // to offer the breakdown; it's never inferred from anything else.
   const isMortgagePayment = item.type === 'expense' && Boolean(item.mortgageId);
   const [breakdown, setBreakdown] = useState<MortgageBreakdownValue>(emptyMortgageBreakdown);
-  const breakdownComplete = !isMortgagePayment || isMortgageBreakdownValid(item.amountCents, breakdown);
+  const breakdownComplete =
+    !isMortgagePayment || isMortgageBreakdownValid(item.amountCents, breakdown);
 
   const propertyDetail = usePropertyDetail(propertyId || undefined);
   const units = propertyDetail.data?.units ?? [];
   const rentMatch = item.rentMatch;
+  // Surfaced only when already loaded (the units fetch above) — never a new
+  // request just for this hint.
+  const mortgageEscrowNote = propertyDetail.data?.mortgages.find(
+    (m) => m.id === item.mortgageId,
+  )?.escrowNote;
 
   const confirmItem = () => {
     const payload = linkedRent
@@ -410,7 +416,9 @@ function ReviewItemCard({
       },
       onError: (err) =>
         toast(
-          err instanceof ApiClientError ? err.message : 'Could not confirm the transaction. Try again.',
+          err instanceof ApiClientError
+            ? err.message
+            : 'Could not confirm the transaction. Try again.',
           'danger',
         ),
     });
@@ -418,10 +426,13 @@ function ReviewItemCard({
 
   const dismissItem = () => {
     dismiss.mutate(item.id, {
-      onSuccess: () => toast(`Dismissed “${item.description}” — it won't count toward reports.`, 'positive'),
+      onSuccess: () =>
+        toast(`Dismissed “${item.description}” — it won't count toward reports.`, 'positive'),
       onError: (err) =>
         toast(
-          err instanceof ApiClientError ? err.message : 'Could not dismiss the transaction. Try again.',
+          err instanceof ApiClientError
+            ? err.message
+            : 'Could not dismiss the transaction. Try again.',
           'danger',
         ),
     });
@@ -437,10 +448,15 @@ function ReviewItemCard({
       { id: item.id, mortgageId: null, principalCents: null },
       {
         onSuccess: () =>
-          toast("Won't be treated as a mortgage payment — categorize it normally below.", 'positive'),
+          toast(
+            "Won't be treated as a mortgage payment — categorize it normally below.",
+            'positive',
+          ),
         onError: (err) =>
           toast(
-            err instanceof ApiClientError ? err.message : 'Could not clear the mortgage link. Try again.',
+            err instanceof ApiClientError
+              ? err.message
+              : 'Could not clear the mortgage link. Try again.',
             'danger',
           ),
       },
@@ -450,233 +466,249 @@ function ReviewItemCard({
   return (
     <>
       <Card>
-        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-          <div className="min-w-0">
-            <p className="font-medium text-ink">{item.description}</p>
-            <p className="mt-0.5 text-sm text-ink-muted">
-              {item.vendor ? `${item.vendor} · ` : ''}
-              {formatDate(item.date)} ·{' '}
-              <span className="font-medium tabular-nums text-ink">
-                {item.type === 'income' ? '+' : '−'}
-                {formatUsd(item.amountCents)}
-              </span>
-            </p>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              {rentMatch && (
-                <AiChip
-                  name={`${rentMatch.tenantName}'s ${formatMonth(rentMatch.period)} rent — ${rentMatch.propertyLabel} · ${rentMatch.unitLabel}`}
-                  confidence={rentMatch.confidence}
-                  applied={linkedRent?.rentPaymentId === rentMatch.rentPaymentId}
-                  onApply={() =>
-                    setLinkedRent({
-                      rentPaymentId: rentMatch.rentPaymentId,
-                      tenantName: rentMatch.tenantName,
-                      period: rentMatch.period,
-                      propertyLabel: rentMatch.propertyLabel,
-                      unitLabel: rentMatch.unitLabel,
-                      source: 'suggestion',
-                    })
-                  }
-                  note={rentMatch.matchedName ? `deposit names ${rentMatch.matchedName}` : undefined}
-                />
-              )}
-              {item.aiSuggestedCategoryId && item.aiSuggestedCategoryName && !linkedRent && (
-                <AiChip
-                  name={item.aiSuggestedCategoryName}
-                  confidence={item.aiConfidence ?? 0}
-                  applied={categoryId === item.aiSuggestedCategoryId}
-                  onApply={() => setCategoryId(item.aiSuggestedCategoryId as string)}
-                  note={item.suggestionSource === 'learned' ? 'from your past choice' : undefined}
-                />
-              )}
-              {item.aiConfidence != null && item.aiConfidence < 0.7 && (
-                <StatusBadge tone="warning">Low confidence — check this one</StatusBadge>
-              )}
-              {/* Manual path (not AI content — a plain button, not an AiChip):
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+            <div className="min-w-0">
+              <p className="font-medium text-ink">{item.description}</p>
+              <p className="mt-0.5 text-sm text-ink-muted">
+                {item.vendor ? `${item.vendor} · ` : ''}
+                {formatDate(item.date)} ·{' '}
+                <span className="font-medium tabular-nums text-ink">
+                  {item.type === 'income' ? '+' : '−'}
+                  {formatUsd(item.amountCents)}
+                </span>
+              </p>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                {rentMatch && (
+                  <AiChip
+                    name={`${rentMatch.tenantName}'s ${formatMonth(rentMatch.period)} rent — ${rentMatch.propertyLabel} · ${rentMatch.unitLabel}`}
+                    confidence={rentMatch.confidence}
+                    applied={linkedRent?.rentPaymentId === rentMatch.rentPaymentId}
+                    onApply={() =>
+                      setLinkedRent({
+                        rentPaymentId: rentMatch.rentPaymentId,
+                        tenantName: rentMatch.tenantName,
+                        period: rentMatch.period,
+                        propertyLabel: rentMatch.propertyLabel,
+                        unitLabel: rentMatch.unitLabel,
+                        source: 'suggestion',
+                      })
+                    }
+                    note={
+                      rentMatch.matchedName ? `deposit names ${rentMatch.matchedName}` : undefined
+                    }
+                  />
+                )}
+                {item.aiSuggestedCategoryId && item.aiSuggestedCategoryName && !linkedRent && (
+                  <AiChip
+                    name={item.aiSuggestedCategoryName}
+                    confidence={item.aiConfidence ?? 0}
+                    applied={categoryId === item.aiSuggestedCategoryId}
+                    onApply={() => setCategoryId(item.aiSuggestedCategoryId as string)}
+                    note={item.suggestionSource === 'learned' ? 'from your past choice' : undefined}
+                  />
+                )}
+                {item.aiConfidence != null && item.aiConfidence < 0.7 && (
+                  <StatusBadge tone="warning">Low confidence — check this one</StatusBadge>
+                )}
+                {/* Manual path (not AI content — a plain button, not an AiChip):
                   lets the user pick from every open charge, for the cases the
                   heuristic missed entirely. Stays reachable even after a
                   suggestion is accepted so a manual pick can replace it
                   (mutually exclusive — one rentPaymentId). */}
-              {item.type === 'income' && (
-                <Button variant="secondary" size="sm" onClick={() => setPickerOpen(true)}>
-                  Link to rent…
-                </Button>
+                {item.type === 'income' && (
+                  <Button variant="secondary" size="sm" onClick={() => setPickerOpen(true)}>
+                    Link to rent…
+                  </Button>
+                )}
+              </div>
+              {item.possibleDuplicate && (
+                <p className="mt-2 text-sm text-warning">
+                  <span className="font-medium">Possible duplicate:</span>{' '}
+                  {item.possibleDuplicate.rentPeriod ? (
+                    <>
+                      this looks like the deposit behind the rent you recorded manually for{' '}
+                      {formatMonth(item.possibleDuplicate.rentPeriod)} (&ldquo;
+                      {item.possibleDuplicate.description}&rdquo;,{' '}
+                      {formatDate(item.possibleDuplicate.date)}
+                      ). If it&rsquo;s the same money, Dismiss this one — or unlink the manual
+                      payment on the Rent page first.
+                    </>
+                  ) : (
+                    <>
+                      a confirmed {item.possibleDuplicate.source} transaction matches this amount
+                      and date (&ldquo;{item.possibleDuplicate.description}&rdquo;,{' '}
+                      {formatDate(item.possibleDuplicate.date)}). If it&rsquo;s the same money,
+                      Dismiss this one.
+                    </>
+                  )}
+                </p>
               )}
             </div>
-            {item.possibleDuplicate && (
-              <p className="mt-2 text-sm text-warning">
-                <span className="font-medium">Possible duplicate:</span>{' '}
-                {item.possibleDuplicate.rentPeriod ? (
-                  <>
-                    this looks like the deposit behind the rent you recorded manually for{' '}
-                    {formatMonth(item.possibleDuplicate.rentPeriod)} (&ldquo;
-                    {item.possibleDuplicate.description}&rdquo;, {formatDate(item.possibleDuplicate.date)}
-                    ). If it&rsquo;s the same money, Dismiss this one — or unlink the manual payment
-                    on the Rent page first.
-                  </>
-                ) : (
-                  <>
-                    a confirmed {item.possibleDuplicate.source} transaction matches this amount and
-                    date (&ldquo;{item.possibleDuplicate.description}&rdquo;,{' '}
-                    {formatDate(item.possibleDuplicate.date)}). If it&rsquo;s the same money, Dismiss
-                    this one.
-                  </>
-                )}
-              </p>
-            )}
-          </div>
-          <div className="flex w-full flex-col gap-2 md:w-64">
-            {linkedRent ? (
-              <>
-                <p className="text-sm text-ink-muted">
-                  Confirming marks{' '}
-                  <span className="font-medium text-ink">{linkedRent.tenantName}</span>
-                  ’s {formatMonth(linkedRent.period)} rent paid and files this under{' '}
-                  <span className="font-medium text-ink">
-                    {linkedRent.propertyLabel} · {linkedRent.unitLabel}
-                  </span>{' '}
-                  as Rent.
-                </p>
-                <Button variant="ghost" onClick={() => setLinkedRent(null)}>
-                  Don't link to rent
-                </Button>
-              </>
-            ) : (
-              <>
-                {isMortgagePayment ? (
-                  <>
-                    <p className="text-sm text-ink-muted">
-                      This bank row matches your mortgage — enter the breakdown below before confirming.
-                    </p>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      busy={clearMortgageLink.isPending}
-                      onClick={notMortgagePayment}
-                    >
-                      Not a mortgage payment
-                    </Button>
-                  </>
-                ) : (
-                  <>
-                    <label
-                      htmlFor={`review-category-${item.id}`}
-                      className="text-xs font-medium text-ink-muted"
-                    >
-                      Category
-                    </label>
-                    <Select
-                      id={`review-category-${item.id}`}
-                      value={categoryId}
-                      onChange={(e) => setCategoryId(e.target.value)}
-                    >
-                      <option value="">
-                        {item.aiSuggestedCategoryName
-                          ? `Accept suggestion (${item.aiSuggestedCategoryName})`
-                          : 'Choose a category'}
-                      </option>
-                      {categoryOptions.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name}
+            <div className="flex w-full flex-col gap-2 md:w-64">
+              {linkedRent ? (
+                <>
+                  <p className="text-sm text-ink-muted">
+                    Confirming marks{' '}
+                    <span className="font-medium text-ink">{linkedRent.tenantName}</span>
+                    ’s {formatMonth(linkedRent.period)} rent paid and files this under{' '}
+                    <span className="font-medium text-ink">
+                      {linkedRent.propertyLabel} · {linkedRent.unitLabel}
+                    </span>{' '}
+                    as Rent.
+                  </p>
+                  <Button variant="ghost" onClick={() => setLinkedRent(null)}>
+                    Don't link to rent
+                  </Button>
+                </>
+              ) : (
+                <>
+                  {isMortgagePayment ? (
+                    <>
+                      <p className="text-sm text-ink-muted">
+                        This bank row matches your mortgage — enter the breakdown below before
+                        confirming.
+                      </p>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        busy={clearMortgageLink.isPending}
+                        onClick={notMortgagePayment}
+                      >
+                        Not a mortgage payment
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <label
+                        htmlFor={`review-category-${item.id}`}
+                        className="text-xs font-medium text-ink-muted"
+                      >
+                        Category
+                      </label>
+                      <Select
+                        id={`review-category-${item.id}`}
+                        value={categoryId}
+                        onChange={(e) => setCategoryId(e.target.value)}
+                      >
+                        <option value="">
+                          {item.aiSuggestedCategoryName
+                            ? `Accept suggestion (${item.aiSuggestedCategoryName})`
+                            : 'Choose a category'}
                         </option>
-                      ))}
-                    </Select>
-                  </>
-                )}
-                <label
-                  htmlFor={`review-property-${item.id}`}
-                  className="text-xs font-medium text-ink-muted"
-                >
-                  Property
-                </label>
-                <Select
-                  id={`review-property-${item.id}`}
-                  value={propertyId}
-                  onChange={(e) => {
-                    setPropertyId(e.target.value);
-                    setUnitId('');
-                  }}
-                >
-                  <option value="">Portfolio (no property)</option>
-                  {(properties.data ?? []).map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.nickname ?? p.addressLine1}
-                    </option>
-                  ))}
-                </Select>
-                <label
-                  htmlFor={`review-unit-${item.id}`}
-                  className="text-xs font-medium text-ink-muted"
-                >
-                  Unit
-                </label>
-                <Select
-                  id={`review-unit-${item.id}`}
-                  value={unitId}
-                  onChange={(e) => setUnitId(e.target.value)}
-                  disabled={!propertyId || units.length === 0}
-                >
-                  <option value="">
-                    {propertyId ? 'Whole property (no unit)' : 'Choose a property first'}
-                  </option>
-                  {units.map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.label}
-                    </option>
-                  ))}
-                </Select>
-                {isMortgagePayment ? (
-                  <MortgageBreakdownEditor
-                    idPrefix={`review-mortgage-${item.id}`}
-                    amountCents={item.amountCents}
-                    mortgageId={item.mortgageId as string}
-                    propertyId={propertyId || item.propertyId}
-                    value={breakdown}
-                    onChange={setBreakdown}
-                    categoryOptions={categoryOptions}
-                  />
-                ) : (
-                  <>
-                    <label
-                      htmlFor={`review-classification-${item.id}`}
-                      className="text-xs font-medium text-ink-muted"
-                    >
-                      Treatment
-                    </label>
-                    <Select
-                      id={`review-classification-${item.id}`}
-                      value={classification}
-                      onChange={(e) =>
-                        setClassification(e.target.value as TransactionClassification | '')
-                      }
-                    >
-                      <option value="">
-                        Ordinary {item.type === 'income' ? 'income' : 'expense'}
+                        {categoryOptions.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </Select>
+                    </>
+                  )}
+                  <label
+                    htmlFor={`review-property-${item.id}`}
+                    className="text-xs font-medium text-ink-muted"
+                  >
+                    Property
+                  </label>
+                  <Select
+                    id={`review-property-${item.id}`}
+                    value={propertyId}
+                    onChange={(e) => {
+                      setPropertyId(e.target.value);
+                      setUnitId('');
+                    }}
+                  >
+                    <option value="">Portfolio (no property)</option>
+                    {(properties.data ?? []).map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.nickname ?? p.addressLine1}
                       </option>
-                      <option value="transfer">Transfer between my accounts (not counted)</option>
-                      <option value="owner_contribution">Owner contribution (not counted)</option>
-                      {item.type === 'income' && (
-                        <option value="refund">Refund — nets against its expense category</option>
-                      )}
-                    </Select>
-                  </>
-                )}
-              </>
-            )}
-            <Button
-              busy={confirm.isPending}
-              disabled={!breakdownComplete}
-              aria-describedby={isMortgagePayment ? mortgageBreakdownStatusId(`review-mortgage-${item.id}`) : undefined}
-              onClick={confirmItem}
-            >
-              <IconCheck size={14} />
-              Confirm
-            </Button>
-            <Button variant="ghost" busy={dismiss.isPending} onClick={dismissItem}>
-              Dismiss
-              <span className="sr-only"> “{item.description}”</span>
-            </Button>
+                    ))}
+                  </Select>
+                  <label
+                    htmlFor={`review-unit-${item.id}`}
+                    className="text-xs font-medium text-ink-muted"
+                  >
+                    Unit
+                  </label>
+                  <Select
+                    id={`review-unit-${item.id}`}
+                    value={unitId}
+                    onChange={(e) => setUnitId(e.target.value)}
+                    disabled={!propertyId || units.length === 0}
+                  >
+                    <option value="">
+                      {propertyId ? 'Whole property (no unit)' : 'Choose a property first'}
+                    </option>
+                    {units.map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.label}
+                      </option>
+                    ))}
+                  </Select>
+                  {!isMortgagePayment && (
+                    <>
+                      <label
+                        htmlFor={`review-classification-${item.id}`}
+                        className="text-xs font-medium text-ink-muted"
+                      >
+                        Treatment
+                      </label>
+                      <Select
+                        id={`review-classification-${item.id}`}
+                        value={classification}
+                        onChange={(e) =>
+                          setClassification(e.target.value as TransactionClassification | '')
+                        }
+                      >
+                        <option value="">
+                          Ordinary {item.type === 'income' ? 'income' : 'expense'}
+                        </option>
+                        <option value="transfer">Transfer between my accounts (not counted)</option>
+                        <option value="owner_contribution">Owner contribution (not counted)</option>
+                        {item.type === 'income' && (
+                          <option value="refund">Refund — nets against its expense category</option>
+                        )}
+                      </Select>
+                    </>
+                  )}
+                </>
+              )}
+              <Button
+                busy={confirm.isPending}
+                disabled={!breakdownComplete}
+                aria-describedby={
+                  isMortgagePayment
+                    ? mortgageBreakdownStatusId(`review-mortgage-${item.id}`)
+                    : undefined
+                }
+                onClick={confirmItem}
+              >
+                <IconCheck size={14} />
+                Confirm
+              </Button>
+              <Button variant="ghost" busy={dismiss.isPending} onClick={dismissItem}>
+                Dismiss
+                <span className="sr-only"> “{item.description}”</span>
+              </Button>
+            </div>
           </div>
+          {/* Defect 1: the breakdown needs real width to be usable — a
+            category select and an amount input side by side no longer fit
+            the narrow action column above, so a mortgage row gets this
+            full-width block below the header row instead. */}
+          {isMortgagePayment && !linkedRent && (
+            <MortgageBreakdownEditor
+              idPrefix={`review-mortgage-${item.id}`}
+              amountCents={item.amountCents}
+              mortgageId={item.mortgageId as string}
+              propertyId={propertyId || item.propertyId}
+              value={breakdown}
+              onChange={setBreakdown}
+              categoryOptions={categoryOptions}
+              escrowNote={mortgageEscrowNote}
+            />
+          )}
         </div>
       </Card>
       {item.type === 'income' && (
@@ -844,8 +876,8 @@ function BankDiscrepancySection({ items }: { items: BankDiscrepancyRow[] }) {
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-semibold text-ink">Bank changed these after you confirmed</h2>
           <p className="mt-1 text-sm text-ink">
-            Your bank restated or removed these transactions after you already reviewed them.
-            Accept the bank's version, or keep yours.
+            Your bank restated or removed these transactions after you already reviewed them. Accept
+            the bank's version, or keep yours.
           </p>
           <ul className="mt-3 flex flex-col gap-3">
             {items.map((item) => (
@@ -885,7 +917,9 @@ function BankDiscrepancyItem({ item }: { item: BankDiscrepancyRow }) {
       onSuccess: () => toast('Kept your version — the bank change is dismissed.', 'positive'),
       onError: (err) =>
         toast(
-          err instanceof ApiClientError ? err.message : 'Could not dismiss the bank change. Try again.',
+          err instanceof ApiClientError
+            ? err.message
+            : 'Could not dismiss the bank change. Try again.',
           'danger',
         ),
     });
@@ -911,7 +945,7 @@ function BankDiscrepancyItem({ item }: { item: BankDiscrepancyRow }) {
       ? 'Removed by your bank'
       : diffParts.length > 0
         ? diffParts.join(' · ')
-        : "Your bank re-sent this transaction with the same details.";
+        : 'Your bank re-sent this transaction with the same details.';
 
   return (
     <div className="rounded-md border border-border-strong bg-surface p-4">
@@ -954,7 +988,9 @@ function BankDiscrepancyItem({ item }: { item: BankDiscrepancyRow }) {
           <Button
             busy={accept.isPending}
             disabled={!txn}
-            title={!txn ? 'This transaction is no longer in your ledger — dismiss instead.' : undefined}
+            title={
+              !txn ? 'This transaction is no longer in your ledger — dismiss instead.' : undefined
+            }
             onClick={acceptItem}
           >
             Accept bank version

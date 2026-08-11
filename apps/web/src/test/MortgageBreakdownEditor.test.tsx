@@ -85,7 +85,13 @@ function stubTransactionsList(items: Transaction[]) {
 /** Controlled harness: a Save button disabled exactly per
  *  `isMortgageBreakdownValid`, mirroring how the two real call sites gate
  *  Confirm/Save. */
-function Harness({ amountCents = AMOUNT_CENTS }: { amountCents?: number }) {
+function Harness({
+  amountCents = AMOUNT_CENTS,
+  escrowNote,
+}: {
+  amountCents?: number;
+  escrowNote?: string | null;
+}) {
   const [value, setValue] = useState<MortgageBreakdownValue>(emptyMortgageBreakdown());
   const valid = isMortgageBreakdownValid(amountCents, value);
   return (
@@ -98,6 +104,7 @@ function Harness({ amountCents = AMOUNT_CENTS }: { amountCents?: number }) {
         value={value}
         onChange={setValue}
         categoryOptions={categoryOptions}
+        escrowNote={escrowNote}
       />
       <button disabled={!valid} aria-describedby={mortgageBreakdownStatusId('test-mortgage')}>
         Save
@@ -106,11 +113,11 @@ function Harness({ amountCents = AMOUNT_CENTS }: { amountCents?: number }) {
   );
 }
 
-function renderHarness(amountCents = AMOUNT_CENTS) {
+function renderHarness(amountCents = AMOUNT_CENTS, escrowNote?: string | null) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <Harness amountCents={amountCents} />
+      <Harness amountCents={amountCents} escrowNote={escrowNote} />
     </QueryClientProvider>,
   );
 }
@@ -176,6 +183,86 @@ describe('MortgageBreakdownEditor', () => {
     expect(screen.getByLabelText('Remainder category')).toBeInTheDocument();
     expect(screen.queryByLabelText('Category 1')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+  });
+
+  it('names exactly which split row is still blocking Save when the sum already reconciles around it (defect: false "$0.00 remaining")', async () => {
+    stubTransactionsList([]);
+    renderHarness();
+
+    // $2,400 total, $1,400 principal → $1,000 remainder. Row 1 alone already
+    // sums to the remainder; row 2 is entirely untouched.
+    fireEvent.change(await screen.findByLabelText(/^Principal/), { target: { value: '1400.00' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Split across categories' }));
+    fireEvent.change(screen.getByLabelText('Category 1'), { target: { value: 'c-interest' } });
+    fireEvent.change(screen.getByLabelText('Amount 1 (USD)'), { target: { value: '1000.00' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save' });
+    expect(saveButton).toBeDisabled();
+    // Never the misleading "fully allocated" text — names row 2 by name.
+    expect(
+      screen.queryByText('$1,000.00 of $1,000.00 allocated · $0.00 remaining to allocate'),
+    ).not.toBeInTheDocument();
+    const status = screen.getByText(
+      '$1,000.00 of $1,000.00 allocated · row 2 still needs a category and amount',
+    );
+    expect(status).toBeInTheDocument();
+    // The disabled button's aria-describedby resolves to this exact text.
+    const describedById = saveButton.getAttribute('aria-describedby');
+    expect(describedById).toBeTruthy();
+    expect(document.getElementById(describedById!)).toBe(status);
+
+    // Finishing row 2 clears the block.
+    fireEvent.change(screen.getByLabelText('Category 2'), { target: { value: 'c-tax' } });
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(screen.getByText('$1,000.00 of $1,000.00 allocated · row 2 needs an amount over $0')).toBeInTheDocument();
+  });
+
+  it('explains that the remainder is usually interest plus escrowed taxes/insurance, with no separate "Escrow" category', async () => {
+    stubTransactionsList([]);
+    renderHarness();
+
+    fireEvent.change(await screen.findByLabelText(/^Principal/), { target: { value: '800.00' } });
+    const guidance = screen.getByText(
+      (_, element) =>
+        element?.tagName.toLowerCase() === 'p' &&
+        /mortgage interest, plus any property taxes and insurance/i.test(element.textContent ?? '') &&
+        /no separate/i.test(element.textContent ?? '') &&
+        /Escrow/.test(element.textContent ?? '') &&
+        /record those as/i.test(element.textContent ?? '') &&
+        /Property Taxes/.test(element.textContent ?? '') &&
+        /Insurance/.test(element.textContent ?? ''),
+    );
+    expect(guidance).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Interest + escrow (taxes, insurance)' }),
+    ).toBeInTheDocument();
+  });
+
+  it('the interest + escrow affordance creates three rows (Mortgage Interest, Property Taxes, Insurance) with blank amounts — never computed', async () => {
+    stubTransactionsList([]);
+    renderHarness();
+
+    fireEvent.change(await screen.findByLabelText(/^Principal/), { target: { value: '800.00' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Interest + escrow (taxes, insurance)' }));
+
+    expect(screen.getByLabelText('Category 1')).toHaveValue('c-interest');
+    expect(screen.getByLabelText('Amount 1 (USD)')).toHaveValue(null);
+    expect(screen.getByLabelText('Category 2')).toHaveValue('c-tax');
+    expect(screen.getByLabelText('Amount 2 (USD)')).toHaveValue(null);
+    expect(screen.getByLabelText('Category 3')).toHaveValue('c-ins');
+    expect(screen.getByLabelText('Amount 3 (USD)')).toHaveValue(null);
+    // Not save-worthy yet — the user still has to type every amount (D4).
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+  });
+
+  it("surfaces the mortgage's own escrow note when the caller already has it loaded", async () => {
+    stubTransactionsList([]);
+    renderHarness(AMOUNT_CENTS, 'Taxes and insurance are escrowed with the monthly payment.');
+
+    fireEvent.change(await screen.findByLabelText(/^Principal/), { target: { value: '800.00' } });
+    expect(
+      screen.getByText('Taxes and insurance are escrowed with the monthly payment.', { exact: false }),
+    ).toBeInTheDocument();
   });
 
   it('accepts a principal-only payment (principal === total) with zero remainder and no categories to fill', async () => {
@@ -255,6 +342,34 @@ describe('MortgageBreakdownEditor', () => {
     fireEvent.change(screen.getByLabelText('Amount 1 (USD)'), { target: { value: '1100.00' } });
     fireEvent.change(screen.getByLabelText('Category 2'), { target: { value: 'c-tax' } });
     fireEvent.change(screen.getByLabelText('Amount 2 (USD)'), { target: { value: '500.00' } });
+
+    const results = await axe.run(container, { rules: { 'color-contrast': { enabled: false } } });
+    expect(
+      results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`),
+    ).toEqual([]);
+  });
+
+  it('has no axe violations with an incomplete split row named in the status text', async () => {
+    stubTransactionsList([]);
+    const { container } = renderHarness();
+
+    fireEvent.change(await screen.findByLabelText(/^Principal/), { target: { value: '1400.00' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Split across categories' }));
+    fireEvent.change(screen.getByLabelText('Category 1'), { target: { value: 'c-interest' } });
+    fireEvent.change(screen.getByLabelText('Amount 1 (USD)'), { target: { value: '1000.00' } });
+
+    const results = await axe.run(container, { rules: { 'color-contrast': { enabled: false } } });
+    expect(
+      results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`),
+    ).toEqual([]);
+  });
+
+  it('has no axe violations after applying the interest + escrow affordance', async () => {
+    stubTransactionsList([]);
+    const { container } = renderHarness();
+
+    fireEvent.change(await screen.findByLabelText(/^Principal/), { target: { value: '800.00' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Interest + escrow (taxes, insurance)' }));
 
     const results = await axe.run(container, { rules: { 'color-contrast': { enabled: false } } });
     expect(

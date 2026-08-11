@@ -44,8 +44,7 @@ export function parseCents(value: string): number {
 // flip this to `false` to always start blank without touching anything else.
 export const PREFILL_FROM_LAST_MONTH = true;
 
-export const PREFILL_LABEL =
-  'Same as last month — update from your statement if it changed.';
+export const PREFILL_LABEL = 'Same as last month — update from your statement if it changed.';
 
 // How far back to look for "last month's" payment on the same mortgage.
 // TransactionListQuery has no mortgageId filter (Phase 2's contract doesn't
@@ -80,7 +79,10 @@ export function emptyMortgageBreakdown(): MortgageBreakdownValue {
  * Confirm/Save button; `remainingToAllocateCents` below drives the live
  * status text shown alongside it.
  */
-export function isMortgageBreakdownValid(amountCents: number, value: MortgageBreakdownValue): boolean {
+export function isMortgageBreakdownValid(
+  amountCents: number,
+  value: MortgageBreakdownValue,
+): boolean {
   if (value.principal.trim() === '') return false;
   const principalCents = parseCents(value.principal);
   if (principalCents < 0 || principalCents > amountCents) return false;
@@ -89,7 +91,9 @@ export function isMortgageBreakdownValid(amountCents: number, value: MortgageBre
   if (!value.splitMode) return Boolean(value.remainderCategoryId);
   const rows = value.splitRows;
   if (rows.length < 2) return false;
-  const complete = rows.every((r) => r.categoryId && r.amount.trim() !== '' && parseCents(r.amount) > 0);
+  const complete = rows.every(
+    (r) => r.categoryId && r.amount.trim() !== '' && parseCents(r.amount) > 0,
+  );
   if (!complete) return false;
   const allocated = rows.reduce((sum, r) => sum + parseCents(r.amount), 0);
   return allocated === remainderCents;
@@ -100,7 +104,10 @@ export function isMortgageBreakdownValid(amountCents: number, value: MortgageBre
  *  remaining here (its own error message covers that case instead). Only
  *  meaningful in split mode; a single remainder category is either chosen
  *  (nothing remaining) or not (the whole remainder still does). */
-export function remainingToAllocateCents(amountCents: number, value: MortgageBreakdownValue): number {
+export function remainingToAllocateCents(
+  amountCents: number,
+  value: MortgageBreakdownValue,
+): number {
   if (value.principal.trim() === '') return amountCents;
   const principalCents = parseCents(value.principal);
   const remainderCents = amountCents - principalCents;
@@ -118,14 +125,21 @@ export function remainingToAllocateCents(amountCents: number, value: MortgageBre
 export function mortgageBreakdownPayload(
   amountCents: number,
   value: MortgageBreakdownValue,
-): { principalCents: number; categoryId?: string; splits?: { categoryId: string; amountCents: number }[] } {
+): {
+  principalCents: number;
+  categoryId?: string;
+  splits?: { categoryId: string; amountCents: number }[];
+} {
   const principalCents = parseCents(value.principal);
   const remainderCents = amountCents - principalCents;
   if (remainderCents === 0) return { principalCents };
   if (value.splitMode) {
     return {
       principalCents,
-      splits: value.splitRows.map((r) => ({ categoryId: r.categoryId, amountCents: parseCents(r.amount) })),
+      splits: value.splitRows.map((r) => ({
+        categoryId: r.categoryId,
+        amountCents: parseCents(r.amount),
+      })),
     };
   }
   return { principalCents, categoryId: value.remainderCategoryId };
@@ -137,6 +151,17 @@ export function mortgageBreakdownStatusId(idPrefix: string): string {
   return `${idPrefix}-remaining-status`;
 }
 
+// Defect: there is deliberately NO "Escrow" category — escrow money pays
+// property taxes and insurance, the actual Schedule E lines (Property Taxes
+// → Line 16, Insurance → Line 9); an "Escrow" category would map to neither
+// and silently drop those dollars off the tax form. The miss was that the UI
+// never said so, leaving a user with an escrowed payment hunting for
+// "Escrow" and finding nothing. This one-click affordance sets up the three
+// rows a typical escrowed payment needs — categories only, amounts left
+// blank for the user to type off their statement (D4: never computed here).
+const ESCROW_PRESET_CATEGORY_NAMES = ['Mortgage Interest', 'Property Taxes', 'Insurance'];
+export const ESCROW_PRESET_LABEL = 'Interest + escrow (taxes, insurance)';
+
 export interface MortgageBreakdownEditorProps {
   idPrefix: string;
   amountCents: number; // read-only — comes from the bank, never edited here
@@ -146,6 +171,9 @@ export interface MortgageBreakdownEditorProps {
   value: MortgageBreakdownValue;
   onChange: (value: MortgageBreakdownValue) => void;
   categoryOptions: Category[];
+  // The mortgage's own escrow arrangement notes (Mortgage.escrowNote), when
+  // the caller already has them loaded — never fetched here just for this.
+  escrowNote?: string | null;
 }
 
 export function MortgageBreakdownEditor({
@@ -157,12 +185,14 @@ export function MortgageBreakdownEditor({
   value,
   onChange,
   categoryOptions,
+  escrowNote,
 }: MortgageBreakdownEditorProps) {
   const principalCents = value.principal.trim() !== '' ? parseCents(value.principal) : null;
   const principalNegative = principalCents != null && principalCents < 0;
   const principalTooLarge = principalCents != null && principalCents > amountCents;
   const principalInvalid = principalNegative || principalTooLarge;
-  const remainderCents = principalCents != null && !principalInvalid ? amountCents - principalCents : 0;
+  const remainderCents =
+    principalCents != null && !principalInvalid ? amountCents - principalCents : 0;
   const showRemainder = principalCents != null && !principalInvalid && remainderCents > 0;
   const allocatedCents = value.splitRows.reduce((sum, r) => sum + parseCents(r.amount), 0);
   const remainingCents = remainingToAllocateCents(amountCents, value);
@@ -187,7 +217,8 @@ export function MortgageBreakdownEditor({
     const items = lastPayments.data?.items ?? [];
     return (
       items.find(
-        (t) => t.mortgageId === mortgageId && t.principalCents != null && t.id !== excludeTransactionId,
+        (t) =>
+          t.mortgageId === mortgageId && t.principalCents != null && t.id !== excludeTransactionId,
       ) ?? null
     );
   }, [lastPayments.data, mortgageId, excludeTransactionId]);
@@ -207,10 +238,23 @@ export function MortgageBreakdownEditor({
       remainderCategoryId: hadSplitRemainder ? '' : (lastPayment.categoryId ?? ''),
       splitMode: hadSplitRemainder,
       splitRows: hadSplitRemainder
-        ? splits.map((s) => ({ categoryId: s.categoryId, amount: (s.amountCents / 100).toFixed(2) }))
+        ? splits.map((s) => ({
+            categoryId: s.categoryId,
+            amount: (s.amountCents / 100).toFixed(2),
+          }))
         : emptySplitRows(),
     });
   }, [lastPayment, value.principal, onChange]);
+
+  // Whether every split row is save-worthy (category + a positive amount) —
+  // the same test `isMortgageBreakdownValid` applies, kept in sync here so
+  // the live status text can name exactly which row is still blocking it
+  // instead of just reporting the sum (defect: a sum that happens to
+  // reconcile around one untouched row used to read as "$0.00 remaining",
+  // i.e. complete, while Confirm/Save stayed disabled for no stated reason).
+  const splitRowsComplete = value.splitRows.every(
+    (r) => r.categoryId && r.amount.trim() !== '' && parseCents(r.amount) > 0,
+  );
 
   // The live status text doubles as the disabled Confirm/Save button's
   // `aria-describedby` target (defect: it must always resolve, even in the
@@ -229,9 +273,30 @@ export function MortgageBreakdownEditor({
         ? `${formatUsd(remainderCents)} will be categorized as the remainder category below.`
         : `Choose a category for the ${formatUsd(remainderCents)} remaining.`;
     }
-    return `${formatUsd(allocatedCents)} of ${formatUsd(remainderCents)} allocated · ${formatUsd(remainingCents)} remaining to allocate`;
+    const allocatedText = `${formatUsd(allocatedCents)} of ${formatUsd(remainderCents)} allocated`;
+    if (remainingCents === 0 && !splitRowsComplete) {
+      // The sum happens to reconcile around a row that isn't actually
+      // filled in (a category missing, an amount missing or zero) — saying
+      // "$0.00 remaining" here would read as done while Confirm/Save stays
+      // disabled for no stated reason (the defect). Name the row(s) still
+      // blocking instead. An untouched trailing row reads as "still needs",
+      // not as a scolding error.
+      const issues = value.splitRows
+        .map((r, i) => {
+          if (r.categoryId && r.amount.trim() !== '' && parseCents(r.amount) > 0) return null;
+          if (!r.categoryId && r.amount.trim() === '')
+            return `row ${i + 1} still needs a category and amount`;
+          if (!r.categoryId) return `row ${i + 1} needs a category`;
+          return `row ${i + 1} needs an amount over $0`;
+        })
+        .filter((issue): issue is string => issue !== null);
+      return `${allocatedText} · ${issues.join('; ')}`;
+    }
+    return `${allocatedText} · ${formatUsd(remainingCents)} remaining to allocate`;
   })();
-  const statusIsProblem = principalInvalid || (showRemainder && remainingCents !== 0);
+  const statusIsProblem =
+    principalInvalid ||
+    (showRemainder && (remainingCents !== 0 || (value.splitMode && !splitRowsComplete)));
 
   const updateRow = (i: number, patch: Partial<SplitRow>) =>
     onChange({
@@ -244,7 +309,22 @@ export function MortgageBreakdownEditor({
     onChange({
       ...value,
       splitRows:
-        value.splitRows.length > 2 ? value.splitRows.filter((_, idx) => idx !== i) : value.splitRows,
+        value.splitRows.length > 2
+          ? value.splitRows.filter((_, idx) => idx !== i)
+          : value.splitRows,
+    });
+  // Defect 2's one-click affordance — sets up the three rows, categories
+  // only; every amount stays blank for the user to type off their
+  // statement. Falls back to '' for any name not present in this account's
+  // category list (still pickable manually — never silently dropped).
+  const applyEscrowPreset = () =>
+    onChange({
+      ...value,
+      splitMode: true,
+      splitRows: ESCROW_PRESET_CATEGORY_NAMES.map((name) => ({
+        categoryId: categoryOptions.find((c) => c.name === name)?.id ?? '',
+        amount: '',
+      })),
     });
 
   return (
@@ -285,6 +365,27 @@ export function MortgageBreakdownEditor({
       </p>
       {showRemainder && (
         <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-2 rounded-md border border-border bg-surface p-3 text-sm text-ink-muted">
+            <p>
+              The rest of a mortgage payment is usually mortgage interest, plus any property taxes
+              and insurance your lender collects in escrow. There&rsquo;s no separate
+              &ldquo;Escrow&rdquo; category — record those as{' '}
+              <span className="font-medium text-ink">Property Taxes</span> and{' '}
+              <span className="font-medium text-ink">Insurance</span> so they land on the right tax
+              lines.
+            </p>
+            {escrowNote && (
+              <p>
+                <span className="font-medium text-ink">This mortgage&rsquo;s escrow note: </span>
+                {escrowNote}
+              </p>
+            )}
+            <div>
+              <Button type="button" variant="secondary" size="sm" onClick={applyEscrowPreset}>
+                {ESCROW_PRESET_LABEL}
+              </Button>
+            </div>
+          </div>
           <div>
             <Button
               type="button"
@@ -313,9 +414,18 @@ export function MortgageBreakdownEditor({
           ) : (
             <>
               {value.splitRows.map((row, i) => (
-                <div key={i} className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_140px_auto] sm:items-end">
-                  <FormField label={`Category ${i + 1}`} htmlFor={`${idPrefix}-split-category-${i}`}>
-                    <Select value={row.categoryId} onChange={(e) => updateRow(i, { categoryId: e.target.value })}>
+                <div
+                  key={i}
+                  className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_140px_auto] sm:items-end"
+                >
+                  <FormField
+                    label={`Category ${i + 1}`}
+                    htmlFor={`${idPrefix}-split-category-${i}`}
+                  >
+                    <Select
+                      value={row.categoryId}
+                      onChange={(e) => updateRow(i, { categoryId: e.target.value })}
+                    >
                       <option value="">Choose a category</option>
                       {categoryOptions.map((c) => (
                         <option key={c.id} value={c.id}>
@@ -324,7 +434,10 @@ export function MortgageBreakdownEditor({
                       ))}
                     </Select>
                   </FormField>
-                  <FormField label={`Amount ${i + 1} (USD)`} htmlFor={`${idPrefix}-split-amount-${i}`}>
+                  <FormField
+                    label={`Amount ${i + 1} (USD)`}
+                    htmlFor={`${idPrefix}-split-amount-${i}`}
+                  >
                     <Input
                       type="number"
                       inputMode="decimal"
