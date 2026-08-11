@@ -379,6 +379,79 @@ function DetailTable({ table, caption }: { table: SnapshotTable; caption: string
   );
 }
 
+// ── balance sheet assets/liabilities breakdown ───────────────────────────────
+// PLAN-REAL-EQUITY §5: the snapshot's `assets`/`liabilities` arrays are the
+// itemized line items behind the headline tiles' totals ("… (market value,
+// owner-provided)" / "… (at cost)" is already baked into each `item` string
+// server-side). Old, pre-equity snapshots always have `liabilities: []` (a
+// filed report never silently changes) — rendered here as "No liabilities
+// recorded", never a crash.
+
+interface LineItem {
+  item: string;
+  amountCents: number;
+}
+
+function lineItemsAt(source: Obj, key: string): LineItem[] {
+  return rowsAt(source, key)
+    .filter(
+      (r): r is Obj & { item: string; amountCents: number } =>
+        typeof r.item === 'string' && typeof r.amountCents === 'number',
+    )
+    .map((r) => ({ item: r.item, amountCents: r.amountCents }));
+}
+
+function LineItemsCard({
+  title,
+  rows,
+  emptyMessage,
+}: {
+  title: string;
+  rows: LineItem[];
+  emptyMessage: string;
+}) {
+  return (
+    <Card flush>
+      <Table caption={title} captionVisible>
+        <thead>
+          <tr>
+            <Th>Item</Th>
+            <Th align="right">Amount</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.length === 0 ? (
+            <Tr>
+              <Td colSpan={2} className="text-ink-muted">
+                {emptyMessage}
+              </Td>
+            </Tr>
+          ) : (
+            rows.map((row, i) => (
+              <Tr key={i}>
+                <Td>{row.item}</Td>
+                <Td align="right">{formatUsd(row.amountCents)}</Td>
+              </Tr>
+            ))
+          )}
+        </tbody>
+      </Table>
+    </Card>
+  );
+}
+
+function BalanceSheetBreakdown({ data }: { data: Obj }) {
+  const assets = lineItemsAt(data, 'assets');
+  const liabilities = lineItemsAt(data, 'liabilities');
+  if (assets.length === 0 && liabilities.length === 0) return null;
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <LineItemsCard title="Assets" rows={assets} emptyMessage="No assets recorded." />
+      <LineItemsCard title="Liabilities" rows={liabilities} emptyMessage="No liabilities recorded." />
+    </div>
+  );
+}
+
 /** Schedule E only: the per-property IRS expense-line breakdown that the
  * summary table (per-property totals) flattens away. */
 function ScheduleELines({ data }: { data: Obj }) {
@@ -551,6 +624,8 @@ export function ReportBody({ type, data, title }: ReportBodyProps) {
       )}
 
       {watchItems !== null && <WatchItems items={watchItems} />}
+
+      {type === 'balance_sheet' && <BalanceSheetBreakdown data={snapshot} />}
 
       {note && (
         <Card className="bg-surface-sunken">

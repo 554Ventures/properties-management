@@ -12,7 +12,9 @@ import {
   ConfirmTransactionInputSchema,
   CreateContractorInputSchema,
   CreateLeaseInputSchema,
+  CreateMortgageInputSchema,
   CreatePropertyInputSchema,
+  CreatePropertyValuationInputSchema,
   CreateTenantInputSchema,
   CreateTransactionInputSchema,
   CreateUnitInputSchema,
@@ -29,6 +31,7 @@ import {
   TransactionListQuerySchema,
   UpdateContractorInputSchema,
   UpdateLeaseInputSchema,
+  UpdateMortgageFieldsSchema,
   UpdatePropertyInputSchema,
   UpdateTenantInputSchema,
   UpdateTransactionInputSchema,
@@ -52,12 +55,14 @@ import * as dashboardService from '../services/dashboard.service';
 import * as documentService from '../services/document.service';
 import * as insightService from '../services/insight.service';
 import * as leaseService from '../services/lease.service';
+import * as mortgageService from '../services/mortgage.service';
 import * as propertyService from '../services/property.service';
 import * as rentService from '../services/rent.service';
 import * as reportService from '../services/report.service';
 import * as tenantService from '../services/tenant.service';
 import * as transactionService from '../services/transaction.service';
 import * as unitService from '../services/unit.service';
+import * as valuationService from '../services/valuation.service';
 import type { AuditActor } from '../services/audit.service';
 
 export interface ServiceToolDef {
@@ -152,7 +157,7 @@ export const serviceTools: ServiceToolDef[] = [
   {
     name: 'get_property',
     description:
-      'Full detail for one property: address, acquisition date/cost (cents), units with current lease + tenants, MTD/YTD P&L and any active insights.',
+      'Full detail for one property: address, acquisition date/cost (cents), units with current lease + tenants, MTD/YTD P&L, any active insights, and financing — mortgages with their derived current balance, the latest owner-provided valuation, and computed equity (asset value from the latest valuation or, absent one, acquisition cost, minus mortgage balances). The mortgages list also includes archived (paid-off or removed) mortgages, identified by a non-null archivedAt; those are NOT owed and are already excluded from the equity figure, so never add them to a balance you report. Equity is null when the property has neither a valuation nor an acquisition cost.',
     inputSchema: z.object({ propertyId: z.string() }),
     write: false,
     execute: (accountId, input) =>
@@ -463,6 +468,50 @@ export const serviceTools: ServiceToolDef[] = [
     },
   },
   {
+    name: 'create_mortgage',
+    description:
+      'WRITES: adds a mortgage to a property (lender, and a statement checkpoint — balanceCents + balanceAsOfDate, the balance the lender showed and the date it was true on; optional originalPrincipalCents, startDate, interestRateMilliPct in thousandths of a percent (6.375% = 6375), escrowNote, notes). Multiple mortgages per property are allowed (HELOCs/seconds exist). The property\'s current balance and equity recompute immediately from the checkpoint.',
+    inputSchema: CreateMortgageInputSchema.extend({ propertyId: z.string() }),
+    write: true,
+    execute: (accountId, input, actor) => {
+      const { propertyId, ...mortgageInput } = input as z.infer<typeof CreateMortgageInputSchema> & {
+        propertyId: string;
+      };
+      return mortgageService.create(accountId, propertyId, mortgageInput, actor);
+    },
+  },
+  {
+    name: 'update_mortgage',
+    description:
+      'WRITES: edits an existing mortgage. This is also how to re-checkpoint the balance — e.g. "my statement says the balance is $310k now": balanceCents and balanceAsOfDate must be provided TOGETHER (a new balance is only meaningful with the date it was true on; the app rejects one without the other). Other fields (lender, originalPrincipalCents, startDate, interestRateMilliPct, escrowNote, notes) may be edited independently, and only the provided fields change. Archiving is not available from chat.',
+    // Must stay a flat object schema: `zodToJsonSchema` turns an intersection
+    // into `allOf` with no top-level `properties`, which the Anthropic tool API
+    // rejects. `UpdateMortgageFieldsSchema` is the unrefined shape for exactly
+    // this; the balanceCents/balanceAsOfDate pairing rule is enforced in
+    // `mortgage.service.update`, so composing here can't bypass it.
+    inputSchema: UpdateMortgageFieldsSchema.extend({ mortgageId: z.string() }),
+    write: true,
+    execute: (accountId, input, actor) => {
+      const { mortgageId, ...patch } = input as z.infer<typeof UpdateMortgageFieldsSchema> & {
+        mortgageId: string;
+      };
+      return mortgageService.update(accountId, mortgageId, patch, actor);
+    },
+  },
+  {
+    name: 'record_property_valuation',
+    description:
+      'WRITES: records an owner-provided value for a property as of a date (valueCents, asOfDate ISO, source: "owner_estimate"|"appraisal"|"tax_assessment"|"other", optional notes). This is always an owner-entered figure, never a market estimate. The latest valuation as of today feeds the property\'s equity figure; deleting a valuation is not available from chat.',
+    inputSchema: CreatePropertyValuationInputSchema.extend({ propertyId: z.string() }),
+    write: true,
+    execute: (accountId, input, actor) => {
+      const { propertyId, ...valuationInput } = input as z.infer<
+        typeof CreatePropertyValuationInputSchema
+      > & { propertyId: string };
+      return valuationService.create(accountId, propertyId, valuationInput, actor);
+    },
+  },
+  {
     name: 'create_tenant',
     description:
       'WRITES: adds a person to the tenant directory (full name required; optional email, phone, notes). This only creates the record — put them on a unit with create_lease or add_tenant_to_lease. Archiving is not available from chat.',
@@ -709,6 +758,9 @@ export const WRITE_TOOL_PERMISSIONS: Partial<Record<string, MemberPermission>> =
   update_property: 'properties',
   create_unit: 'properties',
   update_unit: 'properties',
+  create_mortgage: 'properties',
+  update_mortgage: 'properties',
+  record_property_valuation: 'properties',
   // Leases are part of tenant management → same 'tenants' grant the
   // /leases and /tenants write routes use (routes/leases.ts).
   create_tenant: 'tenants',

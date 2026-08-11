@@ -5,6 +5,8 @@ import { ReportDetailResponseSchema, ReportSchema } from '@hearth/shared';
 import { buildApp } from '../app';
 import { resetMockEmail, sentEmails } from '../integrations/mock/mock-email';
 import {
+  addDays,
+  addMonthsToPeriod,
   currentPeriodInTz,
   iso,
   monthEndExclusiveInTz,
@@ -13,7 +15,14 @@ import {
 } from '../lib/dates';
 import { pnlSums } from '../lib/pnl';
 import { prisma } from '../lib/prisma';
-import { DEMO_TIMEZONE } from '../../prisma/seed-constants';
+import {
+  BALANCE_SHEET_PROPERTY_ASSETS_CENTS,
+  DEMO_TIMEZONE,
+  MAPLE_MORTGAGE_BALANCE_CENTS,
+  MAPLE_MORTGAGE_LENDER,
+  MAPLE_VALUATION_CENTS,
+  SEED_PROPERTIES,
+} from '../../prisma/seed-constants';
 import { getDemoAccountId } from '../plugins/auth';
 import * as reportService from '../services/report.service';
 import * as transactionService from '../services/transaction.service';
@@ -194,6 +203,131 @@ describe('schedule_e report', () => {
 
     await prisma.report.delete({ where: { id: report.id } });
     await prisma.auditLog.deleteMany({ where: { accountId, entityId: report.id } });
+  });
+});
+
+// PLAN-REAL-EQUITY §5: the balance sheet reports real equity. The seed gives
+// Maple (SEED_PROPERTIES[0]) one mortgage + one valuation and every other
+// property neither, so one report exercises the market-value line, the at-cost
+// fallback and a real liability side.
+describe('balance_sheet report — real equity', () => {
+  const MAPLE = SEED_PROPERTIES[0]!;
+
+  interface BalanceSheetData {
+    simplified: boolean;
+    assets: Array<{ item: string; amountCents: number }>;
+    liabilities: Array<{ item: string; kind: string; amountCents: number }>;
+    totals: { totalAssetsCents: number; totalLiabilitiesCents: number; equityCents: number };
+    table: {
+      columns: Array<{ key: string; label: string }>;
+      rows: Array<{ section: string; item: string; amountCents: number }>;
+    };
+  }
+
+  async function balanceSheet(
+    accountId: string,
+    input: { taxYear?: number; from?: string; to?: string },
+  ): Promise<BalanceSheetData> {
+    const report = await reportService.generate(accountId, { type: 'balance_sheet', ...input });
+    const detail = await reportService.getById(accountId, report.id);
+    await prisma.report.delete({ where: { id: report.id } });
+    await prisma.auditLog.deleteMany({ where: { accountId, entityId: report.id } });
+    return detail.data as BalanceSheetData;
+  }
+
+  const amountOf = (rows: Array<{ item: string; amountCents: number }>, item: string) =>
+    rows.find((r) => r.item === item)?.amountCents;
+
+  it('carries Maple at its owner-provided valuation, every other property at cost, and the mortgage as a liability', async () => {
+    const accountId = await getDemoAccountId();
+    const data = await balanceSheet(accountId, { taxYear: new Date().getUTCFullYear() });
+
+    // A mortgage and a valuation exist → no longer a structural placeholder.
+    expect(data.simplified).toBe(false);
+
+    expect(amountOf(data.assets, `${MAPLE.addressLine1} (market value, owner-provided)`)).toBe(
+      MAPLE_VALUATION_CENTS,
+    );
+    for (const spec of SEED_PROPERTIES.slice(1)) {
+      expect(amountOf(data.assets, `${spec.addressLine1} (at cost)`)).toBe(spec.acquisitionCostCents);
+    }
+    // Period cash is range-dependent, so only the property basis is pinned.
+    const propertyAssetsCents = data.assets
+      .filter((r) => r.item !== 'Operating cash (period net)')
+      .reduce((s, r) => s + r.amountCents, 0);
+    expect(propertyAssetsCents).toBe(BALANCE_SHEET_PROPERTY_ASSETS_CENTS);
+
+    expect(data.liabilities).toHaveLength(1);
+    const liability = data.liabilities[0]!;
+    expect(liability.kind).toBe('mortgage');
+    expect(liability.item).toContain(MAPLE.addressLine1);
+    expect(liability.item).toContain(MAPLE_MORTGAGE_LENDER);
+    // No principal-bearing rows exist yet (Phase 2), so the derived balance is
+    // exactly the statement checkpoint.
+    expect(liability.amountCents).toBe(MAPLE_MORTGAGE_BALANCE_CENTS);
+
+    expect(data.totals.totalAssetsCents).toBe(data.assets.reduce((s, r) => s + r.amountCents, 0));
+    expect(data.totals.totalLiabilitiesCents).toBe(MAPLE_MORTGAGE_BALANCE_CENTS);
+    expect(data.totals.equityCents).toBe(
+      data.totals.totalAssetsCents - data.totals.totalLiabilitiesCents,
+    );
+  });
+
+  it('the view-as-table alternative covers liabilities and equity, not just assets', async () => {
+    const accountId = await getDemoAccountId();
+    const data = await balanceSheet(accountId, { taxYear: new Date().getUTCFullYear() });
+
+    expect(data.table.columns.map((c) => c.key)).toEqual(['section', 'item', 'amountCents']);
+    expect(new Set(data.table.rows.map((r) => r.section))).toEqual(
+      new Set(['Assets', 'Liabilities', 'Equity']),
+    );
+    const liabilityRows = data.table.rows.filter((r) => r.section === 'Liabilities');
+    expect(liabilityRows.map((r) => r.item)).toContain('Total liabilities');
+    expect(amountOf(liabilityRows, 'Total liabilities')).toBe(data.totals.totalLiabilitiesCents);
+    expect(amountOf(data.table.rows, 'Total assets')).toBe(data.totals.totalAssetsCents);
+    expect(amountOf(data.table.rows, 'Equity')).toBe(data.totals.equityCents);
+  });
+
+  it('a range ending before the valuation keeps Maple at cost, and the mortgage line stays at its checkpoint', async () => {
+    const accountId = await getDemoAccountId();
+    // The seed dates both the checkpoint and the valuation at the start of
+    // month M−6; a report whose period ends the day before must not inherit
+    // either of them (a filed past period never picks up today's figures).
+    const period = currentPeriodInTz(TZ);
+    const equityAsOf = monthStartInTz(addMonthsToPeriod(period, -6), TZ);
+    const data = await balanceSheet(accountId, {
+      from: iso(monthStartInTz(addMonthsToPeriod(period, -12), TZ)),
+      to: iso(addDays(equityAsOf, -1)),
+    });
+
+    expect(amountOf(data.assets, `${MAPLE.addressLine1} (at cost)`)).toBe(
+      MAPLE.acquisitionCostCents,
+    );
+    expect(data.assets.some((r) => r.item.includes('market value'))).toBe(false);
+    // The liability side is account-level (not date-filtered) and, with no
+    // principal rows, reads back the checkpoint for any as-of date.
+    expect(data.liabilities).toHaveLength(1);
+    expect(data.liabilities[0]!.amountCents).toBe(MAPLE_MORTGAGE_BALANCE_CENTS);
+    expect(data.simplified).toBe(false);
+  });
+
+  it('treats `to` as exclusive for valuations, exactly as it does for transactions', async () => {
+    // `to` is exclusive everywhere in this file (transactions filter `lt: to`)
+    // and the web sends the day *after* the picked end date. A valuation dated
+    // exactly on `to` therefore belongs to the next period, not this one —
+    // otherwise a July value silently lands in the June balance sheet.
+    const accountId = await getDemoAccountId();
+    const period = currentPeriodInTz(TZ);
+    const valuationDate = monthStartInTz(addMonthsToPeriod(period, -6), TZ);
+    const data = await balanceSheet(accountId, {
+      from: iso(monthStartInTz(addMonthsToPeriod(period, -12), TZ)),
+      to: iso(valuationDate),
+    });
+
+    expect(amountOf(data.assets, `${MAPLE.addressLine1} (at cost)`)).toBe(
+      MAPLE.acquisitionCostCents,
+    );
+    expect(data.assets.some((r) => r.item.includes('market value'))).toBe(false);
   });
 });
 

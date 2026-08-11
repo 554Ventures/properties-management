@@ -7,11 +7,14 @@ import type {
   CurrentUser,
   Insight,
   LeaseWithTenants,
+  Mortgage,
   PnlSummary,
   Property,
   PropertyDetailResponse,
   PropertyDetailUnit,
   PropertyDetailUnitRent,
+  PropertyEquity,
+  PropertyValuation,
   RenewalDraftResponse,
   TenantOnLease,
   UnitDetailResponse,
@@ -200,6 +203,51 @@ export const unitALateRent: PropertyDetailUnitRent = {
   dueDate: isoIn(-3),
 };
 
+export function makeMortgage(overrides: Partial<Mortgage> = {}): Mortgage {
+  return {
+    id: 'm1',
+    accountId: 'acc1',
+    propertyId: 'p1',
+    lender: 'First National Bank',
+    balanceCents: 18_200_000,
+    balanceAsOfDate: '2026-01-31T00:00:00.000Z',
+    currentBalanceCents: 18_200_000,
+    originalPrincipalCents: 20_000_000,
+    startDate: '2020-06-01T00:00:00.000Z',
+    interestRateMilliPct: 6375,
+    escrowNote: null,
+    notes: null,
+    createdAt: '2020-06-01T00:00:00.000Z',
+    updatedAt: '2026-01-31T00:00:00.000Z',
+    archivedAt: null,
+    ...overrides,
+  };
+}
+
+export function makeValuation(overrides: Partial<PropertyValuation> = {}): PropertyValuation {
+  return {
+    id: 'v1',
+    accountId: 'acc1',
+    propertyId: 'p1',
+    valueCents: 32_000_000,
+    asOfDate: '2026-06-01T00:00:00.000Z',
+    source: 'owner_estimate',
+    notes: null,
+    createdAt: '2026-06-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+export function makeEquity(overrides: Partial<PropertyEquity> = {}): PropertyEquity {
+  return {
+    assetValueCents: 32_000_000,
+    assetBasis: 'valuation',
+    liabilityCents: 18_200_000,
+    equityCents: 13_800_000,
+    ...overrides,
+  };
+}
+
 export function hubDetailResponse(): PropertyDetailResponse {
   return {
     property: makeProperty(),
@@ -259,6 +307,9 @@ export function hubDetailResponse(): PropertyDetailResponse {
     ],
     pnl,
     insights: [],
+    mortgages: [],
+    latestValuation: null,
+    equity: null,
   };
 }
 

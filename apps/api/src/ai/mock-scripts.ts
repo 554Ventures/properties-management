@@ -7,6 +7,8 @@ import {
   formatUsdWhole,
   type DashboardKpisResponse,
   type IncomeExpenseSeriesResponse,
+  type PropertyDetailResponse,
+  type PropertyListResponse,
   type Report,
   type ReportDetailResponse,
   type RentTrackerResponse,
@@ -295,7 +297,54 @@ const lateRentScript: MockScript = {
   ],
 };
 
-// ── script 4: fallback ────────────────────────────────────────────────────────
+// ── script 4: financing / equity — real get_property call (PLAN-REAL-EQUITY §4)
+
+const equityScript: MockScript = {
+  pattern: /equity|worth|mortgage/i,
+  steps: [
+    () => [toolUse('toolu_mock_equity_list', 'list_properties', {}), stopToolUse],
+    (ctx) => {
+      const properties = ctx.result('list_properties') as PropertyListResponse;
+      const first = properties[0];
+      if (!first) {
+        return [...textDeltas('You do not have any properties on file yet.'), stopEndTurn];
+      }
+      return [
+        toolUse('toolu_mock_equity_detail', 'get_property', { propertyId: first.id }),
+        stopToolUse,
+      ];
+    },
+    (ctx) => {
+      const detail = ctx.result('get_property') as PropertyDetailResponse | undefined;
+      if (!detail) return [stopEndTurn];
+      const { property, mortgages, latestValuation, equity } = detail;
+      const label = property.nickname ?? property.addressLine1;
+      // `mortgages[]` includes archived (paid-off) rows so the hub can restore
+      // them; they are not owed, and the equity figure below already excludes
+      // them — summing them here would contradict it in the same breath.
+      const owed = (mortgages ?? []).filter((m) => m.archivedAt === null);
+      const mortgageSummary =
+        owed.length > 0
+          ? owed.map((m) => `${m.lender} at ${formatUsdWhole(m.currentBalanceCents)}`).join(' and ')
+          : 'no mortgages on file';
+      const valuationSummary = latestValuation
+        ? `an owner-provided valuation of ${formatUsdWhole(latestValuation.valueCents)} as of ${latestValuation.asOfDate.slice(0, 10)}`
+        : property.acquisitionCostCents != null
+          ? `no valuation on file, so value is estimated at cost (${formatUsdWhole(property.acquisitionCostCents)})`
+          : 'no valuation or acquisition cost on file';
+      const equitySummary = equity
+        ? `Estimated equity is ${formatUsdWhole(equity.equityCents)} — ${formatUsdWhole(equity.assetValueCents)} in value (${equity.assetBasis === 'valuation' ? 'from your latest valuation' : 'at cost basis'}) minus ${formatUsdWhole(equity.liabilityCents)} in mortgage balances.`
+        : 'There is not enough data yet to estimate equity — add a valuation or acquisition cost.';
+      return [
+        ...textDeltas(`For ${label}: ${mortgageSummary}, and ${valuationSummary}. ${equitySummary}`),
+        stopEndTurn,
+      ];
+    },
+    () => [stopEndTurn],
+  ],
+};
+
+// ── script 5: fallback ────────────────────────────────────────────────────────
 
 const fallbackScript: MockScript = {
   pattern: /.*/,
@@ -313,4 +362,10 @@ const fallbackScript: MockScript = {
 };
 
 /** Ordered — first pattern match wins; the last entry always matches. */
-export const MOCK_SCRIPTS: MockScript[] = [cashflowScript, taxScript, lateRentScript, fallbackScript];
+export const MOCK_SCRIPTS: MockScript[] = [
+  cashflowScript,
+  taxScript,
+  lateRentScript,
+  equityScript,
+  fallbackScript,
+];

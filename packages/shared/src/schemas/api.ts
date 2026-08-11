@@ -24,6 +24,12 @@ export * from './consent';
 // Properties (incl. PnL shapes, PropertyWithStats, detail composites)
 export * from './property';
 
+// Mortgages (per-property liabilities; statement-checkpoint balances)
+export * from './mortgage';
+
+// Property valuations (owner-provided asset values; append-only history)
+export * from './valuation';
+
 // Units
 export * from './unit';
 

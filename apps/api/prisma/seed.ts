@@ -23,8 +23,11 @@ import { slugify } from '../src/lib/strings';
 import * as contractorService from '../src/services/contractor.service';
 import { sanitizeFilename } from '../src/services/document.service';
 import * as insightService from '../src/services/insight.service';
+import * as mortgageService from '../src/services/mortgage.service';
+import * as valuationService from '../src/services/valuation.service';
 import {
   AVG_TRAILING_NET_CENTS,
+  BALANCE_SHEET_PROPERTY_ASSETS_CENTS,
   BIRCH_UTILITIES_BY_MONTH_CENTS,
   COLLECTED_MTD_CENTS,
   CONTRACTOR_COUNT,
@@ -37,6 +40,9 @@ import {
   DEMO_TAX_RATE_PCT,
   DEMO_TIMEZONE,
   EXPENSES_MTD_CENTS,
+  MAPLE_MORTGAGE_BALANCE_CENTS,
+  MAPLE_MORTGAGE_LENDER,
+  MAPLE_VALUATION_CENTS,
   OKAFOR_DAYS_LATE,
   PARK_DAYS_LATE,
   PARK_NAME,
@@ -200,6 +206,39 @@ async function main(): Promise<void> {
   await prisma.leaseTenant.updateMany({
     where: { leaseId: parkLease.leaseId, isPrimary: true },
     data: { shareCents: PARK_SHARE_CENTS },
+  });
+
+  // ── financing & value: one mortgage + one valuation, both on Maple.
+  // Dated at the start of month M−6 (relative like every other seeded date, so
+  // the demo clock stays current) — strictly in the past, so the checkpoint and
+  // the valuation are visible to any report range and to the property hub.
+  // Neither row moves money: no Transaction is created here, which is what
+  // keeps every pinned KPI above intact.
+  const mapleSpec = SEED_PROPERTIES[0]!;
+  const maplePropertyId = propertyIdByKey.get(mapleSpec.key);
+  if (!maplePropertyId) throw new Error('seed: Maple property missing for the equity fixture');
+  const equityAsOf = monthStartInTz(addMonthsToPeriod(period, -6), DEMO_TIMEZONE);
+  await prisma.mortgage.create({
+    data: {
+      accountId: account.id,
+      propertyId: maplePropertyId,
+      lender: MAPLE_MORTGAGE_LENDER,
+      balanceCents: MAPLE_MORTGAGE_BALANCE_CENTS,
+      balanceAsOfDate: equityAsOf,
+      startDate: new Date(Date.UTC(mapleSpec.acquisitionYear, 4, 15)),
+      interestRateMilliPct: 6375, // 6.375% — display-only in v1
+      escrowNote: 'Taxes and insurance are escrowed with the monthly payment.',
+    },
+  });
+  await prisma.propertyValuation.create({
+    data: {
+      accountId: account.id,
+      propertyId: maplePropertyId,
+      valueCents: MAPLE_VALUATION_CENTS,
+      asOfDate: equityAsOf,
+      source: 'owner_estimate',
+      notes: 'Owner estimate based on nearby sales.',
+    },
   });
 
   const createExpense = async (spec: SeedExpenseSpec, base: Date, amountOverride?: number) => {
@@ -469,6 +508,26 @@ async function main(): Promise<void> {
     trailingNet += m.income - m.expense;
   }
   assertEq(Math.round(trailingNet / 6), AVG_TRAILING_NET_CENTS, 'avg trailing net');
+  // Financing & value: the derived figures must equal the pins — a future
+  // principal-bearing transaction would move currentBalanceCents and fail here
+  // rather than silently drifting the demo balance sheet.
+  const mapleMortgages = await mortgageService.listForProperty(account.id, maplePropertyId);
+  assertEq(mapleMortgages.length, 1, 'Maple mortgage count');
+  assertEq(
+    mapleMortgages[0]!.currentBalanceCents,
+    MAPLE_MORTGAGE_BALANCE_CENTS,
+    'Maple mortgage current balance',
+  );
+  const mapleValuation = await valuationService.latestForProperty(account.id, maplePropertyId);
+  assertEq(mapleValuation?.valueCents ?? -1, MAPLE_VALUATION_CENTS, 'Maple latest valuation');
+  assertEq(
+    SEED_PROPERTIES.reduce((s, p) => s + p.acquisitionCostCents, 0) -
+      mapleSpec.acquisitionCostCents +
+      MAPLE_VALUATION_CENTS,
+    BALANCE_SHEET_PROPERTY_ASSETS_CENTS,
+    'balance-sheet property assets',
+  );
+
   const contractorRows = await contractorService.list(account.id);
   assertEq(contractorRows.length, CONTRACTOR_COUNT, 'contractor count');
   for (const row of contractorRows) {
@@ -502,7 +561,8 @@ async function main(): Promise<void> {
 
   console.log(
     `Seeded demo account ${DEMO_EMAIL}: ${SEED_PROPERTIES.length} properties, ${TOTAL_UNITS} units, ` +
-      `period ${period} (Okafor ${OKAFOR_DAYS_LATE}d late, Park ${PARK_DAYS_LATE}d late), 4 insights, 1 monthly review.`,
+      `period ${period} (Okafor ${OKAFOR_DAYS_LATE}d late, Park ${PARK_DAYS_LATE}d late), 4 insights, 1 monthly review, ` +
+      `1 mortgage + 1 valuation on ${mapleSpec.addressLine1}.`,
   );
 }
 

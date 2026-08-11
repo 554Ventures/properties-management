@@ -7,12 +7,16 @@ import { PropertyDetailResponseSchema } from '@hearth/shared';
 import {
   BIRCH_ADDRESS,
   DEMO_TIMEZONE,
+  MAPLE_MORTGAGE_BALANCE_CENTS,
+  MAPLE_MORTGAGE_LENDER,
+  MAPLE_VALUATION_CENTS,
   OKAFOR_DAYS_LATE,
   OKAFOR_NAME,
   OKAFOR_RENT_CENTS,
   PARK_DAYS_LATE,
   PARK_NAME,
   PARK_RENT_CENTS,
+  SEED_PROPERTIES,
 } from '../../prisma/seed-constants';
 import { buildApp } from '../app';
 import {
@@ -29,6 +33,7 @@ import {
 const TZ = DEMO_TIMEZONE;
 import { prisma } from '../lib/prisma';
 import * as leaseService from '../services/lease.service';
+import * as mortgageService from '../services/mortgage.service';
 import * as propertyService from '../services/property.service';
 import * as rentService from '../services/rent.service';
 import * as unitService from '../services/unit.service';
@@ -97,6 +102,53 @@ describe('GET /properties/:id — per-unit rent snapshot from seed charge rows',
     expect(unit?.rent?.daysLate).toBe(OKAFOR_DAYS_LATE);
     expect(unit?.rent?.amountCents).toBe(OKAFOR_RENT_CENTS);
     expect(unit?.leaseCount).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// PLAN-REAL-EQUITY Phase 1: the detail response carries the property's
+// mortgages, its latest valuation and derived equity. The seed puts both on
+// Maple only, so the other properties exercise the at-cost fallback.
+describe('GET /properties/:id — financing & value', () => {
+  const MAPLE = SEED_PROPERTIES[0]!;
+  const OAK = SEED_PROPERTIES[1]!;
+
+  it('Maple: equity derives from the owner-provided valuation minus the mortgage balance', async () => {
+    const maple = await prisma.property.findFirstOrThrow({
+      where: { addressLine1: MAPLE.addressLine1 },
+    });
+    const detail = await getDetailViaRoute(maple.id);
+
+    expect(detail.mortgages).toHaveLength(1);
+    const mortgage = detail.mortgages[0]!;
+    expect(mortgage.lender).toBe(MAPLE_MORTGAGE_LENDER);
+    expect(mortgage.balanceCents).toBe(MAPLE_MORTGAGE_BALANCE_CENTS);
+    // No principal-bearing rows exist yet (Phase 2), so the derived balance is
+    // exactly the statement checkpoint.
+    expect(mortgage.currentBalanceCents).toBe(MAPLE_MORTGAGE_BALANCE_CENTS);
+    expect(detail.latestValuation?.valueCents).toBe(MAPLE_VALUATION_CENTS);
+    expect(detail.latestValuation?.source).toBe('owner_estimate');
+    expect(detail.equity).toEqual({
+      assetValueCents: MAPLE_VALUATION_CENTS,
+      assetBasis: 'valuation',
+      liabilityCents: MAPLE_MORTGAGE_BALANCE_CENTS,
+      equityCents: MAPLE_VALUATION_CENTS - MAPLE_MORTGAGE_BALANCE_CENTS,
+    });
+  });
+
+  it('a property with no valuation falls back to acquisition cost with no liability', async () => {
+    const oak = await prisma.property.findFirstOrThrow({
+      where: { addressLine1: OAK.addressLine1 },
+    });
+    const detail = await getDetailViaRoute(oak.id);
+
+    expect(detail.mortgages).toEqual([]);
+    expect(detail.latestValuation).toBeNull();
+    expect(detail.equity).toEqual({
+      assetValueCents: OAK.acquisitionCostCents,
+      assetBasis: 'cost',
+      liabilityCents: 0,
+      equityCents: OAK.acquisitionCostCents,
+    });
   });
 });
 
@@ -253,6 +305,26 @@ describe('propertyService.getDetail — synthesized charge + pendingLease (fixtu
     expect(unitDetail.unit.currentLease?.id).toBe(unit.currentLease?.id);
     expect(unitDetail.unit.leaseCount).toBe(unit.leaseCount);
     expect(unitDetail.unit.rent).toEqual(unit.rent);
+  });
+
+  it('equity stays null with neither a valuation nor an acquisition cost — even once a mortgage exists', async () => {
+    // A $0 asset minus a real loan would render a large negative "equity" that
+    // is an artifact of missing data, not a fact about the property.
+    const before = await propertyService.getDetail(accountId, propertyId);
+    expect(before.property.acquisitionCostCents).toBeNull();
+    expect(before.latestValuation).toBeNull();
+    expect(before.equity).toBeNull();
+
+    await mortgageService.create(accountId, propertyId, {
+      lender: 'Fixture Federal',
+      balanceCents: 12_300_000,
+      balanceAsOfDate: iso(new Date('2024-01-01')),
+    });
+
+    const after = await propertyService.getDetail(accountId, propertyId);
+    expect(after.mortgages).toHaveLength(1);
+    expect(after.mortgages[0]!.currentBalanceCents).toBe(12_300_000);
+    expect(after.equity).toBeNull();
   });
 });
 

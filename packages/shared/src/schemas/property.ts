@@ -2,9 +2,11 @@ import { z } from 'zod';
 import { TransactionTypeSchema } from '../enums';
 import { InsightSchema } from './insight';
 import { LeaseSchema } from './lease';
+import { MortgageSchema } from './mortgage';
 import { RentStatusSchema } from './rent';
 import { TenantOnLeaseSchema } from './tenant';
 import { CreateUnitInputSchema, UnitSchema } from './unit';
+import { PropertyValuationSchema } from './valuation';
 
 export const PropertySchema = z.object({
   id: z.string(),
@@ -101,10 +103,29 @@ export const PropertyDetailUnitSchema = UnitSchema.extend({
   pendingLease: LeaseWithTenantsSchema.nullable(), // pending_signature lease, if any
 });
 
+// Real equity for one property (PLAN-REAL-EQUITY §5). `assetBasis` tells the
+// UI which figure fed `assetValueCents` so it can label an owner-provided
+// valuation honestly instead of implying market data. Null on the detail
+// response when the property has neither a valuation nor an acquisition cost —
+// there is nothing to subtract a mortgage from, and a $0 asset would render a
+// large negative "equity" that is an artifact of missing data, not a fact.
+export const PropertyEquitySchema = z.object({
+  assetValueCents: z.number().int(),
+  assetBasis: z.enum(['valuation', 'cost']),
+  /** Sum of derived current balances across non-archived mortgages. */
+  liabilityCents: z.number().int(),
+  equityCents: z.number().int(),
+});
+export type PropertyEquity = z.infer<typeof PropertyEquitySchema>;
+
 // GET /properties/:id
 export const PropertyDetailResponseSchema = z.object({
   property: PropertySchema,
   units: z.array(PropertyDetailUnitSchema),
   pnl: PnlSummarySchema,
   insights: z.array(InsightSchema),
+  // Financing & value (PLAN-REAL-EQUITY Phase 1) — additive.
+  mortgages: z.array(MortgageSchema),
+  latestValuation: PropertyValuationSchema.nullable(),
+  equity: PropertyEquitySchema.nullable(),
 });

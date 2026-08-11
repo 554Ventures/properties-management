@@ -33,6 +33,25 @@ describe('isAllowedApiCall', () => {
     expect(isAllowedApiCall('PATCH', '/transactions/clx0f2q9d0001abcdWXYZ123')).toBe(true);
   });
 
+  it('allows adding a mortgage, re-checkpointing it, and recording a valuation', () => {
+    expect(isAllowedApiCall('POST', '/properties/clx0f2q9d0001abcdWXYZ123/mortgages')).toBe(true);
+    expect(isAllowedApiCall('PATCH', '/mortgages/cm4ktz8yq000108l5f1a2b3c4')).toBe(true);
+    expect(isAllowedApiCall('POST', '/properties/clx0f2q9d0001abcdWXYZ123/valuations')).toBe(true);
+  });
+
+  it('refuses mortgage/valuation deletes, archive/restore, and lookalike paths', () => {
+    expect(isAllowedApiCall('DELETE', '/mortgages/m1')).toBe(false);
+    expect(isAllowedApiCall('POST', '/mortgages/m1/restore')).toBe(false);
+    expect(isAllowedApiCall('DELETE', '/valuations/v1')).toBe(false);
+    expect(isAllowedApiCall('PATCH', '/properties/p1/mortgages')).toBe(false);
+    expect(isAllowedApiCall('POST', '/properties/p1/mortgages/extra')).toBe(false);
+    expect(isAllowedApiCall('POST', '/mortgages')).toBe(false);
+    expect(isAllowedApiCall('PATCH', '/mortgages')).toBe(false);
+    expect(isAllowedApiCall('PATCH', '/properties/p1/valuations')).toBe(false);
+    expect(isAllowedApiCall('POST', '/properties/p1/valuations/extra')).toBe(false);
+    expect(isAllowedApiCall('POST', '/valuations')).toBe(false);
+  });
+
   it('allows creating, editing and renewing leases, and adding a tenant to one', () => {
     expect(isAllowedApiCall('POST', '/leases')).toBe(true);
     expect(isAllowedApiCall('PATCH', '/leases/clx0f2q9d0001abcdWXYZ123')).toBe(true);

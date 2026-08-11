@@ -16,6 +16,7 @@ import { insightsRoutes } from './routes/insights';
 import { internalRoutes } from './routes/internal';
 import { leasesRoutes } from './routes/leases';
 import { mcpRoutes } from './routes/mcp';
+import { mortgagesRoutes } from './routes/mortgages';
 import { onboardingRoutes } from './routes/onboarding';
 import { propertiesRoutes } from './routes/properties';
 import { rentRoutes } from './routes/rent';
@@ -25,6 +26,7 @@ import { teamRoutes } from './routes/team';
 import { tenantsRoutes } from './routes/tenants';
 import { transactionsRoutes } from './routes/transactions';
 import { unitsRoutes } from './routes/units';
+import { valuationsRoutes } from './routes/valuations';
 import { wellKnownRoutes } from './routes/well-known';
 
 export async function buildApp(opts: { logger?: boolean } = {}): Promise<FastifyInstance> {
@@ -78,6 +80,8 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
     async (api) => {
       await api.register(propertiesRoutes);
       await api.register(unitsRoutes);
+      await api.register(mortgagesRoutes);
+      await api.register(valuationsRoutes);
       await api.register(tenantsRoutes);
       await api.register(leasesRoutes);
       await api.register(transactionsRoutes);

@@ -39,7 +39,9 @@ import {
 import { accountTimezone } from './account.service';
 import { writeAudit, type AuditActor } from './audit.service';
 import { ordinaryExpense, pnlBucket, pnlCategoryLines } from '../lib/pnl';
+import * as mortgageService from './mortgage.service';
 import { deriveRentStatus, getMonthStatus } from './rent.service';
+import * as valuationService from './valuation.service';
 
 // ── library ──────────────────────────────────────────────────────────────────
 
@@ -56,7 +58,7 @@ const LIBRARY: ReportTypeInfo[] = [
   { type: 'monthly_review', name: 'Monthly Review', description: 'AI-style monthly summary: bottom line, per-property nets and watch items.', maturity: 'full', supportedFilters: ['dateRange'] },
   { type: 'weekly_brief', name: 'Weekly Brief', description: 'AI weekly digest: what changed this week and what needs attention.', maturity: 'full', supportedFilters: ['dateRange'] },
   { type: 'income_statement', name: 'Income Statement', description: 'Simplified income statement for the period.', maturity: 'simplified', supportedFilters: ['taxYear', 'dateRange', 'property'] },
-  { type: 'balance_sheet', name: 'Balance Sheet', description: 'Simplified balance sheet: property cost basis and period cash.', maturity: 'simplified', supportedFilters: ['dateRange'] },
+  { type: 'balance_sheet', name: 'Balance Sheet', description: 'Property values (owner-provided or at cost), mortgage balances and period cash.', maturity: 'simplified', supportedFilters: ['dateRange'] },
   { type: 'reo_schedule', name: 'REO Schedule', description: 'Real-estate-owned schedule: acquisition dates, cost basis and rents.', maturity: 'simplified', supportedFilters: [] },
   { type: 'capital_expenses', name: 'Capital Expenses', description: 'Capital improvement spending in the period.', maturity: 'simplified', supportedFilters: ['taxYear', 'dateRange', 'property'] },
   { type: 'escrow_ledger', name: 'Escrow Ledger', description: 'Escrow account activity (no escrow accounts in v1).', maturity: 'simplified', supportedFilters: [] },
@@ -497,28 +499,89 @@ async function buildScheduleE(
 
 // ── builders (structurally-correct simplified outputs) ───────────────────────
 
+/**
+ * One liability line. `kind` is the forward-compatibility hook from
+ * PLAN-REAL-EQUITY §2: security deposits later add `kind: 'security_deposit'`
+ * rows without changing the report shape.
+ */
+interface LiabilityLine {
+  item: string;
+  kind: 'mortgage';
+  amountCents: number;
+}
+
+/**
+ * Real equity (PLAN-REAL-EQUITY §5). Each property is carried at its latest
+ * owner-provided valuation as of `range.to`, falling back to acquisition cost;
+ * each non-archived mortgage is a liability line at its balance derived as of
+ * `range.to` — a report over a past range must never inherit today's balance.
+ *
+ * `simplified` now means "no valuation and no mortgage informs this report",
+ * i.e. the structural placeholder this builder used to always be.
+ */
 async function buildBalanceSheet(accountId: string, range: { from: Date; to: Date }) {
-  const properties = await prisma.property.findMany({ where: { accountId } });
+  const properties = await prisma.property.findMany({
+    where: { accountId },
+    orderBy: { createdAt: 'asc' },
+  });
   const pnl = await buildPnl(accountId, range);
+  // `range.to` is an EXCLUSIVE bound everywhere else in this file (transactions
+  // filter `lt: range.to`, and the web sends the day after the picked end date),
+  // whereas the valuation/mortgage helpers take an inclusive "as of this
+  // instant". Without this conversion a value dated Jul 1 lands in the Jan–Jun
+  // balance sheet, and in Phase 2 a principal payment dated exactly `range.to`
+  // would cut the liability in a report whose P&L excludes that same row.
+  const asOf = new Date(range.to.getTime() - 1);
+  // One query each — never a per-property lookup in a loop.
+  const valuationByProperty = await valuationService.latestByProperty(accountId, asOf);
+  const mortgages = await mortgageService.listForAccount(accountId, asOf);
+
+  const labelById = new Map(properties.map((p) => [p.id, p.nickname ?? p.addressLine1]));
   const assetRows = [
-    ...properties.map((p) => ({
-      item: `${p.nickname ?? p.addressLine1} (at cost)`,
-      amountCents: p.acquisitionCostCents ?? 0,
-    })),
+    ...properties.map((p) => {
+      const label = labelById.get(p.id) as string;
+      const valuation = valuationByProperty.get(p.id);
+      // Every valuation is owner-entered (the PRD excludes market-data
+      // integrations), so the line says so rather than implying an appraisal.
+      return valuation
+        ? { item: `${label} (market value, owner-provided)`, amountCents: valuation.valueCents }
+        : { item: `${label} (at cost)`, amountCents: p.acquisitionCostCents ?? 0 };
+    }),
     { item: 'Operating cash (period net)', amountCents: pnl.totals.netCents },
   ];
+  const liabilityRows: LiabilityLine[] = mortgages.map((m) => ({
+    item: `${labelById.get(m.propertyId) ?? 'Unassigned property'} — ${m.lender} mortgage`,
+    kind: 'mortgage',
+    amountCents: m.currentBalanceCents,
+  }));
   const totalAssetsCents = assetRows.reduce((s, r) => s + r.amountCents, 0);
+  const totalLiabilitiesCents = liabilityRows.reduce((s, r) => s + r.amountCents, 0);
+  const equityCents = totalAssetsCents - totalLiabilitiesCents;
   return {
-    simplified: true,
+    simplified: mortgages.length === 0 && valuationByProperty.size === 0,
     assets: assetRows,
-    liabilities: [] as Array<{ item: string; amountCents: number }>,
-    totals: { totalAssetsCents, totalLiabilitiesCents: 0, equityCents: totalAssetsCents },
+    liabilities: liabilityRows,
+    totals: { totalAssetsCents, totalLiabilitiesCents, equityCents },
+    // The "view as table" alternative has to cover BOTH sides now: a table
+    // listing only assets while the report shows liabilities would misstate
+    // the numbers for anyone reading the table instead of the cards.
     table: {
       columns: [
+        { key: 'section', label: 'Section' },
         { key: 'item', label: 'Item' },
         { key: 'amountCents', label: 'Amount (cents)' },
       ],
-      rows: assetRows,
+      rows: [
+        ...assetRows.map((r) => ({ section: 'Assets', item: r.item, amountCents: r.amountCents })),
+        { section: 'Assets', item: 'Total assets', amountCents: totalAssetsCents },
+        ...liabilityRows.map((r) => ({
+          section: 'Liabilities',
+          item: r.item,
+          amountCents: r.amountCents,
+        })),
+        { section: 'Liabilities', item: 'Total liabilities', amountCents: totalLiabilitiesCents },
+        { section: 'Equity', item: 'Equity', amountCents: equityCents },
+      ],
     } satisfies ReportTable,
   };
 }

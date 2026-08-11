@@ -1,6 +1,6 @@
 // ReportBody leads with headline tiles/callouts instead of a raw table dump;
 // fixtures mirror the exact snapshot shapes report.service.ts produces.
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { describe, expect, it } from 'vitest';
 import { ReportBody } from '../components/reports/ReportBody';
@@ -191,6 +191,117 @@ describe('ReportBody', () => {
     // Sorted by line number: 9 before 14.
     const lines = screen.getAllByRole('cell', { name: /Line \d+/ }).map((c) => c.textContent);
     expect(lines).toEqual(['Line 9 – Insurance', 'Line 14 – Repairs']);
+  });
+
+  // PLAN-REAL-EQUITY §5: buildBalanceSheet now emits real liability lines and
+  // a derived equity total; the viewer must render both without assuming the
+  // new fields exist on every persisted snapshot.
+  it('renders the liabilities section and equity total for a new-shape balance sheet snapshot', () => {
+    render(
+      <ReportBody
+        type="balance_sheet"
+        data={{
+          simplified: false,
+          assets: [
+            { item: '12 Maple St (market value, owner-provided)', amountCents: 32_000_000 },
+            { item: 'Operating cash (period net)', amountCents: 453_000 },
+          ],
+          liabilities: [
+            { item: 'First National Bank (12 Maple St)', kind: 'mortgage', amountCents: 18_200_000 },
+          ],
+          totals: {
+            totalAssetsCents: 32_453_000,
+            totalLiabilitiesCents: 18_200_000,
+            equityCents: 14_253_000,
+          },
+          table: {
+            columns: [
+              { key: 'item', label: 'Item' },
+              { key: 'amountCents', label: 'Amount (cents)' },
+            ],
+            rows: [{ item: '12 Maple St (market value, owner-provided)', amountCents: 32_000_000 }],
+          },
+        }}
+        title="Balance Sheet — 2026"
+      />,
+    );
+    expect(screen.getByRole('group', { name: 'Equity, $142,530.00' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Liabilities, $182,000.00' })).toBeInTheDocument();
+    expect(screen.getByRole('table', { name: 'Liabilities' })).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('table', { name: 'Liabilities' })).getByText(
+        'First National Bank (12 Maple St)',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('table', { name: 'Liabilities' })).getByText('$182,000.00'),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('table', { name: 'Assets' })).getByText(
+        /12 Maple St \(market value, owner-provided\)/,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('tolerates an old pre-equity balance sheet snapshot (no liabilities detail, no kind) without crashing', () => {
+    render(
+      <ReportBody
+        type="balance_sheet"
+        data={{
+          simplified: true,
+          assets: [{ item: '12 Maple St (at cost)', amountCents: 25_000_000 }],
+          liabilities: [],
+          totals: {
+            totalAssetsCents: 25_000_000,
+            totalLiabilitiesCents: 0,
+            equityCents: 25_000_000,
+          },
+          table: {
+            columns: [
+              { key: 'item', label: 'Item' },
+              { key: 'amountCents', label: 'Amount (cents)' },
+            ],
+            rows: [{ item: '12 Maple St (at cost)', amountCents: 25_000_000 }],
+          },
+        }}
+        title="Balance Sheet — 2025"
+      />,
+    );
+    expect(screen.getByRole('group', { name: 'Equity, $250,000.00' })).toBeInTheDocument();
+    expect(screen.getByRole('table', { name: 'Liabilities' })).toBeInTheDocument();
+    expect(screen.getByText('No liabilities recorded.')).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('table', { name: 'Assets' })).getByText('12 Maple St (at cost)'),
+    ).toBeInTheDocument();
+  });
+
+  it('renders the balance sheet breakdown with no axe violations', async () => {
+    const { container } = render(
+      <main>
+        <h1>Balance Sheet — 2026</h1>
+        <ReportBody
+          type="balance_sheet"
+          data={{
+            assets: [{ item: '12 Maple St (at cost)', amountCents: 25_000_000 }],
+            liabilities: [
+              { item: 'First National Bank (12 Maple St)', kind: 'mortgage', amountCents: 18_200_000 },
+            ],
+            totals: {
+              totalAssetsCents: 25_000_000,
+              totalLiabilitiesCents: 18_200_000,
+              equityCents: 6_800_000,
+            },
+            table: {
+              columns: [{ key: 'item', label: 'Item' }],
+              rows: [{ item: '12 Maple St (at cost)' }],
+            },
+          }}
+          title="Balance Sheet — 2026"
+        />
+      </main>,
+    );
+    const results = await axe.run(container, { rules: { 'color-contrast': { enabled: false } } });
+    expect(results.violations).toEqual([]);
   });
 
   it('falls back to the generic renderer for unrecognized snapshots', () => {

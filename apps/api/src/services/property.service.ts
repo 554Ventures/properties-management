@@ -4,6 +4,7 @@ import type {
   PnlTotals,
   Property,
   PropertyDetailResponse,
+  PropertyEquity,
   PropertyListResponse,
   PropertyPnlResponse,
   TransactionType,
@@ -24,8 +25,10 @@ import { prisma } from '../lib/prisma';
 import { writeAudit, type AuditActor } from './audit.service';
 import { generateInsights, toApiInsight } from './insight.service';
 import { toApiLease } from './lease.service';
+import * as mortgageService from './mortgage.service';
 import { currentRentSnapshot, deriveRentStatus } from './rent.service';
 import { toTenantOnLease } from './tenant.service';
+import * as valuationService from './valuation.service';
 
 export function toApiProperty(p: DbProperty): Property {
   return {
@@ -151,6 +154,34 @@ export async function pnlTotals(
   return pnlSums(grouped);
 }
 
+/**
+ * Real equity for one property (PLAN-REAL-EQUITY §5). The asset side prefers
+ * the latest owner-provided valuation and falls back to the acquisition cost;
+ * `assetBasis` says which, so no surface can imply market data.
+ *
+ * Null when there is neither a valuation nor an acquisition cost: a $0 asset
+ * minus a real mortgage would render a large negative "equity" that is an
+ * artifact of missing data, not a fact about the property.
+ */
+function derivePropertyEquity(
+  property: { acquisitionCostCents: number | null },
+  latestValuation: { valueCents: number } | null,
+  mortgages: Array<{ currentBalanceCents: number; archivedAt: string | null }>,
+): PropertyEquity | null {
+  const asset =
+    latestValuation !== null
+      ? { assetValueCents: latestValuation.valueCents, assetBasis: 'valuation' as const }
+      : property.acquisitionCostCents !== null
+        ? { assetValueCents: property.acquisitionCostCents, assetBasis: 'cost' as const }
+        : null;
+  if (!asset) return null;
+  // Archived = paid off or removed: it is listed for restore, never owed.
+  const liabilityCents = mortgages
+    .filter((m) => m.archivedAt === null)
+    .reduce((sum, m) => sum + m.currentBalanceCents, 0);
+  return { ...asset, liabilityCents, equityCents: asset.assetValueCents - liabilityCents };
+}
+
 export async function getDetail(accountId: string, id: string): Promise<PropertyDetailResponse> {
   const property = await getOwned(accountId, id);
   const account = await prisma.account.findUniqueOrThrow({ where: { id: accountId } });
@@ -198,6 +229,15 @@ export async function getDetail(accountId: string, id: string): Promise<Property
     orderBy: { createdAt: 'desc' },
   });
 
+  // Financing & value: balances derive as of now (mortgage.service), the
+  // valuation is the latest one dated on or before today.
+  // Archived rows come back so the hub can offer restore (units[] does the
+  // same); `derivePropertyEquity` excludes them from what's owed.
+  const mortgages = await mortgageService.listForProperty(accountId, id, now, {
+    includeArchived: true,
+  });
+  const latestValuation = await valuationService.latestForProperty(accountId, id, now);
+
   return {
     property: toApiProperty(property),
     units: units.map((u) => {
@@ -233,6 +273,9 @@ export async function getDetail(accountId: string, id: string): Promise<Property
     }),
     pnl: { mtd, ytd },
     insights: insights.map(toApiInsight),
+    mortgages,
+    latestValuation,
+    equity: derivePropertyEquity(property, latestValuation, mortgages),
   };
 }
 

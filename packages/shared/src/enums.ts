@@ -174,6 +174,17 @@ export type OnboardingStepId = z.infer<typeof OnboardingStepIdSchema>;
 export const OnboardingStepStateSchema = z.enum(['pending', 'completed', 'skipped']);
 export type OnboardingStepState = z.infer<typeof OnboardingStepStateSchema>;
 
+// Where a PropertyValuation figure came from. Every value is entered by the
+// user — the PRD excludes external estimate integrations — so the UI must
+// always label these as owner-provided, never as market data.
+export const ValuationSourceSchema = z.enum([
+  'owner_estimate',
+  'appraisal',
+  'tax_assessment',
+  'other',
+]);
+export type ValuationSource = z.infer<typeof ValuationSourceSchema>;
+
 export const DocumentTypeSchema = z.enum([
   'lease',
   'insurance',
