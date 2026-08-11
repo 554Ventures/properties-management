@@ -413,12 +413,16 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
       propertyId: { not: null },
       property: { archivedAt: null },
     },
-    _sum: { amountCents: true },
+    _sum: { amountCents: true, principalCents: true },
   });
   const netByProperty = new Map<string, number>();
   for (const g of trailingTxns) {
     const pid = g.propertyId as string;
-    const b = pnlBucket({ ...g, amountCents: g._sum.amountCents ?? 0 });
+    const b = pnlBucket({
+      ...g,
+      amountCents: g._sum.amountCents ?? 0,
+      principalCents: g._sum.principalCents ?? 0,
+    });
     if (!b) continue;
     const signed = b.amountCents * (b.bucket === 'income' ? 1 : -1);
     netByProperty.set(pid, (netByProperty.get(pid) ?? 0) + signed);

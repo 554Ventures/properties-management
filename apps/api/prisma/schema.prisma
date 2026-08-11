@@ -190,7 +190,8 @@ model Mortgage {
   updatedAt              DateTime  @updatedAt
   archivedAt             DateTime?
 
-  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  property     Property      @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
 
   @@index([accountId])
   @@index([accountId, propertyId, archivedAt])
@@ -350,6 +351,16 @@ model Transaction {
   classification        String?
   aiSuggestedCategoryId String?
   aiConfidence          Float?
+  // Mortgage payment breakdown (PLAN-REAL-EQUITY §3). ONE row per bank debit —
+  // the feed delivers one debit and both @@unique([accountId, externalId]) and
+  // the duplicate fingerprint assume 1:1, so component rows are not an option.
+  // `principalCents` repays a liability rather than buying anything: it is
+  // subtracted from this row's contribution in `lib/pnl.ts` (the single
+  // classification choke point) and decrements the mortgage's derived balance.
+  // The remainder is categorized normally, and the split-sum invariant becomes
+  // "splits sum to amountCents - (principalCents ?? 0)".
+  mortgageId            String?
+  principalCents        Int?
   receiptUrl            String?
   externalId            String? // bank source only: Plaid transaction_id, dedups repeated syncs
   createdAt             DateTime @default(now())
@@ -360,6 +371,7 @@ model Transaction {
   unit        Unit?        @relation(fields: [unitId], references: [id], onDelete: SetNull)
   category    Category?    @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   contractor  Contractor?  @relation(fields: [contractorId], references: [id], onDelete: SetNull)
+  mortgage    Mortgage?    @relation(fields: [mortgageId], references: [id], onDelete: SetNull)
   rentPayment RentPayment?
   rentDeposit RentPaymentDeposit?
   bankSyncDiscrepancies BankSyncDiscrepancy[]
@@ -368,6 +380,9 @@ model Transaction {
   @@index([accountId, date])
   @@index([accountId, status])
   @@index([contractorId])
+  // Balance derivation reads principal-bearing rows per mortgage on every
+  // property-hub and balance-sheet load — same reason contractorId is indexed.
+  @@index([mortgageId])
   @@unique([accountId, externalId])
 }
 

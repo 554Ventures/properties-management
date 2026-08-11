@@ -191,7 +191,7 @@ describe('schedule_e report', () => {
         propertyId: null,
         date: { gte: monthStartInTz(period, TZ), lt: monthEndExclusiveInTz(period, TZ) },
       },
-      _sum: { amountCents: true },
+      _sum: { amountCents: true, principalCents: true },
     });
     const expectedNet = pnlSums(grouped).netCents;
     expect(expectedNet).not.toBe(0); // fixture sanity: seed has portfolio overhead
@@ -253,7 +253,10 @@ describe('balance_sheet report — real equity', () => {
     }
     // Period cash is range-dependent, so only the property basis is pinned.
     const propertyAssetsCents = data.assets
-      .filter((r) => r.item !== 'Operating cash (period net)')
+      // Match the cash line by prefix: only the property basis is pinned here,
+      // and its exact wording has changed once already (it now says the
+      // mortgage principal has been netted out).
+      .filter((r) => !r.item.startsWith('Operating cash'))
       .reduce((s, r) => s + r.amountCents, 0);
     expect(propertyAssetsCents).toBe(BALANCE_SHEET_PROPERTY_ASSETS_CENTS);
 

@@ -30,8 +30,17 @@ import {
   usePropertyDetail,
   useReviewQueue,
   useUnlinkDeposit,
+  useUpdateTransaction,
 } from '../api/queries';
 import { AiChip } from '../components/ai/AiChip';
+import {
+  emptyMortgageBreakdown,
+  isMortgageBreakdownValid,
+  mortgageBreakdownPayload,
+  mortgageBreakdownStatusId,
+  MortgageBreakdownEditor,
+  type MortgageBreakdownValue,
+} from '../components/forms/MortgageBreakdownEditor';
 import { PageHeader } from '../components/shell/PageHeader';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
@@ -325,6 +334,7 @@ function ReviewItemCard({
 }) {
   const confirm = useConfirmTransaction();
   const dismiss = useDismissTransaction();
+  const clearMortgageLink = useUpdateTransaction();
   const properties = useProperties();
   const { toast } = useToast();
   const [categoryId, setCategoryId] = useState('');
@@ -346,6 +356,13 @@ function ReviewItemCard({
     source: 'suggestion' | 'manual';
   } | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Mortgage payment breakdown (PLAN-REAL-EQUITY §3/D4): the backend detects
+  // a mortgage payment by matching the vendor to a mortgage's lender and
+  // stamps `mortgageId` — never an amount. A `mortgageId` here is the signal
+  // to offer the breakdown; it's never inferred from anything else.
+  const isMortgagePayment = item.type === 'expense' && Boolean(item.mortgageId);
+  const [breakdown, setBreakdown] = useState<MortgageBreakdownValue>(emptyMortgageBreakdown);
+  const breakdownComplete = !isMortgagePayment || isMortgageBreakdownValid(item.amountCents, breakdown);
 
   const propertyDetail = usePropertyDetail(propertyId || undefined);
   const units = propertyDetail.data?.units ?? [];
@@ -354,13 +371,21 @@ function ReviewItemCard({
   const confirmItem = () => {
     const payload = linkedRent
       ? { id: item.id, rentPaymentId: linkedRent.rentPaymentId, linkSource: linkedRent.source }
-      : {
-          id: item.id,
-          categoryId: categoryId || undefined,
-          propertyId: propertyId || undefined,
-          unitId: unitId || undefined,
-          classification: classification || undefined,
-        };
+      : isMortgagePayment
+        ? {
+            id: item.id,
+            propertyId: propertyId || undefined,
+            unitId: unitId || undefined,
+            mortgageId: item.mortgageId as string,
+            ...mortgageBreakdownPayload(item.amountCents, breakdown),
+          }
+        : {
+            id: item.id,
+            categoryId: categoryId || undefined,
+            propertyId: propertyId || undefined,
+            unitId: unitId || undefined,
+            classification: classification || undefined,
+          };
     // A rent-linked confirm always attributes to the lease's property; only
     // the plain-confirm path can leave the row unassigned.
     const staysUnassigned = !linkedRent && !propertyId;
@@ -400,6 +425,26 @@ function ReviewItemCard({
           'danger',
         ),
     });
+  };
+
+  // Escape hatch for a wrong detection (vendor happened to match the lender —
+  // a loan-servicer fee, say) — the row would otherwise be stuck demanding a
+  // principal/interest breakdown it doesn't have. Clears the stamped link
+  // server-side (`mortgageId`/`principalCents: null`); the queue refetch then
+  // renders this card with the ordinary category/treatment picker.
+  const notMortgagePayment = () => {
+    clearMortgageLink.mutate(
+      { id: item.id, mortgageId: null, principalCents: null },
+      {
+        onSuccess: () =>
+          toast("Won't be treated as a mortgage payment — categorize it normally below.", 'positive'),
+        onError: (err) =>
+          toast(
+            err instanceof ApiClientError ? err.message : 'Could not clear the mortgage link. Try again.',
+            'danger',
+          ),
+      },
+    );
   };
 
   return (
@@ -498,28 +543,46 @@ function ReviewItemCard({
               </>
             ) : (
               <>
-                <label
-                  htmlFor={`review-category-${item.id}`}
-                  className="text-xs font-medium text-ink-muted"
-                >
-                  Category
-                </label>
-                <Select
-                  id={`review-category-${item.id}`}
-                  value={categoryId}
-                  onChange={(e) => setCategoryId(e.target.value)}
-                >
-                  <option value="">
-                    {item.aiSuggestedCategoryName
-                      ? `Accept suggestion (${item.aiSuggestedCategoryName})`
-                      : 'Choose a category'}
-                  </option>
-                  {categoryOptions.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </Select>
+                {isMortgagePayment ? (
+                  <>
+                    <p className="text-sm text-ink-muted">
+                      This bank row matches your mortgage — enter the breakdown below before confirming.
+                    </p>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      busy={clearMortgageLink.isPending}
+                      onClick={notMortgagePayment}
+                    >
+                      Not a mortgage payment
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <label
+                      htmlFor={`review-category-${item.id}`}
+                      className="text-xs font-medium text-ink-muted"
+                    >
+                      Category
+                    </label>
+                    <Select
+                      id={`review-category-${item.id}`}
+                      value={categoryId}
+                      onChange={(e) => setCategoryId(e.target.value)}
+                    >
+                      <option value="">
+                        {item.aiSuggestedCategoryName
+                          ? `Accept suggestion (${item.aiSuggestedCategoryName})`
+                          : 'Choose a category'}
+                      </option>
+                      {categoryOptions.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </>
+                )}
                 <label
                   htmlFor={`review-property-${item.id}`}
                   className="text-xs font-medium text-ink-muted"
@@ -562,31 +625,50 @@ function ReviewItemCard({
                     </option>
                   ))}
                 </Select>
-                <label
-                  htmlFor={`review-classification-${item.id}`}
-                  className="text-xs font-medium text-ink-muted"
-                >
-                  Treatment
-                </label>
-                <Select
-                  id={`review-classification-${item.id}`}
-                  value={classification}
-                  onChange={(e) =>
-                    setClassification(e.target.value as TransactionClassification | '')
-                  }
-                >
-                  <option value="">
-                    Ordinary {item.type === 'income' ? 'income' : 'expense'}
-                  </option>
-                  <option value="transfer">Transfer between my accounts (not counted)</option>
-                  <option value="owner_contribution">Owner contribution (not counted)</option>
-                  {item.type === 'income' && (
-                    <option value="refund">Refund — nets against its expense category</option>
-                  )}
-                </Select>
+                {isMortgagePayment ? (
+                  <MortgageBreakdownEditor
+                    idPrefix={`review-mortgage-${item.id}`}
+                    amountCents={item.amountCents}
+                    mortgageId={item.mortgageId as string}
+                    propertyId={propertyId || item.propertyId}
+                    value={breakdown}
+                    onChange={setBreakdown}
+                    categoryOptions={categoryOptions}
+                  />
+                ) : (
+                  <>
+                    <label
+                      htmlFor={`review-classification-${item.id}`}
+                      className="text-xs font-medium text-ink-muted"
+                    >
+                      Treatment
+                    </label>
+                    <Select
+                      id={`review-classification-${item.id}`}
+                      value={classification}
+                      onChange={(e) =>
+                        setClassification(e.target.value as TransactionClassification | '')
+                      }
+                    >
+                      <option value="">
+                        Ordinary {item.type === 'income' ? 'income' : 'expense'}
+                      </option>
+                      <option value="transfer">Transfer between my accounts (not counted)</option>
+                      <option value="owner_contribution">Owner contribution (not counted)</option>
+                      {item.type === 'income' && (
+                        <option value="refund">Refund — nets against its expense category</option>
+                      )}
+                    </Select>
+                  </>
+                )}
               </>
             )}
-            <Button busy={confirm.isPending} onClick={confirmItem}>
+            <Button
+              busy={confirm.isPending}
+              disabled={!breakdownComplete}
+              aria-describedby={isMortgagePayment ? mortgageBreakdownStatusId(`review-mortgage-${item.id}`) : undefined}
+              onClick={confirmItem}
+            >
               <IconCheck size={14} />
               Confirm
             </Button>

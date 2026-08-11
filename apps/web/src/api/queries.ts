@@ -589,13 +589,20 @@ export function useSendEsign() {
 
 // `unassigned` filters to property-less rows (`TransactionListQuery.unassigned`,
 // a z.boolean() the API's route coerces from the querystring's literal "true").
-export function useTransactions(query: TransactionListQuery & { unassigned?: boolean } = {}) {
+// `enabled` follows the usePropertyDetail/useOpenRentCharges convention —
+// callers that only need this conditionally (e.g. the mortgage-breakdown
+// last-month prefill) pass `false` to skip the fetch entirely.
+export function useTransactions(
+  query: TransactionListQuery & { unassigned?: boolean } = {},
+  enabled = true,
+) {
   return useQuery({
     queryKey: ['transactions', 'list', query],
     queryFn: () =>
       api.get<TransactionListResponse>(
         `/transactions${toQuery(query as Record<string, string | number | undefined>)}`,
       ),
+    enabled,
     staleTime: STALE_SHORT,
     // Keep the current page visible while the next server page loads so paging
     // and filtering don't flash an empty table.

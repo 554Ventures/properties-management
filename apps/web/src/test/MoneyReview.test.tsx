@@ -5,6 +5,7 @@
 import { formatUsd } from '@hearth/shared';
 import type {
   BankDiscrepancyRow,
+  Category,
   RentChargeOption,
   ReviewQueueItem,
   ReviewQueueResponse,
@@ -435,5 +436,277 @@ describe('MoneyReview manual rent charge picker', () => {
     // The manual pick replaced the chip's link — only one linked charge shown.
     expect(screen.getByText(/Confirming marks/)).toHaveTextContent(/T\. Okafor/);
     expect(screen.getByText(/Confirming marks/)).not.toHaveTextContent(/A\. Nguyen/);
+  });
+});
+
+// Mortgage payment breakdown (PLAN-REAL-EQUITY §3/D4): a detected row
+// (`mortgageId` set, `principalCents` null) offers the shared
+// MortgageBreakdownEditor in place of the ordinary category picker; an
+// ordinary expense with no `mortgageId` never sees it.
+function moneyCategory(overrides: Partial<Category> & Pick<Category, 'id' | 'name' | 'type'>): Category {
+  return { accountId: null, irsScheduleELine: null, isSystem: true, ...overrides };
+}
+
+const mortgageCategories: Category[] = [
+  moneyCategory({ id: 'c-interest', name: 'Mortgage Interest', type: 'expense' }),
+  moneyCategory({ id: 'c-tax', name: 'Property Taxes', type: 'expense' }),
+];
+
+const mortgageDetectedItem: ReviewQueueItem = {
+  id: 'tx-mortgage',
+  accountId: 'acc1',
+  propertyId: null,
+  unitId: null,
+  categoryId: null,
+  date: '2026-07-05T00:00:00.000Z',
+  amountCents: 240000,
+  type: 'expense',
+  description: 'Mortgage payment',
+  vendor: 'First National Bank',
+  source: 'bank',
+  status: 'pending_review',
+  classification: null,
+  aiSuggestedCategoryId: null,
+  aiConfidence: null,
+  receiptUrl: null,
+  mortgageId: 'm1',
+  principalCents: null,
+  createdAt: '2026-07-05T00:00:00.000Z',
+  updatedAt: '2026-07-05T00:00:00.000Z',
+  aiSuggestedCategoryName: null,
+  rentMatch: null,
+};
+
+const plainExpenseItem: ReviewQueueItem = {
+  ...mortgageDetectedItem,
+  id: 'tx-plain-expense',
+  description: 'Yard work',
+  vendor: 'GreenThumb',
+  mortgageId: null,
+};
+
+const mortgageRoutes: RouteFixture[] = [
+  { method: 'GET', path: '/api/v1/categories', body: mortgageCategories },
+  { method: 'GET', path: '/api/v1/properties', body: [] },
+  // The breakdown editor's own last-month-prefill fetch.
+  { method: 'GET', path: '/api/v1/transactions', body: { items: [], nextCursor: null, total: 0 } },
+];
+
+describe('MoneyReview mortgage payment breakdown', () => {
+  it("offers the breakdown for a detected row and starts Confirm disabled", async () => {
+    vi.stubGlobal(
+      'fetch',
+      makeFetch([
+        ...mortgageRoutes,
+        {
+          method: 'GET',
+          path: '/api/v1/transactions/review',
+          body: { items: [mortgageDetectedItem], nextCursor: null, total: 1 },
+        },
+      ]),
+    );
+    renderMoneyReview();
+
+    await screen.findByText('Mortgage payment');
+    expect(
+      screen.getByText('This bank row matches your mortgage — enter the breakdown below before confirming.'),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Principal/)).toBeInTheDocument();
+    expect(screen.queryByLabelText('Category')).not.toBeInTheDocument();
+    const confirmButton = screen.getByRole('button', { name: 'Confirm' });
+    expect(confirmButton).toBeDisabled();
+    // Defect 4: the disabled button's aria-describedby must resolve to real
+    // text from the very first render, before Principal has been typed.
+    const describedById = confirmButton.getAttribute('aria-describedby');
+    expect(describedById).toBeTruthy();
+    expect(document.getElementById(describedById!)).toHaveTextContent(
+      'Enter the principal to see what still needs a category.',
+    );
+  });
+
+  it('no breakdown is offered for an ordinary expense with no mortgageId', async () => {
+    vi.stubGlobal(
+      'fetch',
+      makeFetch([
+        ...mortgageRoutes,
+        {
+          method: 'GET',
+          path: '/api/v1/transactions/review',
+          body: { items: [plainExpenseItem], nextCursor: null, total: 1 },
+        },
+      ]),
+    );
+    renderMoneyReview();
+
+    await screen.findByText('Yard work');
+    expect(screen.queryByLabelText(/^Principal/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Category')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Confirm' })).not.toBeDisabled();
+  });
+
+  it('a single-category remainder (the default) enables Confirm and sends categoryId, not splits — a loan with no escrow', async () => {
+    const fetchMock = makeFetch([
+      ...mortgageRoutes,
+      {
+        method: 'GET',
+        path: '/api/v1/transactions/review',
+        body: { items: [mortgageDetectedItem], nextCursor: null, total: 1 },
+      },
+      { method: 'POST', path: '/api/v1/transactions/tx-mortgage/confirm', body: {} },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+    renderMoneyReview();
+
+    await screen.findByText('Mortgage payment');
+    const confirmButton = screen.getByRole('button', { name: 'Confirm' });
+    expect(confirmButton).toBeDisabled();
+    // $2,400 = $400 principal + $2,000 interest, one category — no split
+    // rows exist, and none are required to save.
+    expect(screen.queryByRole('button', { name: 'Split across categories' })).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/^Principal/), { target: { value: '400.00' } });
+    fireEvent.change(screen.getByLabelText('Remainder category'), { target: { value: 'c-interest' } });
+
+    expect(confirmButton).not.toBeDisabled();
+    fireEvent.click(confirmButton);
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url) === '/api/v1/transactions/tx-mortgage/confirm' &&
+          (init as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(call).toBeDefined();
+      expect(JSON.parse(String((call![1] as RequestInit).body))).toEqual({
+        mortgageId: 'm1',
+        principalCents: 40000,
+        categoryId: 'c-interest',
+      });
+    });
+  });
+
+  it('splitting across two categories sends splits (2+ entries), never categoryId', async () => {
+    const fetchMock = makeFetch([
+      ...mortgageRoutes,
+      {
+        method: 'GET',
+        path: '/api/v1/transactions/review',
+        body: { items: [mortgageDetectedItem], nextCursor: null, total: 1 },
+      },
+      { method: 'POST', path: '/api/v1/transactions/tx-mortgage/confirm', body: {} },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+    renderMoneyReview();
+
+    await screen.findByText('Mortgage payment');
+    const confirmButton = screen.getByRole('button', { name: 'Confirm' });
+    expect(confirmButton).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText(/^Principal/), { target: { value: '800.00' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Split across categories' }));
+    fireEvent.change(screen.getByLabelText('Category 1'), { target: { value: 'c-interest' } });
+    fireEvent.change(screen.getByLabelText('Amount 1 (USD)'), { target: { value: '1100.00' } });
+    fireEvent.change(screen.getByLabelText('Category 2'), { target: { value: 'c-tax' } });
+    fireEvent.change(screen.getByLabelText('Amount 2 (USD)'), { target: { value: '500.00' } });
+
+    expect(confirmButton).not.toBeDisabled();
+    fireEvent.click(confirmButton);
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url) === '/api/v1/transactions/tx-mortgage/confirm' &&
+          (init as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(call).toBeDefined();
+      const body = JSON.parse(String((call![1] as RequestInit).body));
+      expect(body).toEqual({
+        mortgageId: 'm1',
+        principalCents: 80000,
+        splits: [
+          { categoryId: 'c-interest', amountCents: 110000 },
+          { categoryId: 'c-tax', amountCents: 50000 },
+        ],
+      });
+      expect(body.splits.length).toBeGreaterThanOrEqual(2);
+      expect(body).not.toHaveProperty('categoryId');
+    });
+  });
+
+  it('"Not a mortgage payment" nulls the link server-side and falls back to ordinary categorization', async () => {
+    let mortgageId: string | null = 'm1';
+    let principalCents: number | null = null;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = String(input).replace(/^https?:\/\/[^/]+/, '').split('?')[0] ?? '';
+      const method = (init?.method ?? 'GET').toUpperCase();
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url === '/api/v1/transactions/review' && method === 'GET') {
+        return json({
+          items: [{ ...mortgageDetectedItem, mortgageId, principalCents }],
+          nextCursor: null,
+          total: 1,
+        });
+      }
+      if (url === '/api/v1/categories' && method === 'GET') return json(mortgageCategories);
+      if (url === '/api/v1/properties' && method === 'GET') return json([]);
+      if (url === '/api/v1/transactions' && method === 'GET') {
+        return json({ items: [], nextCursor: null, total: 0 });
+      }
+      if (url === '/api/v1/transactions/tx-mortgage' && method === 'PATCH') {
+        const body = JSON.parse(String(init!.body)) as Record<string, unknown>;
+        expect(body).toEqual({ mortgageId: null, principalCents: null });
+        mortgageId = null;
+        principalCents = null;
+        return json({ ...mortgageDetectedItem, mortgageId: null, principalCents: null });
+      }
+      return json({ error: { code: 'not_found', message: url } }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderMoneyReview();
+
+    await screen.findByText('Mortgage payment');
+    fireEvent.click(screen.getByRole('button', { name: 'Not a mortgage payment' }));
+
+    expect(
+      await screen.findByText("Won't be treated as a mortgage payment — categorize it normally below."),
+    ).toBeInTheDocument();
+    expect(await screen.findByLabelText('Category')).toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Principal/)).not.toBeInTheDocument();
+  });
+
+  it("accepts a principal-only payment (principal === total) with zero remainder", async () => {
+    const fetchMock = makeFetch([
+      ...mortgageRoutes,
+      {
+        method: 'GET',
+        path: '/api/v1/transactions/review',
+        body: { items: [mortgageDetectedItem], nextCursor: null, total: 1 },
+      },
+      { method: 'POST', path: '/api/v1/transactions/tx-mortgage/confirm', body: {} },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+    renderMoneyReview();
+
+    await screen.findByText('Mortgage payment');
+    fireEvent.change(screen.getByLabelText(/^Principal/), { target: { value: '2400.00' } });
+    expect(screen.queryByLabelText('Category 1')).not.toBeInTheDocument();
+
+    const confirmButton = screen.getByRole('button', { name: 'Confirm' });
+    expect(confirmButton).not.toBeDisabled();
+    fireEvent.click(confirmButton);
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url) === '/api/v1/transactions/tx-mortgage/confirm' &&
+          (init as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(call).toBeDefined();
+      expect(JSON.parse(String((call![1] as RequestInit).body))).toEqual({
+        mortgageId: 'm1',
+        principalCents: 240000,
+      });
+    });
   });
 });
