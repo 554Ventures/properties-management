@@ -658,6 +658,35 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
     });
   }
 
+  // Supersede stale period-keyed rows. The rules below re-derive from scratch
+  // every cycle and emit a candidate only while their condition is currently
+  // true, with the period baked into the dedupeKey — so next month is always a
+  // NEW row. Nothing was retiring the old one: a property flagged in July kept
+  // its July card sitting beside the identical August one, and a condition that
+  // simply stopped being true never cleared at all. Any active row of these
+  // types whose key isn't in this cycle's candidates is therefore either
+  // superseded or resolved; both stop being active. An empty candidate list
+  // means the notIn is empty, which correctly resolves every one of them — the
+  // same shape the late_rent sweep above relies on. Types that run their own
+  // lifecycle (late_rent, transactions_pending_review, bank_discrepancies) are
+  // deliberately excluded; they've already swept themselves by this point.
+  const PERIOD_KEYED_TYPES = [
+    'expense_spike',
+    'renewal_window',
+    'underperforming_property',
+    'contractor_cost_spike',
+    'unassigned_transactions',
+  ];
+  await prisma.insight.updateMany({
+    where: {
+      accountId,
+      type: { in: PERIOD_KEYED_TYPES },
+      status: 'active',
+      dedupeKey: { notIn: candidates.map((c) => c.dedupeKey) },
+    },
+    data: { status: 'resolved' },
+  });
+
   const created: Insight[] = [];
   for (const c of candidates) {
     const existing = await prisma.insight.findUnique({
