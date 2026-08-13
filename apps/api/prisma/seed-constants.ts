@@ -130,6 +130,21 @@ export const SEED_PROPERTIES: SeedPropertySpec[] = [
   },
 ];
 
+// ── financing & value (PLAN-REAL-EQUITY Phase 1 item 6) ──────────────────────
+// SEED_PROPERTIES[0] ('maple', $215,000 at cost) is the only property with a
+// mortgage and a valuation; the other eight have neither, so the balance sheet
+// exercises the market-value line AND the at-cost fallback. Both are records,
+// not money movement — NO Transaction rows back them, which is precisely why
+// every KPI pinned below still holds. The lender matches the vendor on the
+// seeded Mortgage Interest expense so the demo reads as one loan.
+export const MAPLE_MORTGAGE_LENDER = 'First Federal Bank';
+export const MAPLE_MORTGAGE_BALANCE_CENTS = 18_200_000; // $182,000 statement checkpoint
+export const MAPLE_VALUATION_CENTS = 26_800_000; // $268,000 owner estimate
+/** Balance-sheet property assets: Maple at market value + the other eight at
+ *  cost (the "Operating cash (period net)" line is range-dependent and is not
+ *  pinned). Self-checked against SEED_PROPERTIES by the seed. */
+export const BALANCE_SHEET_PROPERTY_ASSETS_CENTS = 227_400_000;
+
 // ── pinned KPI figures (asserted by seed AND tests) ──────────────────────────
 export const TOTAL_UNITS = 14;
 export const PAID_UNITS = 12;

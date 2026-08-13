@@ -13,6 +13,7 @@ const SUGGESTED_PROMPTS = [
   'How is my cash flow?',
   'Help me get ready for taxes',
   "Who's late on rent?",
+  "What's my equity?",
 ];
 
 export function ChatComposer() {

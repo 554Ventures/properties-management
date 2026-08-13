@@ -152,13 +152,67 @@ model Property {
   createdAt            DateTime  @default(now())
   archivedAt           DateTime?
 
-  account      Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account      Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
   units        Unit[]
   transactions Transaction[]
   insights     Insight[]
+  mortgages    Mortgage[]
+  valuations   PropertyValuation[]
 
   @@index([accountId])
   @@index([accountId, archivedAt])
+}
+
+// A loan secured by a property (PLAN-REAL-EQUITY §2). Multiple per property is
+// legal — seconds and HELOCs exist.
+//
+// balanceCents/balanceAsOfDate are a STATEMENT CHECKPOINT, not a running
+// total: the current balance is derived (ARCHITECTURE §4 derive-don't-store)
+// as the checkpoint minus principal paid after that date. Entering a fresh
+// statement balance re-checkpoints both fields (audited). archivedAt = paid
+// off or removed; archived mortgages drop out of the balance sheet.
+model Mortgage {
+  id                     String    @id @default(cuid())
+  accountId              String
+  propertyId             String
+  lender                 String
+  balanceCents           Int
+  balanceAsOfDate        DateTime
+  originalPrincipalCents Int?
+  startDate              DateTime?
+  // Thousandths of a percent (6.375% = 6375) — integer-safe per the no-Decimal
+  // convention; basis points can't represent eighth-point rates. Display-only:
+  // no amortization math depends on it.
+  interestRateMilliPct   Int?
+  escrowNote             String?
+  notes                  String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+  archivedAt             DateTime?
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+  @@index([accountId, propertyId, archivedAt])
+}
+
+// Owner-entered property value (PLAN-REAL-EQUITY §2). Append-only history; the
+// figure in use is always "latest with asOfDate <= the date being reported",
+// derived rather than stored. `source` is the shared ValuationSource enum.
+// Hard delete is allowed (it's a correction to your own estimate), audited.
+model PropertyValuation {
+  id         String   @id @default(cuid())
+  accountId  String
+  propertyId String
+  valueCents Int
+  asOfDate   DateTime
+  source     String
+  notes      String?
+  createdAt  DateTime @default(now())
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, propertyId, asOfDate])
 }
 
 model Unit {

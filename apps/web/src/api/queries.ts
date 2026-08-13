@@ -56,11 +56,16 @@ import type {
   LinkTokenResponse,
   LogContractorJobInput,
   LogContractorJobResponse,
+  Mortgage,
+  CreateMortgageInput,
+  UpdateMortgageInput,
   NotificationPrefs,
   OnboardingState,
   OpenRentChargesResponse,
   Property,
   PropertyDetailResponse,
+  PropertyValuation,
+  CreatePropertyValuationInput,
   PushDevice,
   PropertyNoiResponse,
   PropertyWithStats,
@@ -218,6 +223,86 @@ export function useRestoreProperty() {
   return useMutation({
     mutationFn: (id: string) => api.post<Property>(`/properties/${id}/restore`),
     onSuccess: (_data, id) => invalidateProperty(qc, id),
+  });
+}
+
+// ------------------------------------------------------------ mortgages/value
+// Mortgages and valuations (PLAN-REAL-EQUITY Phase 1) are property-attached
+// records read off PropertyDetailResponse (mortgages[]/latestValuation/equity)
+// — no separate list query for the hub card. Writes invalidate the property
+// detail the same way unit writes do.
+
+export function useCreateMortgage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ propertyId, ...input }: CreateMortgageInput & { propertyId: string }) =>
+      api.post<Mortgage>(`/properties/${propertyId}/mortgages`, input),
+    onSuccess: (_data, { propertyId }) => invalidateProperty(qc, propertyId),
+  });
+}
+
+/** PATCH /mortgages/:id — also the re-checkpoint path (balanceCents +
+ *  balanceAsOfDate submitted together). */
+export function useUpdateMortgage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      propertyId: _propertyId,
+      ...input
+    }: UpdateMortgageInput & { id: string; propertyId: string }) =>
+      api.patch<Mortgage>(`/mortgages/${id}`, input),
+    onSuccess: (_data, { propertyId }) => invalidateProperty(qc, propertyId),
+  });
+}
+
+export function useArchiveMortgage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id }: { id: string; propertyId: string }) => api.delete(`/mortgages/${id}`),
+    onSuccess: (_data, { propertyId }) => invalidateProperty(qc, propertyId),
+  });
+}
+
+export function useRestoreMortgage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id }: { id: string; propertyId: string }) =>
+      api.post<Mortgage>(`/mortgages/${id}/restore`),
+    onSuccess: (_data, { propertyId }) => invalidateProperty(qc, propertyId),
+  });
+}
+
+/** Full valuation history for the "Valuation history" modal — fetched lazily
+ *  (enabled only while the modal is open, mirroring useOpenRentCharges). */
+export function usePropertyValuations(propertyId: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ['properties', propertyId, 'valuations'],
+    queryFn: () => api.get<PropertyValuation[]>(`/properties/${propertyId}/valuations`),
+    enabled: Boolean(propertyId) && enabled,
+    staleTime: STALE_SHORT,
+  });
+}
+
+function invalidateValuations(qc: ReturnType<typeof useQueryClient>, propertyId: string) {
+  invalidateProperty(qc, propertyId);
+  void qc.invalidateQueries({ queryKey: ['properties', propertyId, 'valuations'] });
+}
+
+export function useCreateValuation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ propertyId, ...input }: CreatePropertyValuationInput & { propertyId: string }) =>
+      api.post<PropertyValuation>(`/properties/${propertyId}/valuations`, input),
+    onSuccess: (_data, { propertyId }) => invalidateValuations(qc, propertyId),
+  });
+}
+
+export function useDeleteValuation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id }: { id: string; propertyId: string }) => api.delete(`/valuations/${id}`),
+    onSuccess: (_data, { propertyId }) => invalidateValuations(qc, propertyId),
   });
 }
 

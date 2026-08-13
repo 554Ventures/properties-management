@@ -30,6 +30,7 @@ import { LeaseTenantsModal } from '../components/forms/LeaseTenantsModal';
 import { PropertyFormModal } from '../components/forms/PropertyFormModal';
 import { RenewalModal } from '../components/forms/RenewalModal';
 import { UnitFormModal } from '../components/forms/UnitFormModal';
+import { FinancingCard } from '../components/property/FinancingCard';
 import { LeaseHistoryModal } from '../components/property/LeaseHistoryModal';
 import { NeedsAttention } from '../components/property/NeedsAttention';
 import { RentSnapshotBadge } from '../components/property/RentSnapshotBadge';
@@ -155,7 +156,15 @@ export function PropertyDetail() {
     );
   }
 
-  const { property, units, pnl, insights } = detail.data;
+  const {
+    property,
+    units,
+    pnl,
+    insights,
+    mortgages = [],
+    latestValuation = null,
+    equity = null,
+  } = detail.data;
   const propertyId = property.id;
 
   const activeUnits = units.filter((unit) => !unit.archivedAt);
@@ -474,6 +483,15 @@ export function PropertyDetail() {
               </Link>
             </div>
           </section>
+
+          <FinancingCard
+            propertyId={propertyId}
+            title={title}
+            mortgages={mortgages}
+            latestValuation={latestValuation}
+            equity={equity}
+            canProperties={canProperties}
+          />
         </div>
       </div>
 

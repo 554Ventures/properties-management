@@ -112,6 +112,15 @@ export function trendText(pct: number): string {
   return `${pct > 0 ? 'up' : 'down'} ${rounded}%`;
 }
 
+/**
+ * `interestRateMilliPct` (thousandths of a percent, e.g. 6375 = 6.375%) →
+ * display string with trailing zeros trimmed: 6375 → "6.375%", 5000 → "5%".
+ */
+export function formatInterestRate(milliPct: number): string {
+  const pct = (milliPct / 1000).toFixed(3).replace(/\.?0+$/, '');
+  return `${pct}%`;
+}
+
 /** camelCase / snake_case key → "Title Case" label; strips a "Cents" suffix. */
 export function humanizeKey(key: string): string {
   const base = key.replace(/Cents$/, '').replace(/_/g, ' ');

@@ -34,6 +34,12 @@ const ALLOWED_API_CALLS: ReadonlyArray<{ method: string; pathPattern: RegExp }> 
   { method: 'PATCH', pathPattern: new RegExp(`^/properties/${ID}$`) },
   { method: 'POST', pathPattern: new RegExp(`^/properties/${ID}/units$`) },
   { method: 'PATCH', pathPattern: new RegExp(`^/units/${ID}$`) },
+  // Mortgages + valuations (PLAN-REAL-EQUITY §4): same click-gated record-edit
+  // rationale as properties/units above. No DELETEs and no archive/restore —
+  // matching the archive/restore exclusion precedent for every other record.
+  { method: 'POST', pathPattern: new RegExp(`^/properties/${ID}/mortgages$`) },
+  { method: 'PATCH', pathPattern: new RegExp(`^/mortgages/${ID}$`) },
+  { method: 'POST', pathPattern: new RegExp(`^/properties/${ID}/valuations$`) },
   { method: 'POST', pathPattern: /^\/tenants$/ },
   { method: 'PATCH', pathPattern: new RegExp(`^/tenants/${ID}$`) },
   { method: 'POST', pathPattern: /^\/contractors$/ },
