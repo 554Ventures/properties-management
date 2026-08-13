@@ -9,6 +9,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { afterAll, describe, expect, it } from 'vitest';
 import { prisma } from '../lib/prisma';
 import { createMcpServer } from '../mcp/index';
+import * as mortgageService from '../services/mortgage.service';
 import { deniedWriteTools, findServiceTool, WRITE_TOOL_PERMISSIONS } from '../ai/tools';
 
 const EMAIL_SUFFIX = '@mortgagetooltest.example';
@@ -221,6 +222,100 @@ describe('mortgage/valuation write tools — execution + audit attribution', () 
         'system',
       ),
     ).rejects.toThrow(/property/i);
+  });
+});
+
+describe('confirm_transaction carries the mortgage breakdown', () => {
+  // The flow that actually happens: the bank delivers a mortgage payment (or a
+  // template drafts one), detection stamps its mortgageId, and it is CONFIRMED.
+  // The tool used to accept no breakdown at all, so the assistant could only
+  // confirm one by expensing the whole debit — full amount into P&L, loan
+  // balance untouched, no error raised.
+  it('carves out principal and splits the remainder, exactly like the REST path', async () => {
+    const accountId = await makeAccount('confirm');
+    const propertyId = await makeProperty(accountId, '4 Confirm Ct');
+    const mortgage = (await findServiceTool('create_mortgage')!.execute(
+      accountId,
+      {
+        propertyId,
+        lender: 'Confirm Federal',
+        balanceCents: 25_000_000,
+        balanceAsOfDate: new Date('2026-01-01T05:00:00.000Z').toISOString(),
+      },
+      'system',
+    )) as { id: string };
+
+    const interest = await prisma.category.findFirstOrThrow({ where: { name: 'Mortgage Interest' } });
+    const taxes = await prisma.category.findFirstOrThrow({ where: { name: 'Property Taxes' } });
+    const pending = await prisma.transaction.create({
+      data: {
+        accountId,
+        propertyId,
+        date: new Date('2026-08-01T04:00:00.000Z'),
+        amountCents: 240_000,
+        type: 'expense',
+        description: 'CONFIRM FEDERAL MTG PMT',
+        vendor: 'Confirm Federal',
+        mortgageId: mortgage.id,
+        source: 'bank',
+        status: 'pending_review',
+      },
+    });
+
+    await findServiceTool('confirm_transaction')!.execute(
+      accountId,
+      {
+        transactionId: pending.id,
+        mortgageId: mortgage.id,
+        principalCents: 80_000,
+        splits: [
+          { categoryId: interest.id, amountCents: 110_000 },
+          { categoryId: taxes.id, amountCents: 50_000 },
+        ],
+      },
+      'system',
+    );
+
+    const row = await prisma.transaction.findUniqueOrThrow({
+      where: { id: pending.id },
+      include: { splits: true },
+    });
+    expect(row.status).toBe('confirmed');
+    expect(row.principalCents).toBe(80_000); // NOT an expense
+    expect(row.splits.reduce((s, x) => s + x.amountCents, 0)).toBe(160_000); // amount − principal
+
+    // And the money moved: the loan is $800 smaller than its checkpoint.
+    const [derived] = await mortgageService.listForProperty(accountId, propertyId);
+    expect(derived?.currentBalanceCents).toBe(25_000_000 - 80_000);
+  });
+
+  it('refuses a breakdown the ledger would refuse, rather than silently dropping it', async () => {
+    const accountId = await makeAccount('confirm-invalid');
+    const propertyId = await makeProperty(accountId, '5 Invalid Way');
+    const pending = await prisma.transaction.create({
+      data: {
+        accountId,
+        propertyId,
+        date: new Date('2026-08-01T04:00:00.000Z'),
+        amountCents: 100_000,
+        type: 'expense',
+        description: 'NOT A MORTGAGE',
+        source: 'bank',
+        status: 'pending_review',
+      },
+    });
+    // Principal with no mortgage to repay is meaningless — the service owns
+    // that rule, and the tool must surface it rather than confirm a half-row.
+    await expect(
+      findServiceTool('confirm_transaction')!.execute(
+        accountId,
+        { transactionId: pending.id, principalCents: 50_000 },
+        'system',
+      ),
+    ).rejects.toThrow();
+    expect(
+      (await prisma.transaction.findUniqueOrThrow({ where: { id: pending.id } })).status,
+    ).toBe('pending_review');
   });
 });
 

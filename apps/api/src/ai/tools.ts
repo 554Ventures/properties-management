@@ -634,23 +634,21 @@ export const serviceTools: ServiceToolDef[] = [
   {
     name: 'confirm_transaction',
     description:
-      'WRITES: confirms (categorizes) a pending-review transaction, moving it into the ledger. Pass categoryId to override the AI suggestion; omit it to accept the suggestion. Pass propertyId/unitId to attribute the transaction. Pass rentPaymentId to link an income transaction (a bank deposit or an already-confirmed manual entry) to that expected rent payment and mark it paid — amounts must match exactly, and property/unit then come from the lease.',
-    inputSchema: z.object({
+      'WRITES: confirms (categorizes) a pending-review transaction, moving it into the ledger. Pass categoryId to override the AI suggestion; omit it to accept the suggestion. Pass propertyId/unitId to attribute the transaction. Pass rentPaymentId to link an income transaction (a bank deposit or an already-confirmed manual entry) to that expected rent payment and mark it paid — amounts must match exactly, and property/unit then come from the lease. For a MORTGAGE PAYMENT (the row carries a mortgageId, stamped when its vendor matched a lender): pass principalCents for the portion that repays the loan — it is not an expense and it reduces the mortgage balance — and put the remainder on categoryId (usually Mortgage Interest) or across splits, which must sum to amountCents minus principalCents. Never estimate the principal: it comes from the lender statement, so ask the user for the figure rather than deriving one from the rate or balance.',
+    // The REST contract itself, so this tool cannot silently fall behind it —
+    // it did exactly that when confirm gained the mortgage breakdown, leaving
+    // the assistant able to confirm a mortgage payment only by expensing the
+    // whole debit. `linkSource` is deliberately omitted: it decides whether a
+    // rent link audits as the user's own choice, which a model-invoked write
+    // must not be able to claim.
+    inputSchema: ConfirmTransactionInputSchema.omit({ linkSource: true }).extend({
       transactionId: z.string(),
-      categoryId: z.string().optional(),
-      rentPaymentId: z.string().optional(),
-      propertyId: z.string().optional(),
-      unitId: z.string().optional(),
     }),
     write: true,
     execute: (accountId, input, actor) => {
-      const { transactionId, ...confirmInput } = input as {
-        transactionId: string;
-        categoryId?: string;
-        rentPaymentId?: string;
-        propertyId?: string;
-        unitId?: string;
-      };
+      const { transactionId, ...confirmInput } = input as z.infer<
+        typeof ConfirmTransactionInputSchema
+      > & { transactionId: string };
       return transactionService.confirm(accountId, transactionId, confirmInput, actor);
     },
   },
