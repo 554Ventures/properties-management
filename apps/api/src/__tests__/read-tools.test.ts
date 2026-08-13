@@ -5,10 +5,17 @@
 // detail tool while every other entity had one. These nine wrap existing
 // service functions with no new business logic.
 //
+// `get_account_settings` joined them on 2026-08-13 (WHATS_NEXT §4 "the late-fee
+// policy is unreadable before it's applied"): apply_late_fee falls back to the
+// lease override else Account.defaultLateFeeCents, which nothing in the registry
+// could read — so the assistant could fire the write but never quote the fee
+// first. It mirrors the ungated GET /settings/account, so it is a read.
+//
 // Every case parses the tool's return value with the shared response schema
 // rather than asserting an ad hoc shape — same contract enforcement the route
 // tests apply, so a contract change fails here instead of surprising a client.
 import {
+  AccountSettingsSchema,
   ActivityItemSchema,
   BankDiscrepancyListResponseSchema,
   ContractorDetailResponseSchema,
@@ -24,7 +31,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { afterAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { findServiceTool } from '../ai/tools';
+import { findServiceTool, WRITE_TOOL_PERMISSIONS } from '../ai/tools';
 import { prisma } from '../lib/prisma';
 import { createMcpServer } from '../mcp/index';
 import { getDemoAccountId } from '../plugins/auth';
@@ -39,6 +46,7 @@ const NEW_READ_TOOLS = [
   'get_contractor',
   'list_monthly_reviews',
   'get_latest_weekly_brief',
+  'get_account_settings',
 ];
 
 const EMAIL_SUFFIX = '@readtooltest.example';
@@ -67,12 +75,14 @@ afterAll(async () => {
 });
 
 describe('read tool registry', () => {
-  it('registers all nine as non-write tools', () => {
+  it('registers them all as non-write tools', () => {
     for (const name of NEW_READ_TOOLS) {
       const tool = findServiceTool(name);
       expect(tool, `${name} missing from the registry`).toBeDefined();
       expect(tool!.write, `${name} must not be a write tool`).toBeFalsy();
       expect(tool!.description.length).toBeGreaterThan(20);
+      // A read is open to any member, so it must never appear in the write map.
+      expect(WRITE_TOOL_PERMISSIONS[name], `${name} must not be permission-gated`).toBeUndefined();
     }
   });
 
@@ -148,6 +158,17 @@ describe('read tools return contract-valid data for the seeded account', () => {
   it('get_latest_weekly_brief', async () => {
     WeeklyBriefLatestResponseSchema.parse(await run('get_latest_weekly_brief'));
   });
+
+  it('get_account_settings returns the same contract GET /settings/account does', async () => {
+    const parsed = AccountSettingsSchema.parse(await run('get_account_settings'));
+    const account = await prisma.account.findUniqueOrThrow({ where: { id: await getDemoAccountId() } });
+    // The late-fee policy the assistant has to quote before apply_late_fee.
+    expect(parsed.defaultLateFeeCents).toBe(account.defaultLateFeeCents);
+    expect(parsed.graceDays).toBe(account.graceDays);
+    expect(parsed.graceDaysBasis).toBe(account.graceDaysBasis);
+    expect(parsed.timezone).toBe(account.timezone);
+    expect(parsed.taxRatePct).toBe(account.taxRatePct);
+  });
 });
 
 describe('read tools are account-scoped', () => {
@@ -169,6 +190,11 @@ describe('read tools are account-scoped', () => {
       .array(ActivityItemSchema)
       .parse(await run('get_recent_activity', {}, accountId));
     expect(activity).toHaveLength(0);
+
+    // Settings are per-account: the fresh account reads its own row, not the demo's.
+    const settings = AccountSettingsSchema.parse(await run('get_account_settings', {}, accountId));
+    expect(settings.id).toBe(accountId);
+    expect(settings.id).not.toBe(await getDemoAccountId());
   });
 
   it('refuses to read a contractor belonging to another account', async () => {

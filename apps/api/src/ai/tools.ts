@@ -49,7 +49,7 @@ import type { Tool } from '@anthropic-ai/sdk/resources/messages/messages';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { currentPeriodInTz, yearRangeInTz } from '../lib/dates';
-import { accountTimezone } from '../services/account.service';
+import * as accountService from '../services/account.service';
 import * as categoryService from '../services/category.service';
 import * as contractorService from '../services/contractor.service';
 import * as dashboardService from '../services/dashboard.service';
@@ -174,7 +174,7 @@ export const serviceTools: ServiceToolDef[] = [
     execute: async (accountId, input) => {
       const { propertyId, from, to } = input as z.infer<typeof PropertyPnlInputSchema>;
       // Default calendar-year range on the account's timezone (WS4).
-      const tz = await accountTimezone(accountId);
+      const tz = await accountService.accountTimezone(accountId);
       const fallback = yearRangeInTz(Number(currentPeriodInTz(tz).slice(0, 4)), tz);
       return propertyService.getPnl(accountId, propertyId, {
         from: from ? new Date(from) : fallback.from,
@@ -281,6 +281,14 @@ export const serviceTools: ServiceToolDef[] = [
     inputSchema: NoInputSchema,
     write: false,
     execute: (accountId) => categoryService.list(accountId),
+  },
+  {
+    name: 'get_account_settings',
+    description:
+      "The account's own settings: timezone (every period boundary and days-late count is measured in this wall clock, not UTC), taxRatePct (the set-aside rate), graceDays plus graceDaysBasis (\"calendar\" or \"business\" — how long after the due day a charge becomes late), and defaultLateFeeCents, the account-wide default late fee in cents (0 = late fees are switched off). Read this before applying a late fee so you can tell the user the exact amount first: the fee a charge will take is the lease's own lateFeeCents override when that is set (see get_lease), otherwise this default. Changing any of these is an owner-only Settings action, not available from chat.",
+    inputSchema: NoInputSchema,
+    write: false,
+    execute: (accountId) => accountService.getSettings(accountId),
   },
   {
     name: 'get_rent_status',
@@ -653,6 +661,43 @@ export const serviceTools: ServiceToolDef[] = [
     },
   },
   {
+    name: 'accept_bank_discrepancy',
+    description:
+      "WRITES: takes the bank's side of a flagged change from list_bank_discrepancies. For a \"modified\" change this rewrites the confirmed ledger row to the bank's restated date/amount/type/description — any split lines are dropped (they summed to the old figure) and the row comes back uncategorized for re-filing. For a \"removed\" change it DELETES the local transaction outright. Either way every report and KPI recomputes, and there is no undo: the previous values are gone and a deleted row cannot be restored from chat. Confirm which row and which direction with the user before calling this. A row that backs a rent deposit is refused — unlink_rent_deposit first (the discrepancy carries rentPaymentId and depositId for exactly that).",
+    inputSchema: z.object({ discrepancyId: z.string() }),
+    write: true,
+    execute: (accountId, input, actor) =>
+      transactionService.acceptBankDiscrepancy(
+        accountId,
+        (input as { discrepancyId: string }).discrepancyId,
+        actor,
+      ),
+  },
+  {
+    name: 'dismiss_bank_discrepancy',
+    description:
+      "WRITES: keeps the ledger as the user recorded it and resolves a flagged bank change from list_bank_discrepancies. No transaction is touched — only the exception is closed, and it leaves the pending list for good (there is no un-dismiss, from chat or anywhere else). Use this when the local row is the correct one, or when the bank change points at a transaction that no longer exists, which is the one case accepting is impossible.",
+    inputSchema: z.object({ discrepancyId: z.string() }),
+    write: true,
+    execute: (accountId, input, actor) =>
+      transactionService.dismissBankDiscrepancy(
+        accountId,
+        (input as { discrepancyId: string }).discrepancyId,
+        actor,
+      ),
+  },
+  {
+    name: 'unlink_rent_deposit',
+    description:
+      'WRITES: reverses a rent link — detaches one deposit (depositId) from the rent charge it was applied to (rentPaymentId). Both ids come from get_rent_status rows (each row lists its deposits) or from a rent-linked bank discrepancy. The charge recomputes: paidCents drops by that deposit and the status reopens to "due" once it is no longer covered, so the tenant reads as owing again; any applied late fee is left alone. The ledger transaction is NOT deleted — it survives as an ordinary confirmed row, still counted as income, which is also what frees it: a rent-linked row refuses amount/date/type edits and blocks accept_bank_discrepancy until it is unlinked. Re-link it afterwards with confirm_transaction and the same rentPaymentId.',
+    inputSchema: z.object({ rentPaymentId: z.string(), depositId: z.string() }),
+    write: true,
+    execute: (accountId, input, actor) => {
+      const { rentPaymentId, depositId } = input as { rentPaymentId: string; depositId: string };
+      return rentService.unlinkDeposit(accountId, rentPaymentId, depositId, actor);
+    },
+  },
+  {
     name: 'record_rent_payment',
     description:
       'WRITES: records a rent payment for a lease/period as paid and creates the matching income transaction in the ledger. Cannot be undone from chat. amountCents may be at most the remaining balance for the period (charge minus what is already paid); a smaller amount records a partial payment and the charge shows "partial" until fully covered.',
@@ -668,7 +713,7 @@ export const serviceTools: ServiceToolDef[] = [
   {
     name: 'apply_late_fee',
     description:
-      'WRITES: applies a late fee to a rent charge that is past its grace period, stamping the fee on the charge so it is added to what the tenant owes (total due = rent + late fee). No money is recorded — nothing has been received yet; the fee shows up in the ledger only when the tenant pays it. Only for a charge that is currently late (or a partial payment past grace) and has no fee applied yet — one fee per charge. Omit feeCents to use the configured policy (the lease override, else the account default); a charge with no policy configured is rejected. Waiving a fee is a Rent-page action, not available here.',
+      'WRITES: applies a late fee to a rent charge that is past its grace period, stamping the fee on the charge so it is added to what the tenant owes (total due = rent + late fee). No money is recorded — nothing has been received yet; the fee shows up in the ledger only when the tenant pays it. Only for a charge that is currently late (or a partial payment past grace) and has no fee applied yet — one fee per charge. Omit feeCents to use the configured policy (the lease override, else the account default); a charge with no policy configured is rejected. Read that policy first with get_account_settings (defaultLateFeeCents) and get_lease (the lease\'s lateFeeCents override) and tell the user the exact dollar amount before you apply it — never let them find out what was charged from the result. Waiving a fee is a Rent-page action, not available here.',
     inputSchema: ApplyLateFeeInputSchema.extend({ rentPaymentId: z.string() }),
     write: true,
     execute: (accountId, input, actor) => {
@@ -774,6 +819,10 @@ export const WRITE_TOOL_PERMISSIONS: Partial<Record<string, MemberPermission>> =
   create_transaction: 'money',
   update_transaction: 'money',
   confirm_transaction: 'money',
+  // Resolving a bank change edits or deletes a ledger row, so it takes the same
+  // 'money' grant the POST /transactions/bank-discrepancies/:id routes require.
+  accept_bank_discrepancy: 'money',
+  dismiss_bank_discrepancy: 'money',
   // A template's whole job is minting ledger rows on a schedule, so it needs
   // the same 'money' grant as create_transaction — not 'properties', even
   // though it may reference a property.
@@ -798,6 +847,8 @@ export const WRITE_TOOL_PERMISSIONS: Partial<Record<string, MemberPermission>> =
   add_tenant_to_lease: 'tenants',
   remove_tenant_from_lease: 'tenants',
   record_rent_payment: 'rent',
+  // Same 'rent' grant as DELETE /rent/payments/:id/deposits/:depositId.
+  unlink_rent_deposit: 'rent',
   apply_late_fee: 'rent',
   send_rent_reminders: 'rent',
   generate_report: 'reports',
