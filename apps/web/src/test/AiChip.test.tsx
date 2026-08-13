@@ -29,4 +29,16 @@ describe('AiChip', () => {
     expect(button).toBeDisabled();
     expect(button).toHaveTextContent('— applied');
   });
+
+  it('readOnly renders the suggestion as information, with no control to press', () => {
+    // For a viewer without write access in the area, the field this would fill
+    // isn't on screen — a button would look clickable and do nothing.
+    const onApply = vi.fn();
+    render(<AiChip name="Repairs" confidence={0.84} onApply={onApply} readOnly />);
+
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    expect(screen.getByText(/suggests: Repairs \(84%\)/)).toBeVisible();
+    expect(screen.getByText(/applying it needs write access/)).toBeInTheDocument();
+    expect(onApply).not.toHaveBeenCalled();
+  });
 });

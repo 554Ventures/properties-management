@@ -68,12 +68,17 @@ interface LinkedRent {
 export interface ReviewItemCardProps {
   item: ReviewQueueItem;
   categoryOptions: Category[];
+  /** Every write this card can make — confirm, dismiss, the attribution
+   *  fields, the rent-link picker, the mortgage breakdown — is gated behind
+   *  the account's `money` permission. Reads (the row itself, the AI
+   *  suggestion chips, the warning strips) stay visible either way. */
+  canMoney: boolean;
   /** Reports a successful write with the label to show and the height to hold
    *  (measured before the swap) so nothing moves under the pointer. */
   onSettled: (outcome: SettledOutcome, label: string, heightPx: number) => void;
 }
 
-export function ReviewItemCard({ item, categoryOptions, onSettled }: ReviewItemCardProps) {
+export function ReviewItemCard({ item, categoryOptions, canMoney, onSettled }: ReviewItemCardProps) {
   const confirm = useConfirmTransaction();
   const dismiss = useDismissTransaction();
   const clearMortgageLink = useUpdateTransaction();
@@ -266,6 +271,7 @@ export function ReviewItemCard({ item, categoryOptions, onSettled }: ReviewItemC
               <AiChip
                 name={`${rentMatch.tenantName}'s ${formatMonth(rentMatch.period)} rent`}
                 confidence={rentMatch.confidence}
+                readOnly={!canMoney}
                 applied={linkedRent?.rentPaymentId === rentMatch.rentPaymentId}
                 onApply={() =>
                   setLinkedRent({
@@ -310,14 +316,16 @@ export function ReviewItemCard({ item, categoryOptions, onSettled }: ReviewItemC
                 <span className="font-semibold">Matches your mortgage</span> — enter the breakdown
                 below before confirming.
               </p>
-              <Button
-                variant="ghost"
-                size="sm"
-                busy={clearMortgageLink.isPending}
-                onClick={notMortgagePayment}
-              >
-                Not a mortgage payment
-              </Button>
+              {canMoney && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  busy={clearMortgageLink.isPending}
+                  onClick={notMortgagePayment}
+                >
+                  Not a mortgage payment
+                </Button>
+              )}
             </div>
           </ReviewStrip>
         )}
@@ -374,59 +382,69 @@ export function ReviewItemCard({ item, categoryOptions, onSettled }: ReviewItemC
                   applied={categoryId === item.aiSuggestedCategoryId}
                   onApply={() => setCategoryId(item.aiSuggestedCategoryId as string)}
                   note={item.suggestionSource === 'learned' ? 'from your past choice' : undefined}
+                  // The category select it fills isn't rendered without write
+                  // access, so the chip informs rather than acts.
+                  readOnly={!canMoney}
                 />
               ) : (
                 !rentMatch && <StatusBadge tone="neutral">No suggestion</StatusBadge>
               ))}
             <ReviewRowAmount item={item} />
-            <div className="flex items-center gap-1">
-              <Button
-                busy={confirm.isPending}
-                disabled={!breakdownComplete}
-                aria-describedby={
-                  isMortgagePayment && !breakdownComplete ? mortgageStatusId : undefined
-                }
-                onClick={confirmItem}
-              >
-                <IconCheck size={14} />
-                {confirmLabel}
-              </Button>
-              {/* Rows that must stay open have no toggle: collapsing one could
-                  hide the only control that unblocks Confirm (and its
-                  aria-describedby target with it). */}
-              {!mustExpand && (
+            {canMoney && (
+              <div className="flex items-center gap-1">
                 <Button
-                  variant="secondary"
-                  aria-expanded={expanded}
-                  // Only reference the region while it exists: the details are
-                  // unmounted when collapsed, and aria-controls pointing at a
-                  // missing id is an invalid reference that assistive tech has
-                  // to guess at. aria-expanded alone conveys the state.
-                  aria-controls={expanded ? detailsId : undefined}
-                  onClick={() => setUserExpanded((v) => !v)}
+                  busy={confirm.isPending}
+                  disabled={!breakdownComplete}
+                  aria-describedby={
+                    isMortgagePayment && !breakdownComplete ? mortgageStatusId : undefined
+                  }
+                  onClick={confirmItem}
                 >
-                  <IconChevronDown
-                    size={16}
-                    className={cx(
-                      'transition-transform duration-fast',
-                      expanded ? 'rotate-180' : undefined,
-                    )}
-                  />
-                  <span className="sr-only">
-                    {expanded ? 'Hide details' : 'Edit details'} — “{item.description}”
-                  </span>
+                  <IconCheck size={14} />
+                  {confirmLabel}
                 </Button>
-              )}
-              <RowActions
-                context={`“${item.description}”`}
-                actions={[{ label: 'Dismiss', onClick: dismissItem, busy: dismiss.isPending }]}
-              />
-            </div>
+                {/* Rows that must stay open have no toggle: collapsing one could
+                    hide the only control that unblocks Confirm (and its
+                    aria-describedby target with it). */}
+                {!mustExpand && (
+                  <Button
+                    variant="secondary"
+                    aria-expanded={expanded}
+                    // Only reference the region while it exists: the details are
+                    // unmounted when collapsed, and aria-controls pointing at a
+                    // missing id is an invalid reference that assistive tech has
+                    // to guess at. aria-expanded alone conveys the state.
+                    aria-controls={expanded ? detailsId : undefined}
+                    onClick={() => setUserExpanded((v) => !v)}
+                  >
+                    <IconChevronDown
+                      size={16}
+                      className={cx(
+                        'transition-transform duration-fast',
+                        expanded ? 'rotate-180' : undefined,
+                      )}
+                    />
+                    <span className="sr-only">
+                      {expanded ? 'Hide details' : 'Edit details'} — “{item.description}”
+                    </span>
+                  </Button>
+                )}
+                <RowActions
+                  context={`“${item.description}”`}
+                  actions={[{ label: 'Dismiss', onClick: dismissItem, busy: dismiss.isPending }]}
+                />
+              </div>
+            )}
           </div>
         </div>
 
         {/* ── expanded region: full card width, a real grid ─────────────── */}
-        {expanded && (
+        {/* Every field here is a write (attribution, rent link, mortgage
+            breakdown) — for a member without Money, opening it would show
+            controls that lead nowhere, so the whole region is gated rather
+            than rendering it inert. The strips above already carry the read
+            content (mortgage match, duplicate, low confidence). */}
+        {canMoney && expanded && (
           <div
             id={detailsId}
             className="flex flex-col gap-4 border-t border-border bg-surface-sunken px-4 py-4"

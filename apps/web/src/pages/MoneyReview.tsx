@@ -39,6 +39,7 @@ import { useToast } from '../components/ui/Toast';
 import { IconAlertTriangle, IconCheck } from '../components/ui/icons';
 import { formatDate, formatMonth, formatShortDate } from '../lib/format';
 import { usePageTitle } from '../lib/usePageTitle';
+import { usePermissions } from '../lib/usePermissions';
 
 const SEARCH_DEBOUNCE_MS = 300;
 
@@ -84,6 +85,8 @@ export function MoneyReview() {
   const dismissAll = useDismissAllReview();
   const discrepancies = useBankDiscrepancies();
   const { toast } = useToast();
+  const { can } = usePermissions();
+  const canMoney = can('money');
 
   const categoriesByType = useMemo(() => {
     const all = categories.data ?? [];
@@ -216,28 +219,37 @@ export function MoneyReview() {
         description="Imported and scanned transactions wait here until you confirm the category — nothing counts toward reports or taxes until then."
         breadcrumbs={[{ label: 'Money', to: '/money' }, { label: 'Review queue' }]}
         actions={
-          <>
-            <Button
-              variant="ghost"
-              disabled={total === 0 || review.isPending}
-              onClick={() => setBulkDialog('dismiss')}
-            >
-              Dismiss all
-            </Button>
-            <Button
-              variant="secondary"
-              disabled={total === 0 || review.isPending}
-              onClick={() => setBulkDialog('confirm')}
-            >
-              <IconCheck size={14} />
-              Confirm all suggested
-            </Button>
-          </>
+          canMoney ? (
+            <>
+              <Button
+                variant="ghost"
+                disabled={total === 0 || review.isPending}
+                onClick={() => setBulkDialog('dismiss')}
+              >
+                Dismiss all
+              </Button>
+              <Button
+                variant="secondary"
+                disabled={total === 0 || review.isPending}
+                onClick={() => setBulkDialog('confirm')}
+              >
+                <IconCheck size={14} />
+                Confirm all suggested
+              </Button>
+            </>
+          ) : undefined
         }
       />
 
+      {!canMoney && (
+        <p className="rounded-md border border-border bg-surface-sunken px-4 py-2.5 text-sm text-ink-muted">
+          You can see everything in this queue, but confirming, dismissing, and editing need the
+          Money permission — ask an account owner to turn it on for you.
+        </p>
+      )}
+
       {(discrepancies.data?.items.length ?? 0) > 0 && (
-        <BankDiscrepancySection items={discrepancies.data!.items} />
+        <BankDiscrepancySection items={discrepancies.data!.items} canMoney={canMoney} />
       )}
 
       <Card className="p-4">
@@ -356,6 +368,7 @@ export function MoneyReview() {
                   <ReviewItemCard
                     item={item}
                     categoryOptions={categoriesByType[item.type]}
+                    canMoney={canMoney}
                     onSettled={(outcome, label, minHeight) =>
                       settleRow(item, outcome, label, minHeight)
                     }
@@ -446,7 +459,13 @@ function buildDiff(
   return parts;
 }
 
-function BankDiscrepancySection({ items }: { items: BankDiscrepancyRow[] }) {
+function BankDiscrepancySection({
+  items,
+  canMoney,
+}: {
+  items: BankDiscrepancyRow[];
+  canMoney: boolean;
+}) {
   return (
     <Card className="bg-warning-soft">
       <div className="flex items-start gap-2.5">
@@ -462,7 +481,7 @@ function BankDiscrepancySection({ items }: { items: BankDiscrepancyRow[] }) {
           <ul className="mt-3 flex flex-col gap-3">
             {items.map((item) => (
               <li key={item.id}>
-                <BankDiscrepancyItem item={item} />
+                <BankDiscrepancyItem item={item} canMoney={canMoney} />
               </li>
             ))}
           </ul>
@@ -472,7 +491,7 @@ function BankDiscrepancySection({ items }: { items: BankDiscrepancyRow[] }) {
   );
 }
 
-function BankDiscrepancyItem({ item }: { item: BankDiscrepancyRow }) {
+function BankDiscrepancyItem({ item, canMoney }: { item: BankDiscrepancyRow; canMoney: boolean }) {
   const accept = useAcceptBankDiscrepancy();
   const dismiss = useDismissBankDiscrepancy();
   const unlink = useUnlinkDeposit();
@@ -559,26 +578,28 @@ function BankDiscrepancyItem({ item }: { item: BankDiscrepancyRow }) {
             </p>
           )}
         </div>
-        <div className="flex w-full flex-col gap-2 md:w-56">
-          {item.rentPaymentId && item.depositId && (
-            <Button variant="secondary" busy={unlink.isPending} onClick={unlinkItem}>
-              Unlink deposit
+        {canMoney && (
+          <div className="flex w-full flex-col gap-2 md:w-56">
+            {item.rentPaymentId && item.depositId && (
+              <Button variant="secondary" busy={unlink.isPending} onClick={unlinkItem}>
+                Unlink deposit
+              </Button>
+            )}
+            <Button
+              busy={accept.isPending}
+              disabled={!txn}
+              title={
+                !txn ? 'This transaction is no longer in your ledger — dismiss instead.' : undefined
+              }
+              onClick={acceptItem}
+            >
+              Accept bank version
             </Button>
-          )}
-          <Button
-            busy={accept.isPending}
-            disabled={!txn}
-            title={
-              !txn ? 'This transaction is no longer in your ledger — dismiss instead.' : undefined
-            }
-            onClick={acceptItem}
-          >
-            Accept bank version
-          </Button>
-          <Button variant="ghost" busy={dismiss.isPending} onClick={dismissItem}>
-            Keep my version
-          </Button>
-        </div>
+            <Button variant="ghost" busy={dismiss.isPending} onClick={dismissItem}>
+              Keep my version
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );

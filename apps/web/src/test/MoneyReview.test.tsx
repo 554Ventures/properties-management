@@ -10,6 +10,7 @@ import { formatUsd } from '@hearth/shared';
 import type {
   BankDiscrepancyRow,
   Category,
+  CurrentUser,
   RentChargeOption,
   ReviewQueueItem,
   ReviewQueueResponse,
@@ -1271,5 +1272,151 @@ describe('MoneyReview holds scroll position on confirm', () => {
     expect(rowsAfter).toHaveLength(2);
     expect(rowsAfter[0]).toHaveTextContent('HD SUPPLY #443');
     expect(rowsAfter[1]).toHaveTextContent('LOWES #00907');
+  });
+});
+
+// ── permission gating (money write area) ────────────────────────────────────
+// Every write on this page — bulk actions, per-row confirm/dismiss, the
+// attribution selects, the rent-link picker, the mortgage breakdown, "Not a
+// mortgage payment", and the bank-correction actions — sits behind the single
+// `money` permission (transactions.ts routes are all requirePermission('money')).
+// One mortgage-flagged expense + one plain income row together surface every
+// gated control in one render; a bank discrepancy with a linked deposit adds
+// the correction actions, including Unlink deposit.
+describe('MoneyReview permission gating (money write area)', () => {
+  const noMoneyMember: CurrentUser = { userId: 'u-member', role: 'member', permissions: [] };
+  const moneyMember: CurrentUser = { userId: 'u-member', role: 'member', permissions: ['money'] };
+  const owner: CurrentUser = { userId: null, role: 'owner', permissions: [] };
+  const incomeCategory = moneyCategory({ id: 'c-rent-perm', name: 'Rent', type: 'income' });
+  const permissionCategories = [...mortgageCategories, incomeCategory];
+
+  function renderAsUser(user: CurrentUser) {
+    return renderQueue([mortgageDetectedItem, plainIncomeItem], permissionCategories, [
+      { method: 'GET', path: '/api/v1/settings/me', body: user },
+      {
+        method: 'GET',
+        path: '/api/v1/transactions/bank-discrepancies',
+        body: { items: [removedRentLinkedRow] },
+      },
+    ]);
+  }
+
+  it('hides every write control from a member without money, and shows the explanatory note', async () => {
+    stubDesktopViewport();
+    renderAsUser(noMoneyMember);
+
+    await screen.findByText('Mortgage payment');
+    await screen.findByText('Zelle payment');
+    await screen.findByText('Bank changed these after you confirmed');
+
+    expect(
+      screen.getByText(/You can see everything in this queue/),
+    ).toBeInTheDocument();
+
+    // Bulk actions.
+    expect(screen.queryByRole('button', { name: 'Confirm all suggested' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Dismiss all' })).not.toBeInTheDocument();
+
+    // Per-row confirm/dismiss and the attribution/rent-link/mortgage controls
+    // they gate. Scoped to the row list: the filter bar has its own "Property"
+    // select, and filtering is a read affordance that must survive.
+    const queue = within(screen.getByRole('list', { name: 'Pending transactions' }));
+    expect(queue.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
+    expect(queue.queryByRole('button', { name: /^Dismiss/ })).not.toBeInTheDocument();
+    expect(queue.queryByLabelText('Category')).not.toBeInTheDocument();
+    expect(queue.queryByLabelText('Property')).not.toBeInTheDocument();
+    expect(queue.queryByLabelText('Unit')).not.toBeInTheDocument();
+    expect(queue.queryByLabelText('Treatment')).not.toBeInTheDocument();
+    // (An AI suggestion chip becomes non-interactive for a member too — these
+    // fixtures carry no suggestion, so that lives in AiChip.test.tsx.)
+    // Filtering is a read affordance and survives.
+    expect(document.getElementById('review-filter-property')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Link to rent…' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Not a mortgage payment' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Principal/)).not.toBeInTheDocument();
+
+    // Bank-correction actions.
+    expect(screen.queryByRole('button', { name: 'Accept bank version' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Keep my version' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Unlink deposit' })).not.toBeInTheDocument();
+  });
+
+  it('a member with the money permission sees every write control', async () => {
+    stubDesktopViewport();
+    renderAsUser(moneyMember);
+
+    await screen.findByText('Mortgage payment');
+    await screen.findByText('Zelle payment');
+    await screen.findByText('Bank changed these after you confirmed');
+
+    expect(screen.queryByText(/You can see everything in this queue/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Confirm all suggested' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Dismiss all' })).toBeInTheDocument();
+    // Scoped: the filter bar owns a "Property" select and the page header owns
+    // "Dismiss all", so unscoped counts run one over.
+    const queue = within(screen.getByRole('list', { name: 'Pending transactions' }));
+    expect(queue.getAllByRole('button', { name: 'Confirm' })).toHaveLength(2);
+    expect(queue.getAllByRole('button', { name: /^Dismiss/ })).toHaveLength(2);
+    expect(queue.getByLabelText('Category')).toBeInTheDocument();
+    expect(queue.getAllByLabelText('Property')).toHaveLength(2);
+    expect(queue.getAllByLabelText('Unit')).toHaveLength(2);
+    expect(queue.getByLabelText('Treatment')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Link to rent…' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Not a mortgage payment' })).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Principal/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Accept bank version' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Keep my version' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Unlink deposit' })).toBeInTheDocument();
+  });
+
+  it('an owner sees every write control', async () => {
+    stubDesktopViewport();
+    renderAsUser(owner);
+
+    await screen.findByText('Mortgage payment');
+    expect(screen.getByRole('button', { name: 'Confirm all suggested' })).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Confirm' })).toHaveLength(2);
+    expect(screen.getByRole('button', { name: 'Not a mortgage payment' })).toBeInTheDocument();
+    expect(screen.queryByText(/You can see everything in this queue/)).not.toBeInTheDocument();
+  });
+
+  // usePermissions defaults permissive while /settings/me is in flight (an
+  // owner's own buttons must never flicker out). /settings/me here never
+  // resolves during the test, so this proves the controls are up while that
+  // request is genuinely still pending — not just after it settles.
+  it('the permissive default keeps an owner’s controls visible while /settings/me is still loading', async () => {
+    stubDesktopViewport();
+    const settingsMe = new Promise<Response>(() => {}); // intentionally never resolves
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = String(input).replace(/^https?:\/\/[^/]+/, '').split('?')[0] ?? '';
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url === '/api/v1/settings/me' && method === 'GET') return settingsMe;
+      const routes: RouteFixture[] = [
+        {
+          method: 'GET',
+          path: '/api/v1/transactions/review',
+          body: { items: [mortgageDetectedItem], nextCursor: null, total: 1 },
+        },
+        { method: 'GET', path: '/api/v1/categories', body: mortgageCategories },
+        { method: 'GET', path: '/api/v1/properties', body: [] },
+        { method: 'GET', path: '/api/v1/transactions', body: { items: [], nextCursor: null, total: 0 } },
+      ];
+      const match = routes.find((r) => r.path === url && r.method === method);
+      return new Response(JSON.stringify(match ? match.body : { error: { code: 'not_found', message: url } }), {
+        status: match ? 200 : 404,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderMoneyReview();
+
+    await screen.findByText('Mortgage payment');
+    // /settings/me is still unresolved at this point — the row loaded from a
+    // separate request, so this is a genuine mid-flight assertion.
+    expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Not a mortgage payment' })).toBeInTheDocument();
+    // Scoped past the filter bar's own Property select.
+    const queue = within(screen.getByRole('list', { name: 'Pending transactions' }));
+    expect(queue.getByLabelText('Property')).toBeInTheDocument();
   });
 });

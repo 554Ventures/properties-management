@@ -40,6 +40,10 @@ export interface TransactionEditModalProps {
   open: boolean;
   onClose: () => void;
   transaction: Transaction | null;
+  /** Gates the save path, not just the row control that opens this modal —
+   *  defaults to true so callers that don't gate writes (tests, and any
+   *  future caller) keep today's behavior. */
+  canEdit?: boolean;
 }
 
 const RENT_LINKED_HINT =
@@ -64,7 +68,12 @@ const MORTGAGE_TREATMENT_HINT =
 const MORTGAGE_PENDING_HINT =
   'This bank row matches your mortgage. Its principal/interest breakdown is entered when you confirm it — this modal can still fix its description or other ordinary details.';
 
-export function TransactionEditModal({ open, onClose, transaction }: TransactionEditModalProps) {
+export function TransactionEditModal({
+  open,
+  onClose,
+  transaction,
+  canEdit = true,
+}: TransactionEditModalProps) {
   const update = useUpdateTransaction();
   const clearMortgage = useUpdateTransaction();
   const properties = useProperties();
@@ -288,7 +297,7 @@ export function TransactionEditModal({ open, onClose, transaction }: Transaction
   };
 
   const save = () => {
-    if (!transaction) return;
+    if (!transaction || !canEdit) return;
     const amountNumber = Number(amount);
     const nextErrors: typeof errors = {};
     if (!amount || Number.isNaN(amountNumber) || amountNumber <= 0) {
@@ -643,18 +652,25 @@ export function TransactionEditModal({ open, onClose, transaction }: Transaction
             uploadTarget={{ entityType: 'transaction', entityId: transaction.id }}
           />
         )}
-        <div className="flex justify-end gap-2">
+        <div className="flex items-center justify-end gap-2">
+          {!canEdit && (
+            <p className="mr-auto text-sm text-ink-muted">
+              Saving needs the Money permission — ask an account owner.
+            </p>
+          )}
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
-          <Button
-            busy={update.isPending}
-            disabled={isMortgagePayment && !isMortgageBreakdownValid(totalCents, breakdown)}
-            aria-describedby={isMortgagePayment ? mortgageBreakdownStatusId(`edit-txn-mortgage-${transaction?.id}`) : undefined}
-            onClick={save}
-          >
-            Save changes
-          </Button>
+          {canEdit && (
+            <Button
+              busy={update.isPending}
+              disabled={isMortgagePayment && !isMortgageBreakdownValid(totalCents, breakdown)}
+              aria-describedby={isMortgagePayment ? mortgageBreakdownStatusId(`edit-txn-mortgage-${transaction?.id}`) : undefined}
+              onClick={save}
+            >
+              Save changes
+            </Button>
+          )}
         </div>
       </div>
     </Modal>
