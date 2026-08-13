@@ -15,6 +15,7 @@ import {
   CreateMortgageInputSchema,
   CreatePropertyInputSchema,
   CreatePropertyValuationInputSchema,
+  CreateRecurringTemplateInputSchema,
   CreateTenantInputSchema,
   CreateTransactionInputSchema,
   CreateUnitInputSchema,
@@ -57,6 +58,7 @@ import * as insightService from '../services/insight.service';
 import * as leaseService from '../services/lease.service';
 import * as mortgageService from '../services/mortgage.service';
 import * as propertyService from '../services/property.service';
+import * as recurringService from '../services/recurring.service';
 import * as rentService from '../services/rent.service';
 import * as reportService from '../services/report.service';
 import * as tenantService from '../services/tenant.service';
@@ -372,6 +374,15 @@ export const serviceTools: ServiceToolDef[] = [
       return documentService.list(accountId, { ...filters, q: query });
     },
   },
+  {
+    name: 'list_recurring_templates',
+    description:
+      'Recurring transaction templates — standing instructions like "the mortgage is $2,400 on the 1st", NOT ledger rows. Each includes its derived nextOccurrence and lastDraftedOccurrence. Non-archived (active) only by default; pass includeArchived to also see paused ones. A template never posts a transaction itself — the nightly scheduler drafts its currently-due occurrence into the review queue as pending_review, and the user still has to confirm it there.',
+    inputSchema: z.object({ includeArchived: z.boolean().optional() }),
+    write: false,
+    execute: (accountId, input) =>
+      recurringService.list(accountId, input as { includeArchived?: boolean }),
+  },
   // ── write tools — side effects stated plainly ───────────────────────────────
   {
     name: 'create_transaction',
@@ -510,6 +521,19 @@ export const serviceTools: ServiceToolDef[] = [
       > & { propertyId: string };
       return valuationService.create(accountId, propertyId, valuationInput, actor);
     },
+  },
+  {
+    name: 'create_recurring_template',
+    description:
+      'WRITES: adds a recurring transaction template — a standing instruction like "the mortgage is $2,400 on the 1st" (description, type "income"|"expense", amountCents, cadence "monthly"|"quarterly"|"annual", anchorDate "YYYY-MM-DD" — the first occurrence, a calendar date in the account\'s own timezone with no time part; optional vendor, propertyId, unitId, categoryId, and for a mortgage payment mortgageId + principalCents, which stamps that breakdown onto every row it drafts). This does NOT record a payment or touch the ledger itself: the nightly scheduler drafts only the currently-due occurrence into the review queue as a pending row, and the user still confirms it there like any other transaction — nothing here is ever auto-confirmed. If the current occurrence is already due, one row drafts immediately on creation.',
+    inputSchema: CreateRecurringTemplateInputSchema,
+    write: true,
+    execute: (accountId, input, actor) =>
+      recurringService.create(
+        accountId,
+        input as z.infer<typeof CreateRecurringTemplateInputSchema>,
+        actor,
+      ),
   },
   {
     name: 'create_tenant',
@@ -752,6 +776,10 @@ export const WRITE_TOOL_PERMISSIONS: Partial<Record<string, MemberPermission>> =
   create_transaction: 'money',
   update_transaction: 'money',
   confirm_transaction: 'money',
+  // A template's whole job is minting ledger rows on a schedule, so it needs
+  // the same 'money' grant as create_transaction — not 'properties', even
+  // though it may reference a property.
+  create_recurring_template: 'money',
   create_contractor: 'properties',
   update_contractor: 'properties',
   create_property: 'properties',

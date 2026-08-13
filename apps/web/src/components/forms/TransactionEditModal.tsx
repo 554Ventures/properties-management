@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'react';
 import { formatUsd } from '@hearth/shared';
 import type { Transaction, TransactionClassification } from '@hearth/shared';
+import { Link } from 'react-router';
 import {
   useCategories,
   useCreateCategory,
@@ -17,17 +18,32 @@ import {
 } from '../../api/queries';
 import { cx } from '../../lib/cx';
 import { DocumentsCard } from '../documents/DocumentsCard';
-import { Button } from '../ui/Button';
+import { Button, buttonClasses } from '../ui/Button';
 import { FormField, Input } from '../ui/FormField';
 import { Modal } from '../ui/Modal';
 import { Select } from '../ui/Select';
 import { useToast } from '../ui/Toast';
 import { IconPlus, IconTrash } from '../ui/icons';
+import {
+  emptyMortgageBreakdown,
+  emptySplitRows,
+  isMortgageBreakdownValid,
+  mortgageBreakdownPayload,
+  mortgageBreakdownStatusId,
+  MortgageBreakdownEditor,
+  parseCents,
+  type MortgageBreakdownValue,
+  type SplitRow,
+} from './MortgageBreakdownEditor';
 
 export interface TransactionEditModalProps {
   open: boolean;
   onClose: () => void;
   transaction: Transaction | null;
+  /** Gates the save path, not just the row control that opens this modal —
+   *  defaults to true so callers that don't gate writes (tests, and any
+   *  future caller) keep today's behavior. */
+  canEdit?: boolean;
 }
 
 const RENT_LINKED_HINT =
@@ -39,23 +55,27 @@ const SPLIT_LOCKED_HINT =
 // Sentinel option value: never a real category id (cuids don't start with "__").
 const NEW_CATEGORY = '__new__';
 
-interface SplitRow {
-  categoryId: string;
-  amount: string;
-}
+const MORTGAGE_LOCKED_HINT = 'Categorized by the mortgage breakdown below.';
+const MORTGAGE_TREATMENT_HINT =
+  "Mortgage payments can't carry a treatment — the breakdown above replaces it.";
 
-const emptySplitRows = (): SplitRow[] => [
-  { categoryId: '', amount: '' },
-  { categoryId: '', amount: '' },
-];
+// Defect 2: a detected-but-not-yet-confirmed mortgage payment has no
+// breakdown to correct here — `splits` are confirmed-only server-side, and
+// gating this modal's Save on an un-enterable breakdown would make the row
+// uneditable for even a plain description fix. The review queue is where its
+// principal/interest breakdown belongs; this modal stays open for ordinary
+// edits and points there instead of silently hiding the capability.
+const MORTGAGE_PENDING_HINT =
+  'This bank row matches your mortgage. Its principal/interest breakdown is entered when you confirm it — this modal can still fix its description or other ordinary details.';
 
-function parseCents(value: string): number {
-  const n = Number(value);
-  return value.trim() !== '' && !Number.isNaN(n) ? Math.round(n * 100) : 0;
-}
-
-export function TransactionEditModal({ open, onClose, transaction }: TransactionEditModalProps) {
+export function TransactionEditModal({
+  open,
+  onClose,
+  transaction,
+  canEdit = true,
+}: TransactionEditModalProps) {
   const update = useUpdateTransaction();
+  const clearMortgage = useUpdateTransaction();
   const properties = useProperties();
   const categories = useCategories();
   const createCategory = useCreateCategory();
@@ -76,6 +96,7 @@ export function TransactionEditModal({ open, onClose, transaction }: Transaction
     description?: string;
     category?: string;
     splits?: string;
+    breakdown?: string;
   }>({});
   const [splitMode, setSplitMode] = useState(false);
   const [splitRows, setSplitRows] = useState<SplitRow[]>(emptySplitRows);
@@ -83,11 +104,30 @@ export function TransactionEditModal({ open, onClose, transaction }: Transaction
   // splits off from that state must explicitly clear them (`splits: null`);
   // a row that was never split just omits the field, as before.
   const [initialHadSplits, setInitialHadSplits] = useState(false);
+  // Mortgage payment breakdown (PLAN-REAL-EQUITY §3/D4) — principal + the
+  // remainder split, replacing ordinary categorization for a row whose
+  // `mortgageId` is set. Reuses the same split-row shape as the ordinary
+  // splits above, via the shared MortgageBreakdownEditor.
+  const [breakdown, setBreakdown] = useState<MortgageBreakdownValue>(emptyMortgageBreakdown);
+  // Defect 3 escape hatch: a vendor-matched detection that turns out to be
+  // wrong (a lender fee, say) — once the nulling PATCH lands, this flips the
+  // row back to ordinary editing for the rest of the session without waiting
+  // on the parent's stale `transaction` prop to refetch.
+  const [mortgageCleared, setMortgageCleared] = useState(false);
 
   const rentLinked = transaction?.rentLinked ?? false;
-  // Backend rule: splits are confirmed-only, and rent-linked or classified
-  // (transfer/owner_contribution/refund) rows can't be split.
-  const canSplit = !rentLinked && classification === '' && transaction?.status === 'confirmed';
+  // Defect 2: only a CONFIRMED mortgage-flagged row gets the breakdown editor
+  // here — `splits` are confirmed-only server-side, so a pending row would be
+  // gated on a breakdown it can't legally save. See MORTGAGE_PENDING_HINT.
+  const isMortgagePayment =
+    Boolean(transaction?.mortgageId) && transaction?.status === 'confirmed' && !mortgageCleared;
+  const isPendingMortgageDetection =
+    Boolean(transaction?.mortgageId) && transaction?.status !== 'confirmed';
+  // Backend rule: splits are confirmed-only, and rent-linked, classified
+  // (transfer/owner_contribution/refund), or mortgage-flagged rows (which use
+  // the breakdown editor instead) can't use the ordinary split editor.
+  const canSplit =
+    !rentLinked && !isMortgagePayment && classification === '' && transaction?.status === 'confirmed';
 
   useEffect(() => {
     if (open && transaction) {
@@ -102,29 +142,59 @@ export function TransactionEditModal({ open, onClose, transaction }: Transaction
       setNewCategoryTarget(null);
       setNewCategoryName('');
       setErrors({});
+      setMortgageCleared(false);
       const existingSplits = transaction.splits ?? [];
-      setInitialHadSplits(existingSplits.length > 0);
-      setSplitMode(existingSplits.length > 0);
-      setSplitRows(
-        existingSplits.length > 0
-          ? existingSplits.map((s) => ({
-              categoryId: s.categoryId,
-              amount: (s.amountCents / 100).toFixed(2),
-            }))
-          : emptySplitRows(),
-      );
+      if (transaction.mortgageId) {
+        // The row's own splits ARE its remainder allocation — never the
+        // ordinary split editor's state, and never last-month's recall (this
+        // is the row's real, previously-saved data).
+        setInitialHadSplits(false);
+        setSplitMode(false);
+        setSplitRows(emptySplitRows());
+        const hasSplitRemainder = transaction.principalCents != null && existingSplits.length > 0;
+        setBreakdown({
+          principal: transaction.principalCents != null ? (transaction.principalCents / 100).toFixed(2) : '',
+          remainderCategoryId: hasSplitRemainder ? '' : (transaction.categoryId ?? ''),
+          splitMode: hasSplitRemainder,
+          splitRows: hasSplitRemainder
+            ? existingSplits.map((s) => ({
+                categoryId: s.categoryId,
+                amount: (s.amountCents / 100).toFixed(2),
+              }))
+            : emptySplitRows(),
+        });
+      } else {
+        setInitialHadSplits(existingSplits.length > 0);
+        setSplitMode(existingSplits.length > 0);
+        setSplitRows(
+          existingSplits.length > 0
+            ? existingSplits.map((s) => ({
+                categoryId: s.categoryId,
+                amount: (s.amountCents / 100).toFixed(2),
+              }))
+            : emptySplitRows(),
+        );
+        setBreakdown(emptyMortgageBreakdown());
+      }
     }
   }, [open, transaction]);
 
   const propertyDetail = usePropertyDetail(propertyId || undefined);
   const units = propertyDetail.data?.units ?? [];
+  // Surfaced only when already loaded (the units fetch above) — never a new
+  // request just for this hint.
+  const mortgageEscrowNote = propertyDetail.data?.mortgages.find(
+    (m) => m.id === transaction?.mortgageId,
+  )?.escrowNote;
   // A refund nets against an EXPENSE category, so the picker flips type.
   // Splits only ever apply to an ordinary row, so this is just the
   // transaction's own type while splitMode is active.
   const categoryType = classification === 'refund' ? 'expense' : transaction?.type;
   const categoryOptions = (categories.data ?? []).filter((c) => c.type === categoryType);
 
-  // Live allocation totals for the split editor.
+  // Live allocation totals for the split editor — and the same live amount
+  // (not the transaction's stale one) feeds the mortgage breakdown, so
+  // editing Amount keeps the breakdown's "remaining to allocate" honest.
   const totalCents = parseCents(amount);
   const allocatedCents = splitRows.reduce((sum, r) => sum + parseCents(r.amount), 0);
   const remainingCents = totalCents - allocatedCents;
@@ -205,8 +275,29 @@ export function TransactionEditModal({ open, onClose, transaction }: Transaction
     </div>
   );
 
-  const save = () => {
+  // Defect 3 escape hatch: a vendor match that isn't really the mortgage (a
+  // lender fee, say) would otherwise leave the row stuck in breakdown mode
+  // with no way to satisfy it. Nulls the stamped link server-side, then flips
+  // this session to ordinary editing so Category/Treatment unlock in place.
+  const clearMortgageLink = () => {
     if (!transaction) return;
+    clearMortgage.mutate(
+      { id: transaction.id, mortgageId: null, principalCents: null },
+      {
+        onSuccess: () => {
+          setMortgageCleared(true);
+          setBreakdown(emptyMortgageBreakdown());
+          setErrors((prev) => ({ ...prev, breakdown: undefined }));
+          toast("Won't be treated as a mortgage payment — edit it normally below.", 'positive');
+        },
+        onError: (err) =>
+          toast(err instanceof Error ? err.message : 'Could not clear the mortgage link.', 'danger'),
+      },
+    );
+  };
+
+  const save = () => {
+    if (!transaction || !canEdit) return;
     const amountNumber = Number(amount);
     const nextErrors: typeof errors = {};
     if (!amount || Number.isNaN(amountNumber) || amountNumber <= 0) {
@@ -215,7 +306,12 @@ export function TransactionEditModal({ open, onClose, transaction }: Transaction
     if (!description.trim()) {
       nextErrors.description = 'Enter a short description.';
     }
-    if (splitMode) {
+    if (isMortgagePayment) {
+      if (!isMortgageBreakdownValid(totalCents, breakdown)) {
+        nextErrors.breakdown =
+          'Finish the mortgage breakdown — enter Principal and categorize the rest until nothing remains.';
+      }
+    } else if (splitMode) {
       if (splitRows.length < 2 || !splitRowsComplete) {
         nextErrors.splits = 'Choose a category and enter an amount greater than zero for every split.';
       } else if (remainingCents !== 0) {
@@ -247,20 +343,24 @@ export function TransactionEditModal({ open, onClose, transaction }: Transaction
         unitId: unitId || undefined,
         // Splits ARE the categorization when active — the server rejects a
         // PATCH that sends both. Turning splits off from a previously split
-        // row sends `splits: null` to explicitly clear them.
-        ...(splitMode
-          ? {
-              splits: splitRows.map((r) => ({
-                categoryId: r.categoryId,
-                amountCents: parseCents(r.amount),
-              })),
-            }
-          : {
-              categoryId: categoryId || undefined,
-              ...(initialHadSplits ? { splits: null } : {}),
-            }),
+        // row sends `splits: null` to explicitly clear them. A mortgage
+        // payment's principal + remainder split replaces both paths.
+        ...(isMortgagePayment
+          ? mortgageBreakdownPayload(totalCents, breakdown)
+          : splitMode
+            ? {
+                splits: splitRows.map((r) => ({
+                  categoryId: r.categoryId,
+                  amountCents: parseCents(r.amount),
+                })),
+              }
+            : {
+                categoryId: categoryId || undefined,
+                ...(initialHadSplits ? { splits: null } : {}),
+              }),
         // Classification does support explicit clearing (null) — only send it
-        // when the user actually changed it.
+        // when the user actually changed it. Mortgage rows keep the select
+        // disabled, so this stays a no-op for them.
         ...(classification !== (transaction.classification ?? '')
           ? { classification: classification || null }
           : {}),
@@ -283,6 +383,14 @@ export function TransactionEditModal({ open, onClose, transaction }: Transaction
           <p className="rounded-md border border-border-strong bg-surface-sunken px-3 py-2 text-sm text-ink-muted">
             {RENT_LINKED_HINT}
           </p>
+        )}
+        {isPendingMortgageDetection && (
+          <div className="flex flex-col gap-2 rounded-md border border-border-strong bg-surface-sunken px-3 py-2 text-sm text-ink-muted">
+            <p>{MORTGAGE_PENDING_HINT}</p>
+            <Link to="/money/review" className={buttonClasses('secondary', 'sm')}>
+              Go to review queue →
+            </Link>
+          </div>
         )}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField
@@ -365,9 +473,11 @@ export function TransactionEditModal({ open, onClose, transaction }: Transaction
           hint={
             rentLinked
               ? RENT_LINKED_HINT
-              : splitMode
-                ? 'Categorized by the splits below.'
-                : undefined
+              : isMortgagePayment
+                ? MORTGAGE_LOCKED_HINT
+                : splitMode
+                  ? 'Categorized by the splits below.'
+                  : undefined
           }
         >
           <Select
@@ -380,7 +490,7 @@ export function TransactionEditModal({ open, onClose, transaction }: Transaction
                 setCategoryId(e.target.value);
               }
             }}
-            disabled={rentLinked || splitMode}
+            disabled={rentLinked || splitMode || isMortgagePayment}
           >
             <option value="">Keep current category</option>
             {categoryOptions.map((c) => (
@@ -391,7 +501,7 @@ export function TransactionEditModal({ open, onClose, transaction }: Transaction
             <option value={NEW_CATEGORY}>+ New category…</option>
           </Select>
         </FormField>
-        {newCategoryTarget === 'main' && !rentLinked && newCategoryPanel}
+        {newCategoryTarget === 'main' && !rentLinked && !isMortgagePayment && newCategoryPanel}
         {canSplit && (
           <div>
             <Button
@@ -477,20 +587,52 @@ export function TransactionEditModal({ open, onClose, transaction }: Transaction
             </div>
           </div>
         )}
+        {isMortgagePayment && transaction && (
+          <div className="flex flex-col gap-2">
+            {errors.breakdown && (
+              <p className="text-xs font-medium text-danger" role="alert">
+                {errors.breakdown}
+              </p>
+            )}
+            <MortgageBreakdownEditor
+              idPrefix={`edit-txn-mortgage-${transaction.id}`}
+              amountCents={totalCents}
+              mortgageId={transaction.mortgageId as string}
+              propertyId={propertyId || transaction.propertyId}
+              excludeTransactionId={transaction.id}
+              value={breakdown}
+              onChange={setBreakdown}
+              categoryOptions={categoryOptions}
+              escrowNote={mortgageEscrowNote}
+            />
+            <div>
+              <Button
+                variant="ghost"
+                size="sm"
+                busy={clearMortgage.isPending}
+                onClick={clearMortgageLink}
+              >
+                Not a mortgage payment
+              </Button>
+            </div>
+          </div>
+        )}
         <FormField
           label="Treatment"
           htmlFor="edit-txn-classification"
           hint={
             rentLinked
               ? RENT_LINKED_HINT
-              : splitMode
-                ? SPLIT_LOCKED_HINT
-                : 'Transfers and owner contributions leave P&L entirely; a refund nets against its expense category.'
+              : isMortgagePayment
+                ? MORTGAGE_TREATMENT_HINT
+                : splitMode
+                  ? SPLIT_LOCKED_HINT
+                  : 'Transfers and owner contributions leave P&L entirely; a refund nets against its expense category.'
           }
         >
           <Select
             value={classification}
-            disabled={rentLinked || splitMode}
+            disabled={rentLinked || splitMode || isMortgagePayment}
             onChange={(e) => setClassification(e.target.value as TransactionClassification | '')}
           >
             <option value="">Ordinary {transaction?.type === 'income' ? 'income' : 'expense'}</option>
@@ -510,13 +652,25 @@ export function TransactionEditModal({ open, onClose, transaction }: Transaction
             uploadTarget={{ entityType: 'transaction', entityId: transaction.id }}
           />
         )}
-        <div className="flex justify-end gap-2">
+        <div className="flex items-center justify-end gap-2">
+          {!canEdit && (
+            <p className="mr-auto text-sm text-ink-muted">
+              Saving needs the Money permission — ask an account owner.
+            </p>
+          )}
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
-          <Button busy={update.isPending} onClick={save}>
-            Save changes
-          </Button>
+          {canEdit && (
+            <Button
+              busy={update.isPending}
+              disabled={isMortgagePayment && !isMortgageBreakdownValid(totalCents, breakdown)}
+              aria-describedby={isMortgagePayment ? mortgageBreakdownStatusId(`edit-txn-mortgage-${transaction?.id}`) : undefined}
+              onClick={save}
+            >
+              Save changes
+            </Button>
+          )}
         </div>
       </div>
     </Modal>

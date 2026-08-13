@@ -5,8 +5,16 @@ import { z } from 'zod';
 export const TransactionTypeSchema = z.enum(['income', 'expense']);
 export type TransactionType = z.infer<typeof TransactionTypeSchema>;
 
-export const TransactionSourceSchema = z.enum(['manual', 'receipt', 'bank']);
+// 'recurring' = drafted by the scheduler from a RecurringTemplate. Additive:
+// it lands in the review queue like any other unconfirmed row and is never
+// auto-confirmed.
+export const TransactionSourceSchema = z.enum(['manual', 'receipt', 'bank', 'recurring']);
 export type TransactionSource = z.infer<typeof TransactionSourceSchema>;
+
+// How often a RecurringTemplate comes due. Insurance is often annual and HOA
+// dues quarterly, so monthly alone would not cover the real cases.
+export const RecurrenceCadenceSchema = z.enum(['monthly', 'quarterly', 'annual']);
+export type RecurrenceCadence = z.infer<typeof RecurrenceCadenceSchema>;
 
 // 'dismissed' = denied from the review queue: kept (so bank-import dedup by
 // externalId still holds) but excluded from reports/dashboards, which only

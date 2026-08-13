@@ -62,7 +62,7 @@ import {
   materializeExpectedPayments,
   pickRentMatch,
 } from './rent.service';
-import { matchContractorId, vendorMemoryKey } from './vendor';
+import { matchContractorId, vendorKey, vendorMemoryKey } from './vendor';
 
 /** Every producer of an API transaction reads the split lines with it, so
  *  `splits` is never guessed at (empty array = an unsplit row). */
@@ -89,6 +89,13 @@ export function toApiTransaction(t: DbTransactionWithSplits): Transaction {
     aiSuggestedCategoryId: t.aiSuggestedCategoryId,
     aiConfidence: t.aiConfidence,
     receiptUrl: t.receiptUrl,
+    mortgageId: t.mortgageId,
+    principalCents: t.principalCents,
+    // Provenance for a scheduler-drafted row. The review queue reads this to
+    // badge it "Auto-drafted" and to word the duplicate warning correctly, so
+    // it has to survive the mapping — the field is optional in the schema, so
+    // omitting it parses fine and simply makes the badge never appear.
+    recurringTemplateId: t.recurringTemplateId,
     createdAt: iso(t.createdAt),
     updatedAt: iso(t.updatedAt),
     splits: t.splits.map((s) => ({
@@ -393,6 +400,104 @@ function assertClassificationValid(
   }
 }
 
+// ── mortgage-payment breakdown (PLAN-REAL-EQUITY §3) ─────────────────────────
+// A mortgage payment is ONE ledger row per bank debit with an integer
+// `principalCents` carve-out: the principal repays a liability (it buys
+// nothing), so `lib/pnl.ts` subtracts it from the row's contribution and the
+// mortgage's derived balance drops by it. Every figure here is the user's —
+// decision D4 (2026-08-10) rejected computing the principal/interest split from
+// the rate and balance outright, so nothing in this file derives, infers or
+// defaults a principal amount.
+
+/**
+ * Validate a row's FINAL breakdown state (§3). Enforced in the service rather
+ * than the route schema on purpose: chat and MCP compose their own input shapes
+ * off the shared Create/Update schemas, so a route-only guard is bypassable —
+ * and a bogus carve-out silently understates expenses everywhere.
+ */
+async function assertMortgageBreakdownValid(
+  accountId: string,
+  final: {
+    mortgageId: string | null;
+    principalCents: number | null;
+    type: string;
+    amountCents: number;
+    classification: string | null;
+  },
+): Promise<void> {
+  if (final.mortgageId) {
+    // A foreign (or invented) id must not attach: it would decrement another
+    // account's loan balance and pull this payment into their equity.
+    const mortgage = await prisma.mortgage.findFirst({
+      where: { id: final.mortgageId, accountId },
+      select: { id: true },
+    });
+    if (!mortgage) throw new NotFoundError('mortgage', final.mortgageId);
+  }
+  if (final.principalCents == null) return;
+  if (!final.mortgageId) {
+    throw new BadRequestError(
+      'a principal amount needs the mortgageId of the loan it repays — principal is only meaningful against a mortgage',
+    );
+  }
+  if (final.type !== 'expense') {
+    throw new BadRequestError('only an expense transaction can carry a mortgage principal portion');
+  }
+  // A principal-bearing row is neither transfer nor refund: classification is
+  // all-or-nothing per row, while a real payment is *partly* deductible.
+  if (final.classification) {
+    throw new BadRequestError(
+      `a mortgage payment with a principal portion can't also be classified as a ${final.classification.replace('_', ' ')}`,
+    );
+  }
+  // Equal is legal: a principal-only payment contributes $0 to P&L and still
+  // decrements the mortgage.
+  if (final.principalCents < 0 || final.principalCents > final.amountCents) {
+    throw new BadRequestError(
+      `the principal portion must be between $0 and the payment itself — ${formatUsd(final.principalCents)} principal against a ${formatUsd(final.amountCents)} payment`,
+    );
+  }
+}
+
+/**
+ * The mortgage a payment's vendor names: exactly one NON-ARCHIVED mortgage
+ * whose lender shares the vendorKey — zero or several match nothing, mirroring
+ * `matchContractorId` (ambiguity suppresses rather than guesses).
+ *
+ * Detection is deliberately inert: it only says "this looks like a mortgage
+ * payment" so the UI can *offer* the breakdown editor. It never sets
+ * `principalCents`, never touches categorization, and therefore never changes
+ * what the row contributes to any money aggregate (per D4 the numbers are
+ * always the user's).
+ */
+async function matchMortgageId(
+  accountId: string,
+  vendor: string | null | undefined,
+): Promise<string | null> {
+  if (!vendor) return null;
+  const key = vendorKey(vendor);
+  const mortgages = await prisma.mortgage.findMany({
+    where: { accountId, archivedAt: null },
+    select: { id: true, lender: true },
+  });
+  const matches = mortgages.filter((m) => vendorKey(m.lender) === key);
+  return matches.length === 1 ? matches[0]!.id : null;
+}
+
+/**
+ * The account's seeded "Mortgage Interest" expense category, scoped like
+ * `suggestCategory` so another account's custom one can never be picked. Null
+ * when the account has none — the caller then leaves the row uncategorized
+ * rather than inventing a category behind the user's back.
+ */
+async function mortgageInterestCategoryId(accountId: string): Promise<string | null> {
+  const category = await prisma.category.findFirst({
+    where: { name: 'Mortgage Interest', type: 'expense', OR: [{ isSystem: true }, { accountId }] },
+    orderBy: { isSystem: 'desc' },
+  });
+  return category?.id ?? null;
+}
+
 export async function create(
   accountId: string,
   input: CreateTransactionInput,
@@ -407,6 +512,18 @@ export async function create(
 ): Promise<CreateTransactionResponse> {
   await assertAttributionOwned(accountId, input.propertyId, input.unitId);
   assertClassificationValid(input.classification, input.type);
+  await assertMortgageBreakdownValid(accountId, {
+    mortgageId: input.mortgageId ?? null,
+    principalCents: input.principalCents ?? null,
+    type: input.type,
+    amountCents: input.amountCents,
+    classification: input.classification ?? null,
+  });
+  // An explicit mortgageId (the user's, or a recurring template's) always wins;
+  // the vendor match only fills the gap, and only on expense rows.
+  const mortgageId =
+    input.mortgageId ??
+    (input.type === 'expense' ? await matchMortgageId(accountId, input.vendor) : null);
   let aiSuggestedCategoryId: string | null = null;
   let aiConfidence: number | null = null;
   if (!input.categoryId) {
@@ -438,6 +555,8 @@ export async function create(
       aiSuggestedCategoryId,
       aiConfidence,
       receiptUrl: input.receiptUrl ?? null,
+      mortgageId,
+      principalCents: input.principalCents ?? null,
     },
     include: withSplits,
   });
@@ -446,7 +565,16 @@ export async function create(
     action: 'transaction.created',
     entityType: 'transaction',
     entityId: row.id,
-    detail: { amountCents: row.amountCents, type: row.type, source: row.source },
+    detail: {
+      amountCents: row.amountCents,
+      type: row.type,
+      source: row.source,
+      // The carve-out is money the books won't see as an expense — record it.
+      // A bare mortgageId (detection) changes no figure, so it stays out.
+      ...(row.principalCents != null
+        ? { principalCents: row.principalCents, mortgageId: row.mortgageId }
+        : {}),
+    },
   });
   // Manually logged rent otherwise never reaches the tracker (rent matching
   // only ran on the pending_review queue): the unit stays "due" and a later
@@ -520,6 +648,29 @@ export async function update(
       );
     }
   }
+  // A principal carve-out and a rent link are mutually exclusive (§3): rent is
+  // a tenant's money coming in, never a debt payment going out. Checked before
+  // the expense-only rule so the error names the actual conflict.
+  if (input.principalCents != null) {
+    const period = await rentLinkPeriod(id);
+    if (period) {
+      throw new BadRequestError(
+        `this transaction backs the recorded rent payment for ${period} — it can't also carry a mortgage principal portion; unlink the deposit on the Rent page first`,
+      );
+    }
+  }
+  // The row's FINAL breakdown state: a patch may move the amount alone, which
+  // has to revalidate against the principal already stored (an edit down to
+  // less than the carve-out would otherwise leave negative expense).
+  await assertMortgageBreakdownValid(accountId, {
+    mortgageId: (input.mortgageId !== undefined ? input.mortgageId : prior.mortgageId) ?? null,
+    principalCents:
+      (input.principalCents !== undefined ? input.principalCents : prior.principalCents) ?? null,
+    type: input.type !== undefined ? input.type : prior.type,
+    amountCents: input.amountCents !== undefined ? input.amountCents : prior.amountCents,
+    classification:
+      input.classification !== undefined ? input.classification : prior.classification,
+  });
   const splitPlan = await planSplits(accountId, prior, input);
   // Editing the vendor re-derives the contractor link (vendor is the signal:
   // moving the row to another contractor's name moves the job; a non-matching
@@ -544,6 +695,10 @@ export async function update(
         ...relink,
         ...(input.receiptUrl !== undefined ? { receiptUrl: input.receiptUrl } : {}),
         ...(input.classification !== undefined ? { classification: input.classification } : {}),
+        // Correcting a payment's breakdown after the fact (the ledger's edit
+        // modal reopens the same editor the confirm card uses).
+        ...(input.mortgageId !== undefined ? { mortgageId: input.mortgageId } : {}),
+        ...(input.principalCents !== undefined ? { principalCents: input.principalCents } : {}),
         // Splits ARE the categorization: the parent's single category goes.
         ...(splitPlan.action === 'replace' ? { categoryId: null } : {}),
       },
@@ -580,6 +735,15 @@ export async function update(
       priorCategoryId: prior.categoryId,
       amountCents: row.amountCents,
       categoryId: row.categoryId,
+      // Correcting a payment's principal moves what the books count as expense,
+      // so the before/after pair belongs in the trail.
+      ...(input.principalCents !== undefined || input.mortgageId !== undefined
+        ? {
+            priorPrincipalCents: prior.principalCents,
+            principalCents: row.principalCents,
+            mortgageId: row.mortgageId,
+          }
+        : {}),
       ...(splitPlan.action === 'none'
         ? {}
         : {
@@ -645,29 +809,12 @@ async function planSplits(
         'confirm the transaction before splitting it across categories',
       );
     }
-    const type = input.type ?? prior.type;
-    const amountCents = input.amountCents ?? prior.amountCents;
-    const categoryIds = [...new Set(input.splits.map((s) => s.categoryId))];
-    const categories = await prisma.category.findMany({
-      where: { id: { in: categoryIds }, OR: [{ isSystem: true }, { accountId }] },
-      select: { id: true, type: true },
+    await assertSplitLinesValid(accountId, input.splits, {
+      type: input.type ?? prior.type,
+      amountCents: input.amountCents ?? prior.amountCents,
+      principalCents:
+        (input.principalCents !== undefined ? input.principalCents : prior.principalCents) ?? 0,
     });
-    const byId = new Map(categories.map((c) => [c.id, c]));
-    for (const categoryId of categoryIds) {
-      const category = byId.get(categoryId);
-      if (!category) throw new NotFoundError('category', categoryId);
-      if (category.type !== type) {
-        throw new BadRequestError(
-          `every split category must be an ${type} category — ${categoryId} is not`,
-        );
-      }
-    }
-    const sumCents = input.splits.reduce((sum, s) => sum + s.amountCents, 0);
-    if (sumCents !== amountCents) {
-      throw new BadRequestError(
-        `splits must add up to the transaction amount — ${formatUsd(sumCents)} split against ${formatUsd(amountCents)}`,
-      );
-    }
     return { action: 'replace', lines: input.splits };
   }
   if (input.splits === null) return hasPriorSplits ? { action: 'clear' } : { action: 'none' };
@@ -680,6 +827,13 @@ async function planSplits(
       "this transaction is split across categories — send the new splits in the same update (or splits: null to clear them) when you change its amount",
     );
   }
+  // Moving the principal carve-out moves the money the lines describe just as
+  // an amount edit does (§3): the remainder is what they sum to.
+  if (input.principalCents !== undefined && input.principalCents !== prior.principalCents) {
+    throw new BadRequestError(
+      "this transaction is split across categories — send the new splits in the same update (or splits: null to clear them) when you change its principal portion",
+    );
+  }
   if (input.type !== undefined && input.type !== prior.type) {
     throw new BadRequestError(
       "this transaction is split across categories — send the new splits in the same update (or splits: null to clear them) when you change its type",
@@ -688,6 +842,46 @@ async function planSplits(
   // A new single category supersedes the split (same intent as picking one
   // category in the UI).
   return input.categoryId != null ? { action: 'clear' } : { action: 'none' };
+}
+
+/**
+ * Category and sum invariants for a set of split lines, shared by PATCH and
+ * confirm. The lines describe the row's *categorizable* money — its amount less
+ * any mortgage-principal carve-out (§3) — because principal repays a liability
+ * and belongs to no category; requiring the lines to sum to the gross debit
+ * would make a real mortgage payment unsplittable.
+ */
+async function assertSplitLinesValid(
+  accountId: string,
+  lines: Array<{ categoryId: string; amountCents: number }>,
+  row: { type: string; amountCents: number; principalCents: number },
+): Promise<void> {
+  const categoryIds = [...new Set(lines.map((s) => s.categoryId))];
+  const categories = await prisma.category.findMany({
+    where: { id: { in: categoryIds }, OR: [{ isSystem: true }, { accountId }] },
+    select: { id: true, type: true },
+  });
+  const byId = new Map(categories.map((c) => [c.id, c]));
+  for (const categoryId of categoryIds) {
+    const category = byId.get(categoryId);
+    if (!category) throw new NotFoundError('category', categoryId);
+    if (category.type !== row.type) {
+      throw new BadRequestError(
+        `every split category must be an ${row.type} category — ${categoryId} is not`,
+      );
+    }
+  }
+  const targetCents = row.amountCents - row.principalCents;
+  const sumCents = lines.reduce((sum, s) => sum + s.amountCents, 0);
+  if (sumCents === targetCents) return;
+  // With a carve-out the mismatch is almost never arithmetic — it's the
+  // principal the user forgot to leave out, so the message shows the
+  // subtraction rather than a bare pair of totals.
+  throw new BadRequestError(
+    row.principalCents > 0
+      ? `splits must add up to the transaction amount after its mortgage principal — ${formatUsd(sumCents)} split against ${formatUsd(targetCents)} (${formatUsd(row.amountCents)} paid less ${formatUsd(row.principalCents)} principal)`
+      : `splits must add up to the transaction amount — ${formatUsd(sumCents)} split against ${formatUsd(row.amountCents)}`,
+  );
 }
 
 /**
@@ -902,6 +1096,17 @@ const DUPLICATE_WINDOW_DAYS = 3;
  * are precisely the cross-source cases). Never auto-merged: the flag renders
  * as a warning with a dismiss-as-duplicate path, and bulk confirm skips it.
  * Computed fresh per queue load, like rent matches.
+ *
+ * One narrow extension for recurring templates (PLAN-REAL-EQUITY Phase 2b item
+ * 6): a bank-connected landlord with a mortgage template gets TWO rows for one
+ * payment — the one we drafted and the one the bank delivered — and both are
+ * `pending_review`, so under the confirmed-only rule neither is ever a
+ * candidate for the other and the queue invites a double-count. A
+ * template-drafted row therefore also acts as a candidate, and the pair is
+ * matched in both directions. The widening is bounded by ONE condition
+ * everywhere below: **exactly one side is template-drafted**. Two ordinary
+ * pending rows at the same amount (two $50 invoices paid the same afternoon)
+ * stay unflagged, as they always have.
  */
 async function computeDuplicates(
   accountId: string,
@@ -910,10 +1115,19 @@ async function computeDuplicates(
   const matches = new Map<string, DuplicateSuggestion>();
   if (rows.length === 0) return matches;
   const times = rows.map((r) => r.date.getTime());
+  // Ordinary pending rows are pulled in only when a drafted row is actually on
+  // this page and needs something to match against; otherwise the pending half
+  // of the candidate set is just the drafted rows themselves.
+  const anyDrafted = rows.some((r) => r.recurringTemplateId != null);
   const candidates = await prisma.transaction.findMany({
     where: {
       accountId,
-      status: 'confirmed',
+      OR: [
+        { status: 'confirmed' },
+        anyDrafted
+          ? { status: 'pending_review' }
+          : { status: 'pending_review', recurringTemplateId: { not: null } },
+      ],
       amountCents: { in: [...new Set(rows.map((r) => r.amountCents))] },
       date: {
         gte: addDays(new Date(Math.min(...times)), -DUPLICATE_WINDOW_DAYS),
@@ -934,6 +1148,19 @@ async function computeDuplicates(
       // day-distance heuristic, not a period/late boundary — a tz wobble is
       // immaterial against a 3-day tolerance.
       if (Math.abs(calendarDaysBetween(c.date, r.date)) > DUPLICATE_WINDOW_DAYS) return false;
+      // The template-draft pairing: one side drafted from a template, the other
+      // not. Both halves of the extension hang off it.
+      const acrossDraft = (c.recurringTemplateId != null) !== (r.recurringTemplateId != null);
+      // A pending candidate only counts across a draft — never two ordinary
+      // pending rows, which would flood every existing queue with false
+      // positives.
+      if (c.status !== 'confirmed' && !acrossDraft) return false;
+      // Vendors legitimately disagree across a draft: the template carries what
+      // the landlord typed ("First Federal Bank") and the feed carries the
+      // bank's descriptor ("FIRST FEDERAL BANK MTG PMT 0923"). Letting that
+      // disagreement hide the match is exactly how the double-count gets
+      // through, so the vendor rule doesn't apply to this pairing.
+      if (acrossDraft) return true;
       const cKey = c.vendor ? vendorMemoryKey(c.vendor) : null;
       return !rKey || !cKey || rKey === cKey;
     });
@@ -958,6 +1185,14 @@ export async function confirm(
 ): Promise<Transaction> {
   const existing = await getOwned(accountId, id);
   if (input.rentPaymentId) {
+    // A rent deposit is a tenant's money coming in; a mortgage payment is money
+    // going out against a loan. Rejected rather than silently ignored — the
+    // breakdown figures are the user's typed input (§3).
+    if (input.mortgageId || input.principalCents != null) {
+      throw new BadRequestError(
+        "a transaction backing a rent payment can't also carry a mortgage principal portion",
+      );
+    }
     // Attribution comes from the lease itself on this path; a rent deposit is
     // ordinary income by definition, so any classification input is ignored.
     return confirmWithRentLink(
@@ -982,15 +1217,75 @@ export async function confirm(
       input.unitId !== undefined ? input.unitId : existing.unitId,
     );
   }
+  // Review time is when a mortgage payment gets its breakdown (§3). An explicit
+  // mortgageId — the user's, or one a recurring template stamped — always wins;
+  // the vendor↔lender match only fills a gap, and only to make the UI offer the
+  // editor. It never supplies a number: `principalCents` is whatever the user
+  // entered, and stays null when they entered nothing (D4).
+  const mortgageId =
+    input.mortgageId ??
+    existing.mortgageId ??
+    (existing.type === 'expense' ? await matchMortgageId(accountId, existing.vendor) : null);
+  const principalCents = input.principalCents ?? existing.principalCents ?? null;
+  await assertMortgageBreakdownValid(accountId, {
+    mortgageId,
+    principalCents,
+    type: existing.type,
+    amountCents: existing.amountCents,
+    classification:
+      input.classification !== undefined ? input.classification : existing.classification,
+  });
   // A split row is already categorized (by its lines): an explicit category
   // supersedes the split exactly like it does on PATCH, and with no explicit
-  // category the suggestion is not applied over it.
-  const hasSplits = existing.splits.length > 0;
-  const clearsSplits = hasSplits && !!input.categoryId;
-  const usedSuggestion = !input.categoryId && !hasSplits && !!existing.aiSuggestedCategoryId;
+  // category the suggestion is not applied over it. New lines sent with the
+  // confirm (the mortgage remainder across interest/taxes/insurance) replace
+  // whatever was there.
+  const newSplits = input.splits ?? null;
+  if (newSplits) {
+    if (input.categoryId) {
+      throw new BadRequestError(
+        'a transaction has either one category or split lines, not both — omit categoryId when sending splits',
+      );
+    }
+    const classification =
+      input.classification !== undefined ? input.classification : existing.classification;
+    if (classification) {
+      throw new BadRequestError(
+        `a ${classification.replace('_', ' ')} transaction can't be split across categories`,
+      );
+    }
+    await assertSplitLinesValid(accountId, newSplits, {
+      type: existing.type,
+      amountCents: existing.amountCents,
+      principalCents: principalCents ?? 0,
+    });
+  }
+  const hasSplits = existing.splits.length > 0 || !!newSplits;
+  const clearsSplits = existing.splits.length > 0 && (!!input.categoryId || !!newSplits);
+  // The remainder of a mortgage payment is interest, so a principal-bearing row
+  // confirmed with neither a category nor splits lands on the seeded "Mortgage
+  // Interest" category (Schedule E Line 12) instead of whatever the keyword
+  // table guessed from the vendor. Nothing is created if the account has no such
+  // category — uncategorized beats invented. A principal-only payment has no
+  // remainder to categorize.
+  const mortgageRemainderCategoryId =
+    principalCents != null &&
+    existing.amountCents - principalCents > 0 &&
+    !input.categoryId &&
+    !hasSplits
+      ? await mortgageInterestCategoryId(accountId)
+      : null;
+  const usedSuggestion =
+    !input.categoryId &&
+    !hasSplits &&
+    !mortgageRemainderCategoryId &&
+    !!existing.aiSuggestedCategoryId;
   const categoryId = hasSplits
     ? (input.categoryId ?? null)
-    : (input.categoryId ?? existing.aiSuggestedCategoryId ?? existing.categoryId);
+    : (input.categoryId ??
+      mortgageRemainderCategoryId ??
+      existing.aiSuggestedCategoryId ??
+      existing.categoryId);
   const row = await prisma.$transaction(async (tx) => {
     const updated = await tx.transaction.update({
       where: { id },
@@ -1000,11 +1295,22 @@ export async function confirm(
         ...(input.propertyId !== undefined ? { propertyId: input.propertyId } : {}),
         ...(input.unitId !== undefined ? { unitId: input.unitId } : {}),
         ...(input.classification !== undefined ? { classification: input.classification } : {}),
+        mortgageId,
+        principalCents,
       },
       include: withSplits,
     });
-    if (!clearsSplits) return updated;
+    if (!clearsSplits && !newSplits) return updated;
     await tx.transactionSplit.deleteMany({ where: { transactionId: id } });
+    if (newSplits) {
+      await tx.transactionSplit.createMany({
+        data: newSplits.map((s) => ({
+          transactionId: id,
+          categoryId: s.categoryId,
+          amountCents: s.amountCents,
+        })),
+      });
+    }
     return tx.transaction.findUniqueOrThrow({ where: { id }, include: withSplits });
   });
   // Learning signal (plan §A5): an explicit category that disagrees with the
@@ -1034,7 +1340,19 @@ export async function confirm(
     action: 'transaction.confirmed',
     entityType: 'transaction',
     entityId: id,
-    detail: { categoryId, propertyId: row.propertyId, unitId: row.unitId },
+    detail: {
+      categoryId,
+      propertyId: row.propertyId,
+      unitId: row.unitId,
+      // The carve-out is money the books stop seeing as an expense — record it.
+      // A bare mortgageId (detection) moves no figure, so it stays out.
+      ...(row.principalCents != null
+        ? { principalCents: row.principalCents, mortgageId: row.mortgageId }
+        : {}),
+      ...(newSplits
+        ? { splits: row.splits.map((s) => ({ categoryId: s.categoryId, amountCents: s.amountCents })) }
+        : {}),
+    },
   });
   return toApiTransaction(row);
 }
@@ -1407,6 +1725,13 @@ async function createBankTransaction(
         description: t.description,
         vendor: t.vendor,
         contractorId: await matchContractorId(accountId, t.vendor),
+        // Stamped at IMPORT, not just at confirm: the review-queue card decides
+        // whether to offer the principal/interest/escrow breakdown from this
+        // field, and a mortgage payment arrives here as a bank row — detecting
+        // it only at confirm would mean the breakdown is never offered where
+        // it's actually needed. Inert: it sets no amount and changes no
+        // categorization, and balance derivation counts confirmed rows only.
+        mortgageId: t.type === 'expense' ? await matchMortgageId(accountId, t.vendor) : null,
         externalId: t.externalId,
         source: 'bank',
         status: 'pending_review',
@@ -1497,6 +1822,27 @@ async function applySyncBatch(
         description: t.description,
         vendor: t.vendor,
         contractorId: await matchContractorId(accountId, t.vendor),
+        // Keep an existing link rather than re-deriving it: a user who already
+        // entered a breakdown has `principalCents` depending on `mortgageId`,
+        // and a lender rename (or a second mortgage making the name ambiguous)
+        // would otherwise null the link out from under it.
+        mortgageId:
+          existing.mortgageId ??
+          (t.type === 'expense' ? await matchMortgageId(accountId, t.vendor) : null),
+        // This path rewrites amount and type behind the breakdown validator, so
+        // it has to keep the invariant itself. A restatement the stored
+        // principal no longer fits (the bank says $2,200 against an $800/$2,400
+        // breakdown, or flips the row to income) would otherwise persist an
+        // impossible row that `confirm` then rejects forever — and one such row
+        // fails the whole bulk confirm, since it has no per-row isolation.
+        // The user's own figures no longer describe this payment, so drop them
+        // and let them re-enter against the amount that actually cleared.
+        principalCents:
+          existing.principalCents !== null &&
+          t.type === 'expense' &&
+          existing.principalCents <= t.amountCents
+            ? existing.principalCents
+            : null,
         aiSuggestedCategoryId: suggestion?.categoryId ?? null,
         aiConfidence: suggestion?.confidence ?? null,
       },

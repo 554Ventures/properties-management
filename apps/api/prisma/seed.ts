@@ -19,6 +19,7 @@ import {
 } from '../src/lib/dates';
 import { renderTextPdf } from '../src/lib/pdf';
 import { prisma } from '../src/lib/prisma';
+import { occurrenceOnOrBefore } from '../src/lib/recurrence';
 import { slugify } from '../src/lib/strings';
 import * as contractorService from '../src/services/contractor.service';
 import { sanitizeFilename } from '../src/services/document.service';
@@ -42,6 +43,9 @@ import {
   EXPENSES_MTD_CENTS,
   MAPLE_MORTGAGE_BALANCE_CENTS,
   MAPLE_MORTGAGE_LENDER,
+  MAPLE_MORTGAGE_PAYMENT_CENTS,
+  MAPLE_MORTGAGE_PAYMENT_DAY,
+  MAPLE_MORTGAGE_PRINCIPAL_CENTS,
   MAPLE_VALUATION_CENTS,
   OKAFOR_DAYS_LATE,
   PARK_DAYS_LATE,
@@ -218,7 +222,7 @@ async function main(): Promise<void> {
   const maplePropertyId = propertyIdByKey.get(mapleSpec.key);
   if (!maplePropertyId) throw new Error('seed: Maple property missing for the equity fixture');
   const equityAsOf = monthStartInTz(addMonthsToPeriod(period, -6), DEMO_TIMEZONE);
-  await prisma.mortgage.create({
+  const mapleMortgage = await prisma.mortgage.create({
     data: {
       accountId: account.id,
       propertyId: maplePropertyId,
@@ -238,6 +242,48 @@ async function main(): Promise<void> {
       asOfDate: equityAsOf,
       source: 'owner_estimate',
       notes: 'Owner estimate based on nearby sales.',
+    },
+  });
+
+  // ── the Maple mortgage payment as a standing instruction (Phase 2b).
+  // Written straight to the DB rather than through recurring.service: `create`
+  // drafts the occurrence that is already due (decision D2), and that row would
+  // land in the review queue and move REVIEW_QUEUE_ITEMS + the pending-review
+  // insight, both pinned. So `lastDraftedOccurrence` is stamped here at the
+  // occurrence due right now — the nightly sweep, and any test that runs it,
+  // has nothing to draft until next month's 5th. No Transaction is created: the
+  // template is an expectation, and the money KPIs stay exactly where they are.
+  //
+  // The anchor is built the way the service persists one — local midnight of
+  // the chosen day in the account's timezone — so the demo template means "the
+  // 5th" on the landlord's calendar, not 05:00 the night before somewhere else.
+  const anchorMonth = wallClockParts(DEMO_TIMEZONE, equityAsOf);
+  const paymentAnchor = localMidnightUtc(
+    anchorMonth.year,
+    anchorMonth.month,
+    MAPLE_MORTGAGE_PAYMENT_DAY,
+    DEMO_TIMEZONE,
+  );
+  const stampedOccurrence = occurrenceOnOrBefore(paymentAnchor, 'monthly', now, DEMO_TIMEZONE);
+  if (!stampedOccurrence) {
+    throw new Error('seed: the mortgage payment template has no due occurrence to stamp');
+  }
+  await prisma.recurringTemplate.create({
+    data: {
+      accountId: account.id,
+      description: `Mortgage payment — ${mapleSpec.addressLine1}`,
+      vendor: MAPLE_MORTGAGE_LENDER,
+      propertyId: maplePropertyId,
+      categoryId: categoryId('Mortgage Interest'),
+      type: 'expense',
+      amountCents: MAPLE_MORTGAGE_PAYMENT_CENTS,
+      cadence: 'monthly',
+      anchorDate: paymentAnchor,
+      // The breakdown the landlord entered once, stamped onto every row this
+      // template drafts (§3): $660 principal, $3,200 interest.
+      mortgageId: mapleMortgage.id,
+      principalCents: MAPLE_MORTGAGE_PRINCIPAL_CENTS,
+      lastDraftedOccurrence: stampedOccurrence,
     },
   });
 
@@ -518,6 +564,16 @@ async function main(): Promise<void> {
     MAPLE_MORTGAGE_BALANCE_CENTS,
     'Maple mortgage current balance',
   );
+  // The standing instruction must have drafted NOTHING (it is stamped at the
+  // occurrence due now): the review queue is still exactly REVIEW_QUEUE_ITEMS,
+  // which the pending-review insight below counts on.
+  assertEq(
+    await prisma.transaction.count({
+      where: { accountId: account.id, status: 'pending_review' },
+    }),
+    REVIEW_QUEUE_ITEMS.length,
+    'pending review rows',
+  );
   const mapleValuation = await valuationService.latestForProperty(account.id, maplePropertyId);
   assertEq(mapleValuation?.valueCents ?? -1, MAPLE_VALUATION_CENTS, 'Maple latest valuation');
   assertEq(
@@ -562,7 +618,7 @@ async function main(): Promise<void> {
   console.log(
     `Seeded demo account ${DEMO_EMAIL}: ${SEED_PROPERTIES.length} properties, ${TOTAL_UNITS} units, ` +
       `period ${period} (Okafor ${OKAFOR_DAYS_LATE}d late, Park ${PARK_DAYS_LATE}d late), 4 insights, 1 monthly review, ` +
-      `1 mortgage + 1 valuation on ${mapleSpec.addressLine1}.`,
+      `1 mortgage + 1 valuation + 1 recurring payment template (stamped ${stampedOccurrence}) on ${mapleSpec.addressLine1}.`,
   );
 }
 

@@ -535,6 +535,32 @@ async function buildBalanceSheet(accountId: string, range: { from: Date; to: Dat
   // One query each — never a per-property lookup in a loop.
   const valuationByProperty = await valuationService.latestByProperty(accountId, asOf);
   const mortgages = await mortgageService.listForAccount(accountId, asOf);
+  // Principal the LIABILITY SIDE actually credited during this period, taken
+  // as the difference between the same derivation at both ends. Two reasons to
+  // do it this way rather than summing `principalCents` over the period:
+  //
+  // 1. It is scoped to the mortgages that actually appear as liability rows.
+  //    A raw sum also picks up principal paid on an ARCHIVED mortgage, whose
+  //    liability row `listForAccount` (correctly) omits — netting it out of
+  //    cash with nothing on the other side understates equity by that amount.
+  // 2. It cannot drift from the derivation, because it *is* the derivation.
+  //
+  // Checkpoint placement is provably irrelevant here: `deriveMortgageBalance`
+  // adds principal back for a date before `balanceAsOfDate`, so the opening
+  // balance is correspondingly higher and the delta collapses to the principal
+  // dated inside the period for every placement (before, during, after).
+  const openingBalances = new Map(
+    (await mortgageService.listForAccount(accountId, new Date(range.from.getTime() - 1))).map(
+      (m) => [m.id, m.currentBalanceCents],
+    ),
+  );
+  const principalCreditedCents = mortgages.reduce((sum, m) => {
+    const opening = openingBalances.get(m.id);
+    if (opening === undefined) return sum;
+    // max(0, …) because reporting a range that ends before the checkpoint adds
+    // principal back; that is not a credit to net out.
+    return sum + Math.max(0, opening - m.currentBalanceCents);
+  }, 0);
 
   const labelById = new Map(properties.map((p) => [p.id, p.nickname ?? p.addressLine1]));
   const assetRows = [
@@ -547,7 +573,17 @@ async function buildBalanceSheet(accountId: string, range: { from: Date; to: Dat
         ? { item: `${label} (market value, owner-provided)`, amountCents: valuation.valueCents }
         : { item: `${label} (at cost)`, amountCents: p.acquisitionCostCents ?? 0 };
     }),
-    { item: 'Operating cash (period net)', amountCents: pnl.totals.netCents },
+    // P&L net deliberately excludes the principal slice of a mortgage payment
+    // (it repays a liability, it isn't spend) — but that money did leave the
+    // bank. Since the liability lines below drop by that principal, leaving it
+    // out of the cash figure would credit the repayment twice and overstate
+    // equity by the amount repaid. Netting out exactly what the liability side
+    // credited keeps the identity honest: a $2,400 payment split $800/$1,600
+    // moves equity by $1,600 — the deductible part, which is the whole point.
+    {
+      item: 'Operating cash (period net, after mortgage principal)',
+      amountCents: pnl.totals.netCents - principalCreditedCents,
+    },
   ];
   const liabilityRows: LiabilityLine[] = mortgages.map((m) => ({
     item: `${labelById.get(m.propertyId) ?? 'Unassigned property'} — ${m.lender} mortgage`,
@@ -733,7 +769,7 @@ async function buildMonthlyReview(accountId: string, period: string, tz: string)
   const grouped = await prisma.transaction.groupBy({
     by: ['propertyId', 'type', 'classification'],
     where: confirmedWhere(accountId, range),
-    _sum: { amountCents: true },
+    _sum: { amountCents: true, principalCents: true },
   });
   const netByProperty = new Map<string, number>();
   // Portfolio-level (property-less) lines used to be dropped here, so the
@@ -742,7 +778,11 @@ async function buildMonthlyReview(accountId: string, period: string, tz: string)
   // uses (buildScheduleE) — so the rows reconcile with pnl.totals.
   let unassignedNet = 0;
   for (const g of grouped) {
-    const b = pnlBucket({ ...g, amountCents: g._sum.amountCents ?? 0 });
+    const b = pnlBucket({
+      ...g,
+      amountCents: g._sum.amountCents ?? 0,
+      principalCents: g._sum.principalCents ?? 0,
+    });
     if (!b) continue;
     const signed = b.amountCents * (b.bucket === 'income' ? 1 : -1);
     if (!g.propertyId) {

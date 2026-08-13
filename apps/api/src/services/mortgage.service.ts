@@ -1,17 +1,57 @@
 // Mortgages — the liability side of a property (PLAN-REAL-EQUITY §2/§4). All
-// reads derive currentBalanceCents from the statement checkpoint via
-// lib/mortgage-balance.ts; Phase 1 has no principal-bearing rows yet, so an
-// empty payments array is passed — Phase 2's Transaction.principalCents only
-// has to start feeding it real rows, no contract or call-shape change.
+// reads derive currentBalanceCents from the statement checkpoint plus the
+// principal actually paid since it, via lib/mortgage-balance.ts. The payments
+// are always fetched for the whole batch of mortgages being mapped (never per
+// mortgage inside a loop), so a portfolio read stays two queries.
 import type { CreateMortgageInput, Mortgage, UpdateMortgageInput } from '@hearth/shared';
 import type { Mortgage as DbMortgage } from '@prisma/client';
 import { iso, isoOrNull } from '../lib/dates';
 import { BadRequestError, NotFoundError } from '../lib/errors';
-import { deriveMortgageBalanceCents } from '../lib/mortgage-balance';
+import { deriveMortgageBalanceCents, type PrincipalPayment } from '../lib/mortgage-balance';
 import { prisma } from '../lib/prisma';
 import { writeAudit, type AuditActor } from './audit.service';
 
-function toApiMortgage(m: DbMortgage, asOf: Date): Mortgage {
+/**
+ * Principal-bearing payments per mortgage, in ONE query for the whole batch.
+ * Only `confirmed` rows count (PLAN-REAL-EQUITY §3): a drafted or dismissed
+ * mortgage payment sitting in the review queue moves no money, so it must move
+ * no balance.
+ */
+async function principalPaymentsByMortgage(
+  accountId: string,
+  mortgageIds: string[],
+): Promise<Map<string, PrincipalPayment[]>> {
+  const byMortgage = new Map<string, PrincipalPayment[]>();
+  if (mortgageIds.length === 0) return byMortgage;
+  const rows = await prisma.transaction.findMany({
+    where: {
+      accountId,
+      status: 'confirmed',
+      mortgageId: { in: mortgageIds },
+      principalCents: { not: null },
+      // Only a payment reduces a loan. Validation already refuses principal on
+      // an income row, but this query is what money depends on — it shouldn't
+      // rely on a rule enforced somewhere else to stay correct.
+      type: 'expense',
+    },
+    select: { mortgageId: true, date: true, principalCents: true },
+  });
+  for (const r of rows) {
+    const key = r.mortgageId as string;
+    const list = byMortgage.get(key) ?? [];
+    list.push({ date: r.date, principalCents: r.principalCents as number });
+    byMortgage.set(key, list);
+  }
+  return byMortgage;
+}
+
+/** Single-mortgage convenience for the write paths, on the same one query. */
+async function principalPaymentsFor(accountId: string, mortgageId: string): Promise<PrincipalPayment[]> {
+  const byMortgage = await principalPaymentsByMortgage(accountId, [mortgageId]);
+  return byMortgage.get(mortgageId) ?? [];
+}
+
+function toApiMortgage(m: DbMortgage, asOf: Date, payments: readonly PrincipalPayment[]): Mortgage {
   return {
     id: m.id,
     accountId: m.accountId,
@@ -21,7 +61,7 @@ function toApiMortgage(m: DbMortgage, asOf: Date): Mortgage {
     balanceAsOfDate: iso(m.balanceAsOfDate),
     currentBalanceCents: deriveMortgageBalanceCents(
       { balanceCents: m.balanceCents, balanceAsOfDate: m.balanceAsOfDate },
-      [],
+      payments,
       asOf,
     ),
     originalPrincipalCents: m.originalPrincipalCents,
@@ -60,7 +100,11 @@ export async function listForProperty(
     where: { accountId, propertyId, ...(opts.includeArchived ? {} : { archivedAt: null }) },
     orderBy: { createdAt: 'asc' },
   });
-  return rows.map((r) => toApiMortgage(r, asOf));
+  const payments = await principalPaymentsByMortgage(
+    accountId,
+    rows.map((r) => r.id),
+  );
+  return rows.map((r) => toApiMortgage(r, asOf, payments.get(r.id) ?? []));
 }
 
 export async function listForAccount(accountId: string, asOf: Date = new Date()): Promise<Mortgage[]> {
@@ -68,7 +112,11 @@ export async function listForAccount(accountId: string, asOf: Date = new Date())
     where: { accountId, archivedAt: null },
     orderBy: { createdAt: 'asc' },
   });
-  return rows.map((r) => toApiMortgage(r, asOf));
+  const payments = await principalPaymentsByMortgage(
+    accountId,
+    rows.map((r) => r.id),
+  );
+  return rows.map((r) => toApiMortgage(r, asOf, payments.get(r.id) ?? []));
 }
 
 export async function create(
@@ -99,7 +147,8 @@ export async function create(
     entityId: row.id,
     detail: { propertyId, lender: row.lender, balanceCents: row.balanceCents },
   });
-  return toApiMortgage(row, new Date());
+  // Nothing can reference a mortgage that did not exist a moment ago.
+  return toApiMortgage(row, new Date(), []);
 }
 
 /**
@@ -152,7 +201,7 @@ export async function update(
       ? { balanceCents: row.balanceCents, balanceAsOfDate: iso(row.balanceAsOfDate) }
       : { lender: row.lender },
   });
-  return toApiMortgage(row, new Date());
+  return toApiMortgage(row, new Date(), await principalPaymentsFor(accountId, id));
 }
 
 /** Soft-archive — drops the mortgage out of the balance sheet. */
@@ -170,5 +219,5 @@ export async function restore(
   await getOwned(accountId, id);
   const row = await prisma.mortgage.update({ where: { id }, data: { archivedAt: null } });
   await writeAudit(accountId, { actor, action: 'mortgage.restored', entityType: 'mortgage', entityId: id });
-  return toApiMortgage(row, new Date());
+  return toApiMortgage(row, new Date(), await principalPaymentsFor(accountId, id));
 }

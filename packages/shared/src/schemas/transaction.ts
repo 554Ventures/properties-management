@@ -34,6 +34,19 @@ export const TransactionSchema = z.object({
   aiSuggestedCategoryId: z.string().nullable(),
   aiConfidence: z.number().min(0).max(1).nullable(),
   receiptUrl: z.string().nullable(),
+  // Mortgage payment breakdown (PLAN-REAL-EQUITY §3). A mortgage payment is
+  // ONE row per bank debit — the bank delivers one debit, and both the
+  // externalId uniqueness and the duplicate fingerprint assume 1:1. The
+  // principal portion is carved out of every money aggregate in `lib/pnl.ts`
+  // (it repays a liability, it is not an expense) and decrements the linked
+  // mortgage's derived balance; the remainder is categorized normally, either
+  // on the row or across splits.
+  mortgageId: z.string().nullable().optional(),
+  principalCents: z.number().int().nonnegative().nullable().optional(),
+  // Provenance for a row the scheduler drafted from a RecurringTemplate: it
+  // drives the "Auto-drafted" badge and lets the duplicate check know one side
+  // of a pair is an expectation rather than something the bank observed.
+  recurringTemplateId: z.string().nullable().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   // True when this row backs a rent deposit (or legacy RentPayment link) —
@@ -66,6 +79,12 @@ export const CreateTransactionInputSchema = z.object({
   vendor: z.string().optional(),
   receiptUrl: z.string().optional(),
   classification: TransactionClassificationSchema.optional(),
+  // Mortgage payment breakdown. `principalCents` requires `mortgageId`, an
+  // expense row, and `0 <= principalCents <= amountCents`; it is mutually
+  // exclusive with `classification` and with a rent link. Enforced in
+  // transaction.service so no adapter can bypass it.
+  mortgageId: z.string().optional(),
+  principalCents: z.number().int().nonnegative().optional(),
 });
 
 // PATCH /transactions/:id — `classification: null` clears back to ordinary.
@@ -74,6 +93,12 @@ export const CreateTransactionInputSchema = z.object({
 // them back to a single category; omitting the field leaves them unchanged.
 export const UpdateTransactionInputSchema = CreateTransactionInputSchema.partial().extend({
   classification: TransactionClassificationSchema.nullable().optional(),
+  // Nullable so a detected row can be un-detected. Vendor↔lender matching will
+  // occasionally stamp something that isn't a mortgage payment (a lender's $35
+  // fee), and without a way to clear the link that row is stuck demanding a
+  // principal/interest breakdown it doesn't have.
+  mortgageId: z.string().nullable().optional(),
+  principalCents: z.number().int().nonnegative().nullable().optional(),
   splits: z
     .array(
       z.object({
@@ -100,6 +125,15 @@ export const ConfirmTransactionInputSchema = z.object({
   propertyId: z.string().optional(),
   unitId: z.string().optional(),
   classification: TransactionClassificationSchema.optional(), // review time is the natural moment to say "this is a transfer"
+  // Confirming a detected mortgage payment is the natural moment to enter its
+  // breakdown: principal here, and the remainder either on `categoryId` or
+  // across `splits` (which must sum to `amountCents - principalCents`).
+  mortgageId: z.string().optional(),
+  principalCents: z.number().int().nonnegative().optional(),
+  splits: z
+    .array(z.object({ categoryId: z.string(), amountCents: z.number().int().positive() }))
+    .min(2)
+    .optional(),
 });
 
 // Ledger sort fields (whitelist — maps to DB columns server-side).

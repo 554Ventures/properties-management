@@ -148,9 +148,10 @@ export async function pnlTotals(
       ...(scope.propertyId ? { propertyId: scope.propertyId } : {}),
       ...(scope.unitId ? { unitId: scope.unitId } : {}),
     },
-    _sum: { amountCents: true },
+    _sum: { amountCents: true, principalCents: true },
   });
-  // Transfers/owner contributions never count; refunds net against expenses.
+  // Transfers/owner contributions never count; refunds net against expenses;
+  // a mortgage payment's principal slice is a liability repayment, not spend.
   return pnlSums(grouped);
 }
 

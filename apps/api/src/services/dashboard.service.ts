@@ -39,7 +39,9 @@ async function sumByType(
       // Financial/tax reports intentionally retain archived-property history.
       OR: [{ propertyId: null }, { property: { archivedAt: null } }],
     },
-    _sum: { amountCents: true },
+    // principalCents rides along so pnlSums can carve the liability-repayment
+    // slice of a mortgage payment out of expenses (PLAN-REAL-EQUITY §3).
+    _sum: { amountCents: true, principalCents: true },
   });
   // pnlSums drops transfers/owner contributions and nets refunds (plan §D1).
   return pnlSums(grouped);
@@ -248,7 +250,7 @@ export async function getNoiByProperty(accountId: string): Promise<PropertyNoiRe
       // lines. Partitioned below so the two surfaces reconcile row-for-row.
       OR: [{ propertyId: null }, { property: { archivedAt: null } }],
     },
-    _sum: { amountCents: true },
+    _sum: { amountCents: true, principalCents: true },
   });
 
   const rows = properties

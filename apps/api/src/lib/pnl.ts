@@ -5,6 +5,17 @@
 // netting against the category it refunds. Ordinary rows (classification null)
 // count as their type. The general ledger and the transactions list still show
 // every row — classification only changes aggregation, never visibility.
+//
+// The principal carve-out (PLAN-REAL-EQUITY §3) lives here for the same reason:
+// a mortgage payment is ONE ledger row for the whole bank debit, but the
+// `principalCents` slice of it repays a liability instead of buying anything —
+// it is not an expense. So an expense row contributes `amountCents −
+// (principalCents ?? 0)`, and that carve-out is what decrements the mortgage
+// balance (lib/mortgage-balance.ts) instead. A principal-only payment
+// (`principalCents === amountCents`) legally contributes $0, like a transfer,
+// while still showing its full amount in the ledger. Every caller must feed
+// `principalCents` in — it is a required field on these inputs precisely so a
+// new aggregate cannot forget it and silently re-inflate the books.
 import type { Prisma } from '@prisma/client';
 
 /**
@@ -33,10 +44,14 @@ export function pnlBucket(t: {
   type: string;
   classification: string | null;
   amountCents: number;
+  /** Liability-repayment slice of a mortgage payment — never an expense. */
+  principalCents: number | null;
 }): PnlBucket | null {
   if (t.classification === 'transfer' || t.classification === 'owner_contribution') return null;
   if (t.classification === 'refund') return { bucket: 'expense', amountCents: -t.amountCents };
-  return { bucket: t.type === 'income' ? 'income' : 'expense', amountCents: t.amountCents };
+  if (t.type === 'income') return { bucket: 'income', amountCents: t.amountCents };
+  // Principal repays the mortgage; only the interest/escrow remainder is spend.
+  return { bucket: 'expense', amountCents: t.amountCents - (t.principalCents ?? 0) };
 }
 
 /** One per-category P&L line derived from a transaction. `C` is whatever the
@@ -55,7 +70,10 @@ export interface PnlCategoryLine<C> {
  * categorization is finer). A row that doesn't count in P&L yields none.
  *
  * Totals never go through here (they're per-row: `pnlBucket`/`pnlSums`) —
- * splits sum exactly to the parent's amount, so both agree by construction.
+ * splits sum exactly to the parent's countable money, so both agree by
+ * construction: an unsplit row's single line carries `pnlBucket`'s already
+ * principal-net amount, and splits on a principal-bearing row sum to
+ * `amountCents − principalCents` by the invariant transaction.service enforces.
  * Splits can never carry a classification (transaction.service rejects it), so
  * the refund sign-flip only ever applies to the single-line case.
  */
@@ -63,6 +81,7 @@ export function pnlCategoryLines<C>(t: {
   type: string;
   classification: string | null;
   amountCents: number;
+  principalCents: number | null;
   categoryId: string | null;
   category?: C | null;
   splits?: Array<{ categoryId: string; amountCents: number; category?: C | null }>;
@@ -88,18 +107,26 @@ export function pnlCategoryLines<C>(t: {
   }));
 }
 
-/** Effective totals from a `groupBy(['type', 'classification', ...])` result. */
+/**
+ * Effective totals from a `groupBy(['type', 'classification', ...])` result.
+ * The groupBy must `_sum` `principalCents` alongside `amountCents` — the sum of
+ * the group's principal is carved out of the sum of its amounts.
+ */
 export function pnlSums(
   grouped: Array<{
     type: string;
     classification: string | null;
-    _sum: { amountCents: number | null };
+    _sum: { amountCents: number | null; principalCents: number | null };
   }>,
 ): { incomeCents: number; expenseCents: number; netCents: number } {
   let incomeCents = 0;
   let expenseCents = 0;
   for (const g of grouped) {
-    const b = pnlBucket({ ...g, amountCents: g._sum.amountCents ?? 0 });
+    const b = pnlBucket({
+      ...g,
+      amountCents: g._sum.amountCents ?? 0,
+      principalCents: g._sum.principalCents ?? 0,
+    });
     if (!b) continue;
     if (b.bucket === 'income') incomeCents += b.amountCents;
     else expenseCents += b.amountCents;

@@ -5,6 +5,7 @@
 import type { Category, Transaction } from '@hearth/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TransactionEditModal } from '../components/forms/TransactionEditModal';
 import { ToastProvider, ToastViewport } from '../components/ui/Toast';
@@ -59,6 +60,41 @@ const pendingTransaction: Transaction = {
   status: 'pending_review',
 };
 
+// A confirmed mortgage payment already carrying its own breakdown ($200
+// principal + $300 Repairs + $140 Utilities of a $640 total) — editing it
+// should show the editor pre-filled from its OWN data, not last month's.
+const mortgagePaymentTransaction: Transaction = {
+  ...transaction,
+  id: 'tx-mortgage',
+  categoryId: null,
+  mortgageId: 'm1',
+  principalCents: 20000,
+  splits: [
+    { id: 'ms1', categoryId: 'c1', amountCents: 30000 },
+    { id: 'ms2', categoryId: 'c3', amountCents: 14000 },
+  ],
+};
+
+// Confirmed and mortgage-flagged, but nothing entered yet (defect 4's blank
+// state — a disabled Save button with no dangling aria-describedby).
+const mortgageBlankTransaction: Transaction = {
+  ...transaction,
+  id: 'tx-mortgage-blank',
+  categoryId: null,
+  mortgageId: 'm1',
+  principalCents: null,
+};
+
+// Detected (vendor matched the lender) but not yet confirmed — its breakdown
+// belongs in the review queue, not here (defect 2).
+const pendingMortgageTransaction: Transaction = {
+  ...transaction,
+  id: 'tx-mortgage-pending',
+  status: 'pending_review',
+  mortgageId: 'm1',
+  principalCents: null,
+};
+
 /** Fetch stub with a live categories list: POST /categories appends + returns
  *  the created row, so the invalidation-driven refetch sees it. PATCH
  *  /transactions/:id echoes the transaction back and records the body so
@@ -68,6 +104,10 @@ function stubFetch() {
     category({ id: 'c1', name: 'Repairs', type: 'expense' }),
     category({ id: 'c2', name: 'Rent', type: 'income' }),
     category({ id: 'c3', name: 'Utilities', type: 'expense' }),
+    // The mortgage breakdown's escrow preset matches on these names.
+    category({ id: 'cm-interest', name: 'Mortgage Interest', type: 'expense' }),
+    category({ id: 'cm-tax', name: 'Property Taxes', type: 'expense' }),
+    category({ id: 'cm-ins', name: 'Insurance', type: 'expense' }),
   ];
   const posts: Array<Record<string, unknown>> = [];
   const patches: Array<Record<string, unknown>> = [];
@@ -105,6 +145,8 @@ function stubFetch() {
       const fixtures: Record<string, unknown> = {
         '/api/v1/categories': categories,
         '/api/v1/properties': [],
+        // The mortgage-breakdown editor's own last-month-prefill fetch.
+        '/api/v1/transactions': { items: [], nextCursor: null, total: 0 },
       };
       const body = fixtures[path];
       return Promise.resolve(
@@ -128,7 +170,10 @@ function renderModal(txn: Transaction = transaction) {
   render(
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
-        <TransactionEditModal open onClose={vi.fn()} transaction={txn} />
+        {/* Defect 2's "go to the review queue" hint renders a real <Link>. */}
+        <MemoryRouter>
+          <TransactionEditModal open onClose={vi.fn()} transaction={txn} />
+        </MemoryRouter>
         <ToastViewport />
       </ToastProvider>
     </QueryClientProvider>,
@@ -299,5 +344,180 @@ describe('TransactionEditModal split editor', () => {
     await waitFor(() => expect(patches).toHaveLength(1));
     expect(patches[0]!.splits).toBeNull();
     expect(patches[0]!.categoryId).toBe('c1');
+  });
+});
+
+// The same breakdown editor, reached from the ledger's edit modal to correct
+// a payment after confirming (PLAN-REAL-EQUITY §3/D4).
+describe('TransactionEditModal mortgage payment breakdown', () => {
+  it("pre-fills the breakdown from the row's own principal/splits, not a last-month recall, and locks Category/Treatment", async () => {
+    stubFetch();
+    renderModal(mortgagePaymentTransaction);
+
+    expect(await screen.findByLabelText(/^Principal/)).toHaveValue(200);
+    // Wait for the categories list to load so the split rows' <option>s exist
+    // before asserting their selected values (both split-row pickers render
+    // the same list, so more than one "Repairs" option is expected).
+    await screen.findAllByRole('option', { name: 'Repairs' });
+    expect(screen.getByLabelText('Category 1')).toHaveValue('c1');
+    expect(screen.getByLabelText('Amount 1 (USD)')).toHaveValue(300);
+    expect(screen.getByLabelText('Category 2')).toHaveValue('c3');
+    expect(screen.getByLabelText('Amount 2 (USD)')).toHaveValue(140);
+    // Own saved data, not a recall — the prefill label never appears.
+    expect(
+      screen.queryByText('Same as last month — update from your statement if it changed.'),
+    ).not.toBeInTheDocument();
+
+    expect(screen.getByLabelText('Category')).toBeDisabled();
+    expect(screen.getByText('Categorized by the mortgage breakdown below.')).toBeInTheDocument();
+    expect(screen.getByLabelText('Treatment')).toBeDisabled();
+    expect(
+      screen.getByText("Mortgage payments can't carry a treatment — the breakdown above replaces it."),
+    ).toBeInTheDocument();
+  });
+
+  it('blocks save while the remainder is unaccounted for and saves principalCents + splits once balanced', async () => {
+    const { patches } = stubFetch();
+    renderModal(mortgagePaymentTransaction);
+
+    await screen.findByLabelText(/^Principal/);
+    fireEvent.change(screen.getByLabelText('Amount 1 (USD)'), { target: { value: '250.00' } });
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText('Amount 1 (USD)'), { target: { value: '300.00' } });
+    expect(screen.getByRole('button', { name: 'Save changes' })).not.toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => expect(patches).toHaveLength(1));
+    expect(patches[0]!.principalCents).toBe(20000);
+    expect(patches[0]!.splits).toEqual([
+      { categoryId: 'c1', amountCents: 30000 },
+      { categoryId: 'c3', amountCents: 14000 },
+    ]);
+    expect(patches[0]).not.toHaveProperty('categoryId');
+  });
+
+  it("keeps the disabled Save button's aria-describedby resolvable before Principal is typed (defect 4)", async () => {
+    stubFetch();
+    renderModal(mortgageBlankTransaction);
+
+    const saveButton = await screen.findByRole('button', { name: 'Save changes' });
+    expect(saveButton).toBeDisabled();
+    const describedById = saveButton.getAttribute('aria-describedby');
+    expect(describedById).toBeTruthy();
+    await waitFor(() =>
+      expect(document.getElementById(describedById!)).toHaveTextContent(
+        'Enter the principal to see what still needs a category.',
+      ),
+    );
+  });
+
+  it('"Not a mortgage payment" nulls the link via PATCH and restores ordinary Category/Treatment editing (defect 3)', async () => {
+    const { patches } = stubFetch();
+    renderModal(mortgagePaymentTransaction);
+
+    await screen.findByLabelText(/^Principal/);
+    expect(screen.getByLabelText('Category')).toBeDisabled();
+    expect(screen.getByLabelText('Treatment')).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Not a mortgage payment' }));
+
+    await waitFor(() => expect(patches).toHaveLength(1));
+    expect(patches[0]).toEqual({ mortgageId: null, principalCents: null });
+    expect(
+      await screen.findByText("Won't be treated as a mortgage payment — edit it normally below."),
+    ).toBeInTheDocument();
+
+    expect(screen.queryByLabelText(/^Principal/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Category')).not.toBeDisabled();
+    expect(screen.getByLabelText('Treatment')).not.toBeDisabled();
+  });
+
+  // Defect 2: no "Escrow" category exists on purpose — this mount offers the
+  // same guidance and one-click affordance as the review queue's.
+  it('offers the interest + escrow affordance here too, creating three blank-amount rows', async () => {
+    stubFetch();
+    renderModal(mortgageBlankTransaction);
+
+    await screen.findByLabelText(/^Principal/);
+    fireEvent.change(screen.getByLabelText(/^Principal/), { target: { value: '240.00' } });
+    expect(
+      screen.getByRole('button', { name: 'Interest + escrow (taxes, insurance)' }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Interest + escrow (taxes, insurance)' }));
+
+    expect(screen.getByLabelText('Category 1')).toHaveValue('cm-interest');
+    expect(screen.getByLabelText('Amount 1 (USD)')).toHaveValue(null);
+    expect(screen.getByLabelText('Category 2')).toHaveValue('cm-tax');
+    expect(screen.getByLabelText('Amount 2 (USD)')).toHaveValue(null);
+    expect(screen.getByLabelText('Category 3')).toHaveValue('cm-ins');
+    expect(screen.getByLabelText('Amount 3 (USD)')).toHaveValue(null);
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+  });
+
+  // Defect 3: the same false "fully allocated" reading applied here — the
+  // status text (the disabled Save button's aria-describedby target) must
+  // name the row still blocking it instead.
+  it("names the row still blocking Save instead of falsely reading 'fully allocated'", async () => {
+    stubFetch();
+    renderModal(mortgageBlankTransaction);
+
+    await screen.findByLabelText(/^Principal/);
+    // $640 total, $240 principal → $400 remainder, one row filled.
+    fireEvent.change(screen.getByLabelText(/^Principal/), { target: { value: '240.00' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Split across categories' }));
+    fireEvent.change(screen.getByLabelText('Category 1'), { target: { value: 'cm-interest' } });
+    fireEvent.change(screen.getByLabelText('Amount 1 (USD)'), { target: { value: '400.00' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save changes' });
+    expect(saveButton).toBeDisabled();
+    expect(
+      screen.queryByText('$400.00 of $400.00 allocated · $0.00 remaining to allocate'),
+    ).not.toBeInTheDocument();
+    const describedById = saveButton.getAttribute('aria-describedby');
+    expect(describedById).toBeTruthy();
+    expect(document.getElementById(describedById!)).toHaveTextContent(
+      '$400.00 of $400.00 allocated · row 2 still needs a category and amount',
+    );
+  });
+});
+
+// Defect 2: `splits` are confirmed-only server-side, so a detected-but-
+// pending mortgage row can't legally save a breakdown here — the review
+// queue is where it belongs. This modal must stay usable for everything else
+// and never gate Save on a breakdown that isn't being edited.
+describe('TransactionEditModal pending mortgage detection', () => {
+  it('offers no breakdown for a pending mortgage-flagged row, points to the review queue, and ordinary editing (incl. Save) stays available', async () => {
+    const { patches } = stubFetch();
+    renderModal(pendingMortgageTransaction);
+
+    expect(await screen.findByText(/This bank row matches your mortgage/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Go to review queue →' })).toHaveAttribute(
+      'href',
+      '/money/review',
+    );
+    expect(screen.queryByLabelText(/^Principal/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Categorized by the mortgage breakdown below.')).not.toBeInTheDocument();
+    // Splits are also confirmed-only, so the ordinary split toggle stays
+    // hidden too — same guard as any other non-confirmed row.
+    expect(
+      screen.queryByRole('button', { name: 'Split across categories' }),
+    ).not.toBeInTheDocument();
+
+    const categorySelect = (await screen.findByLabelText('Category')) as HTMLSelectElement;
+    expect(categorySelect).not.toBeDisabled();
+
+    const saveButton = screen.getByRole('button', { name: 'Save changes' });
+    expect(saveButton).not.toBeDisabled();
+    fireEvent.change(screen.getByLabelText(/^Description/), { target: { value: 'Loan servicer fee' } });
+    fireEvent.click(saveButton);
+
+    await waitFor(() => expect(patches).toHaveLength(1));
+    expect(patches[0]!.description).toBe('Loan servicer fee');
+    expect(patches[0]).not.toHaveProperty('mortgageId');
+    expect(patches[0]).not.toHaveProperty('principalCents');
+    expect(patches[0]).not.toHaveProperty('splits');
   });
 });

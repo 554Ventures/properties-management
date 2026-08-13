@@ -26,6 +26,7 @@ import {
 } from '../api/queries';
 import { InsightCard } from '../components/ai/InsightCard';
 import { TransactionEditModal } from '../components/forms/TransactionEditModal';
+import { RecurringSection } from '../components/money/RecurringSection';
 import { PageHeader } from '../components/shell/PageHeader';
 import { Button, buttonClasses } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
@@ -57,6 +58,7 @@ import { cx } from '../lib/cx';
 import { formatDate, formatDateTime } from '../lib/format';
 import { importToastMessage } from '../lib/importToastMessage';
 import { usePageTitle } from '../lib/usePageTitle';
+import { usePermissions } from '../lib/usePermissions';
 
 const PAGE_SIZE = 20;
 
@@ -171,6 +173,8 @@ export function Money() {
   const restoreTransaction = useRestoreTransaction();
   const { toast } = useToast();
   const navigate = useNavigate();
+  const { can } = usePermissions();
+  const canMoney = can('money');
 
   const categoryName = useMemo(
     () => new Map((categories.data ?? []).map((c) => [c.id, c.name])),
@@ -352,24 +356,25 @@ export function Money() {
       header: <span className="sr-only">Actions</span>,
       stickyRight: true,
       cell: (txn) => {
-        const actions: RowAction[] = [
-          { label: 'Edit', icon: <IconPencil size={14} />, onClick: () => setEditing(txn) },
-        ];
-        // Rent-linked rows drop Delete entirely — same guard the modal shows;
-        // unlinking the deposit on the Rent page is the only way to remove it.
-        if (txn.status === 'confirmed' && !txn.rentLinked) {
-          actions.push({
-            label: 'Delete',
-            icon: <IconTrash size={14} />,
-            onClick: () => setDeleting(txn),
-          });
-        }
-        if (txn.status === 'dismissed') {
-          actions.push({
-            label: 'Restore to review',
-            busy: restoreTransaction.isPending && restoreTransaction.variables === txn.id,
-            onClick: () => restore(txn),
-          });
+        const actions: RowAction[] = [];
+        if (canMoney) {
+          actions.push({ label: 'Edit', icon: <IconPencil size={14} />, onClick: () => setEditing(txn) });
+          // Rent-linked rows drop Delete entirely — same guard the modal shows;
+          // unlinking the deposit on the Rent page is the only way to remove it.
+          if (txn.status === 'confirmed' && !txn.rentLinked) {
+            actions.push({
+              label: 'Delete',
+              icon: <IconTrash size={14} />,
+              onClick: () => setDeleting(txn),
+            });
+          }
+          if (txn.status === 'dismissed') {
+            actions.push({
+              label: 'Restore to review',
+              busy: restoreTransaction.isPending && restoreTransaction.variables === txn.id,
+              onClick: () => restore(txn),
+            });
+          }
         }
         return <RowActions context={txn.description} actions={actions} />;
       },
@@ -389,43 +394,45 @@ export function Money() {
                 Last imported {formatDateTime(lastImportedAt)}
               </span>
             )}
-            <Button
-              variant="ghost"
-              busy={importBank.isPending}
-              disabled={importCoolingDown}
-              onClick={() =>
-                importBank.mutate(undefined, {
-                  onSuccess: (res) => {
-                    const { message, tone } = importToastMessage(res, bankConnected);
-                    toast(message, tone);
-                  },
-                  onError: (err) => {
-                    if (err instanceof ApiClientError && err.code === 'plaid_not_connected') {
-                      toast('Connect a bank account in Settings first.', 'danger', {
-                        label: 'Go to Settings',
-                        onClick: () => navigate('/settings#integrations'),
-                      });
-                      return;
-                    }
-                    if (err instanceof ApiClientError && err.code === 'import_rate_limited') {
-                      const nextAllowedAt = err.detail?.nextAllowedAt;
-                      if (nextAllowedAt) setNextImportAt(nextAllowedAt);
-                      toast(
-                        nextAllowedAt
-                          ? `Bank already imported recently — next import available at ${formatDateTime(nextAllowedAt)}.`
-                          : 'Bank already imported recently — try again later.',
-                        'neutral',
-                      );
-                      return;
-                    }
-                    toast('Bank import failed. Try again.', 'danger');
-                  },
-                })
-              }
-            >
-              <IconDownload size={14} />
-              Import from bank
-            </Button>
+            {canMoney && (
+              <Button
+                variant="ghost"
+                busy={importBank.isPending}
+                disabled={importCoolingDown}
+                onClick={() =>
+                  importBank.mutate(undefined, {
+                    onSuccess: (res) => {
+                      const { message, tone } = importToastMessage(res, bankConnected);
+                      toast(message, tone);
+                    },
+                    onError: (err) => {
+                      if (err instanceof ApiClientError && err.code === 'plaid_not_connected') {
+                        toast('Connect a bank account in Settings first.', 'danger', {
+                          label: 'Go to Settings',
+                          onClick: () => navigate('/settings#integrations'),
+                        });
+                        return;
+                      }
+                      if (err instanceof ApiClientError && err.code === 'import_rate_limited') {
+                        const nextAllowedAt = err.detail?.nextAllowedAt;
+                        if (nextAllowedAt) setNextImportAt(nextAllowedAt);
+                        toast(
+                          nextAllowedAt
+                            ? `Bank already imported recently — next import available at ${formatDateTime(nextAllowedAt)}.`
+                            : 'Bank already imported recently — try again later.',
+                          'neutral',
+                        );
+                        return;
+                      }
+                      toast('Bank import failed. Try again.', 'danger');
+                    },
+                  })
+                }
+              >
+                <IconDownload size={14} />
+                Import from bank
+              </Button>
+            )}
             <Link to="/money/review" className={buttonClasses('secondary')}>
               Review queue
               {pendingCount > 0 && (
@@ -434,13 +441,22 @@ export function Money() {
                 </span>
               )}
             </Link>
-            <Link to="/money/new" className={buttonClasses('primary')}>
-              <IconPlus size={16} />
-              Add transaction
-            </Link>
+            {canMoney && (
+              <Link to="/money/new" className={buttonClasses('primary')}>
+                <IconPlus size={16} />
+                Add transaction
+              </Link>
+            )}
           </>
         }
       />
+
+      {!canMoney && (
+        <p className="rounded-md border border-border bg-surface-sunken px-4 py-2.5 text-sm text-ink-muted">
+          You can view the ledger here, but adding, editing, deleting, and importing transactions
+          need the Money permission — ask an account owner to turn it on for you.
+        </p>
+      )}
 
       <LiveRegion>
         {spikeInsight && <InsightCard insight={spikeInsight} headingLevel={2} />}
@@ -477,10 +493,12 @@ export function Money() {
             title="No transactions yet"
             body="Import from your bank or add your first transaction to start tracking income and expenses."
             action={
-              <Link to="/money/new" className={buttonClasses('primary')}>
-                <IconPlus size={16} />
-                Add transaction
-              </Link>
+              canMoney ? (
+                <Link to="/money/new" className={buttonClasses('primary')}>
+                  <IconPlus size={16} />
+                  Add transaction
+                </Link>
+              ) : undefined
             }
           />
         </Card>
@@ -505,10 +523,13 @@ export function Money() {
         </Card>
       )}
 
+      <RecurringSection properties={properties.data ?? []} canMoney={canMoney} />
+
       <TransactionEditModal
         open={editing !== null}
         onClose={() => setEditing(null)}
         transaction={editing}
+        canEdit={canMoney}
       />
       <ConfirmDialog
         open={deleting !== null}

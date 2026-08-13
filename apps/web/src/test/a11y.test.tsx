@@ -747,6 +747,11 @@ describe('onboarding accessibility', () => {
 });
 
 describe('review queue accessibility', () => {
+  // The fixture deliberately holds one of each triage state: a confident,
+  // rent-matched income row (collapsed, with the expand toggle) and a
+  // low-confidence expense row (auto-expanded, warning strip + attribution
+  // grid). The audit runs over both, then again after the collapsed row is
+  // opened by keyboard/pointer.
   it('MoneyReview with a rent match, attribution selects, and the bank-correction section has no axe violations', async () => {
     const reviewFixtures: Record<string, unknown> = {
       '/api/v1/transactions/review': reviewQueue,
@@ -784,7 +789,7 @@ describe('review queue accessibility', () => {
       </QueryClientProvider>,
     );
 
-    // Rent-match chip + both items' selects rendered before auditing.
+    // Rent-match strip + the auto-expanded row's selects before auditing.
     await screen.findByText(/T\. Okafor's Jul 2026 rent/);
     await screen.findByText('LOWES #00907');
     // Bank-correction section: modified-row diff, removed-row line, and the
@@ -793,11 +798,34 @@ describe('review queue accessibility', () => {
     await screen.findByText('Removed by your bank');
     await screen.findByRole('button', { name: 'Unlink deposit' });
 
+    // Collapsed state: the expand control is a real button that names the row
+    // it belongs to, and it starts closed. It carries no `aria-controls` here —
+    // the region it would reference is unmounted, and a reference to a missing
+    // id is worse than none (axe's aria-valid-attr-value covers this below).
+    const toggle = screen.getByRole('button', { name: /^Edit details/ });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(toggle).not.toHaveAttribute('aria-controls');
+
     const results = await axe.run(container, {
       rules: { 'color-contrast': { enabled: false } },
     });
     expect(
       results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`),
+    ).toEqual([]);
+
+    // …and again expanded, with both rows' attribution grids open.
+    fireEvent.click(toggle);
+    expect(screen.getByRole('button', { name: /^Hide details/ })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    const expandedResults = await axe.run(container, {
+      rules: { 'color-contrast': { enabled: false } },
+    });
+    expect(
+      expandedResults.violations.map(
+        (v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`,
+      ),
     ).toEqual([]);
   }, 20_000);
 
@@ -861,6 +889,11 @@ describe('review queue accessibility', () => {
     );
 
     await screen.findByText(/T\. Okafor's Jul 2026 rent/);
+    // The rent-matched income row is confirmable in one click, so it renders
+    // collapsed — the manual picker lives in its expanded region (the
+    // low-confidence expense row below it auto-expands and has no toggle, so
+    // this control is unambiguous).
+    fireEvent.click(screen.getByRole('button', { name: /^Edit details/ }));
     const linkButtons = await screen.findAllByRole('button', { name: 'Link to rent…' });
     fireEvent.click(linkButtons[0]!);
 
