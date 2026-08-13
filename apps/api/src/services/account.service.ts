@@ -9,7 +9,9 @@
 //      ChatMessage/Integration/AuditLog/User/Document metadata).
 //   4. processScheduledDeletions — the daily-scheduler sweep that calls #3
 //      once a request's grace period has elapsed.
-import { addDays, iso } from '../lib/dates';
+import type { AccountSettings } from '@hearth/shared';
+import type { Account as DbAccount } from '@prisma/client';
+import { addDays, iso, isoOrNull } from '../lib/dates';
 import { ConflictError, NotFoundError } from '../lib/errors';
 import { createStorageAdapter } from '../integrations/factory';
 import { deleteSupabaseAuthUser } from '../integrations/real/supabase-admin';
@@ -28,6 +30,30 @@ export async function accountTimezone(accountId: string): Promise<string> {
     select: { timezone: true },
   });
   return timezone;
+}
+
+export function toApiAccount(a: DbAccount): AccountSettings {
+  return {
+    id: a.id,
+    name: a.name,
+    email: a.email,
+    timezone: a.timezone,
+    taxRatePct: a.taxRatePct,
+    taxYearStartMonth: a.taxYearStartMonth,
+    graceDays: a.graceDays,
+    graceDaysBasis: a.graceDaysBasis as AccountSettings['graceDaysBasis'],
+    defaultLateFeeCents: a.defaultLateFeeCents,
+    createdAt: iso(a.createdAt),
+    deletionRequestedAt: isoOrNull(a.deletionRequestedAt),
+  };
+}
+
+/** GET /settings/account — in v1 the account row *is* the settings object.
+ *  Shared with the `get_account_settings` tool so chat/MCP read the same shape
+ *  the route returns (notably defaultLateFeeCents + graceDays, the late-fee
+ *  policy the assistant has to be able to quote before applying a fee). */
+export async function getSettings(accountId: string): Promise<AccountSettings> {
+  return toApiAccount(await prisma.account.findUniqueOrThrow({ where: { id: accountId } }));
 }
 
 export function deletionGraceDays(): number {

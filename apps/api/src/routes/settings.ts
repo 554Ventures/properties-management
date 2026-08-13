@@ -5,12 +5,9 @@ import {
   RecordConsentInputSchema,
   StripeFcCompleteInputSchema,
   UpdateAccountSettingsInputSchema,
-  type AccountSettings,
 } from '@hearth/shared';
-import type { Account as DbAccount } from '@prisma/client';
 import type { FastifyInstance } from 'fastify';
 import { requireOwner } from '../lib/authz';
-import { iso, isoOrNull } from '../lib/dates';
 import { BadRequestError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { parseBody } from '../plugins/zod-validation';
@@ -19,27 +16,8 @@ import * as authService from '../services/auth.service';
 import * as integrationService from '../services/integration.service';
 import * as notificationService from '../services/notification.service';
 
-function toApiAccount(a: DbAccount): AccountSettings {
-  return {
-    id: a.id,
-    name: a.name,
-    email: a.email,
-    timezone: a.timezone,
-    taxRatePct: a.taxRatePct,
-    taxYearStartMonth: a.taxYearStartMonth,
-    graceDays: a.graceDays,
-    graceDaysBasis: a.graceDaysBasis as AccountSettings['graceDaysBasis'],
-    defaultLateFeeCents: a.defaultLateFeeCents,
-    createdAt: iso(a.createdAt),
-    deletionRequestedAt: isoOrNull(a.deletionRequestedAt),
-  };
-}
-
 export async function settingsRoutes(app: FastifyInstance): Promise<void> {
-  app.get('/settings/account', async (req) => {
-    const account = await prisma.account.findUniqueOrThrow({ where: { id: req.accountId } });
-    return toApiAccount(account);
-  });
+  app.get('/settings/account', async (req) => accountService.getSettings(req.accountId));
 
   // Owner-only (CLAUDE.md authz conventions): these settings steer account-wide
   // money math — timezone moves every period boundary, graceDays/defaultLateFeeCents
@@ -47,7 +25,7 @@ export async function settingsRoutes(app: FastifyInstance): Promise<void> {
   app.patch('/settings/account', { preHandler: requireOwner() }, async (req) => {
     const input = parseBody(UpdateAccountSettingsInputSchema, req.body);
     const account = await prisma.account.update({ where: { id: req.accountId }, data: input });
-    return toApiAccount(account);
+    return accountService.toApiAccount(account);
   });
 
   // Data erasure (docs/SECURITY_PRIVACY_AUDIT.md §B2): starts/cancels the
