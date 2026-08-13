@@ -372,17 +372,9 @@ export function ReviewItemCard({ item, categoryOptions, canMoney, onSettled }: R
             </p>
           </ReviewStrip>
         )}
-        {lowConfidence && !isMortgagePayment && (
-          <ReviewStrip tone="warning">
-            <p>
-              <span className="font-semibold">
-                Low confidence ({Math.round((item.aiConfidence ?? 0) * 100)}%) — check this one
-              </span>{' '}
-              before confirming. Pick the category yourself below, or accept the suggestion if it
-              looks right.
-            </p>
-          </ReviewStrip>
-        )}
+        {/* A weak suggestion needs no banner: the AI chip on the row already
+            carries the confidence number, and the row auto-expands so the
+            category select is right there. */}
 
         {/* ── the row itself ───────────────────────────────────────────── */}
         <div className="flex flex-col gap-3 px-4 py-3 md:flex-row md:items-center md:gap-4">

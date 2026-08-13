@@ -1039,18 +1039,16 @@ describe('MoneyReview triage row (auto-expand)', () => {
     expect(screen.queryByRole('button', { name: /details/ })).not.toBeInTheDocument();
   });
 
-  it('a suggestion under the 0.7 gate opens the row, strips the warning, and refuses to name the outcome', async () => {
+  it('a suggestion under the 0.7 gate opens the row, leans on the chip, and refuses to name the outcome', async () => {
     stubDesktopViewport();
     renderQueue([{ ...confidentExpense, id: 'tx-weak', aiConfidence: 0.55 }], [suppliesCategory]);
 
     await screen.findByText('HD SUPPLY #443');
     expect(screen.getByLabelText('Category')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /details/ })).not.toBeInTheDocument();
-    expect(
-      screen.getByText(/Low confidence \(55%\) — check this one/).parentElement,
-    ).toHaveTextContent(
-      'Low confidence (55%) — check this one before confirming. Pick the category yourself below, or accept the suggestion if it looks right.',
-    );
+    // No banner — the confidence lives on the chip, which says the same thing once.
+    expect(screen.queryByText(/Low confidence/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /suggests: Supplies \(55%\)/ })).toBeInTheDocument();
     // A weak suggestion is a decision, not a reflex — the button doesn't
     // pre-name it (accepting it is still one click via the chip + Confirm).
     expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
