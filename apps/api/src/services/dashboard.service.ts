@@ -20,6 +20,7 @@ import {
 } from '../lib/dates';
 import { pnlCategoryLines, pnlSums } from '../lib/pnl';
 import { prisma } from '../lib/prisma';
+import { plural } from '../lib/strings';
 import { accountTimezone } from './account.service';
 import { generateInsights } from './insight.service';
 import * as rentService from './rent.service';
@@ -397,14 +398,22 @@ export async function getPortfolioSummary(
   accountId: string,
 ): Promise<{ summary: string; kpis: DashboardKpisResponse }> {
   const kpis = await getKpis(accountId);
-  // Match kpis.totalUnits, which excludes archived properties/units.
-  const propertyCount = await prisma.property.count({ where: { accountId, archivedAt: null } });
+  // kpis.totalUnits counts units with a rent charge this period, i.e. LEASED
+  // units — not units owned. Both are reported, and named, separately: calling
+  // the leased count "units" understated a portfolio with a vacancy.
+  const [propertyCount, unitCount] = await Promise.all([
+    prisma.property.count({ where: { accountId, archivedAt: null } }),
+    prisma.unit.count({
+      where: { archivedAt: null, property: { accountId, archivedAt: null } },
+    }),
+  ]);
   const tz = await accountTimezone(accountId);
   const today = startOfDayInTz(new Date(), tz).toISOString().slice(0, 10);
+  const leasedSuffix = unitCount === kpis.totalUnits ? '' : ` (${kpis.totalUnits} leased)`;
   const summary =
-    `As of ${today}: ${propertyCount} properties, ${kpis.totalUnits} units. ` +
-    `Net cash flow this month is ${formatUsdWhole(kpis.netCashFlowMtdCents)} with ` +
-    `${kpis.paidUnits} of ${kpis.totalUnits} units paid (${kpis.rentCollectedPct}%). ` +
+    `As of ${today}: ${plural(propertyCount, 'property', 'properties')}, ${plural(unitCount, 'unit')}${leasedSuffix}. ` +
+    `Net cash flow this month is ${formatUsdWhole(kpis.netCashFlowMtdCents)} with rent collected on ` +
+    `${kpis.paidUnits} of ${plural(kpis.totalUnits, 'leased unit')} (${kpis.rentCollectedPct}%). ` +
     `Expenses month-to-date are ${formatUsdWhole(kpis.expensesMtdCents)}. ` +
     `Tax set-aside stands at ${formatUsdWhole(kpis.taxSetAside.currentCents)} against a quarterly target of ${formatUsdWhole(kpis.taxSetAside.targetCents)}.`;
   return { summary, kpis };

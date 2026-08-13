@@ -95,7 +95,7 @@ export function Dashboard() {
   const unitCount = properties.data?.reduce((sum, p) => sum + p.unitCount, 0);
   const portfolioSummary =
     propertyCount !== undefined
-      ? `${monthLabel} · ${propertyCount} ${propertyCount === 1 ? 'property' : 'properties'} · ${unitCount} units`
+      ? `${monthLabel} · ${propertyCount} ${propertyCount === 1 ? 'property' : 'properties'} · ${unitCount} ${unitCount === 1 ? 'unit' : 'units'}`
       : monthLabel;
 
   return (
