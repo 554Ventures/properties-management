@@ -644,3 +644,76 @@ describe('unassigned_transactions rule', () => {
     }
   });
 });
+
+describe('period-keyed insights supersede their prior periods', () => {
+  it('retires a stale active row while a dismissal still sticks', async () => {
+    const account = await prisma.account.create({
+      data: { name: 'Stale Period', email: 'stale-period@integrationtest.example' },
+    });
+    // Two prior-period rows this cycle can no longer produce. Before the
+    // supersede sweep both survived forever, so a property flagged last month
+    // showed its old card beside the identical new one.
+    const staleActive = await prisma.insight.create({
+      data: {
+        accountId: account.id,
+        scope: 'property',
+        type: 'underperforming_property',
+        severity: 'info',
+        title: 'Somewhere is trailing the rest of the portfolio',
+        body: 'stale',
+        dedupeKey: 'underperforming_property:somewhere:2026-01',
+        status: 'active',
+      },
+    });
+    const staleDismissed = await prisma.insight.create({
+      data: {
+        accountId: account.id,
+        scope: 'portfolio',
+        type: 'renewal_window',
+        severity: 'info',
+        title: '1 lease up for renewal',
+        body: 'stale',
+        dedupeKey: 'renewal_window:2026-01',
+        status: 'dismissed',
+      },
+    });
+
+    // Empty portfolio → no candidates at all, which is the empty-notIn path.
+    await insightService.generateInsights(account.id);
+
+    const after = async (id: string) =>
+      (await prisma.insight.findUnique({ where: { id } }))?.status;
+    expect(await after(staleActive.id)).toBe('resolved');
+    // The sweep only retires ACTIVE rows — dismissal outranks it.
+    expect(await after(staleDismissed.id)).toBe('dismissed');
+  });
+
+  it('leaves a row whose condition still holds active across repeat runs', async () => {
+    const account = await prisma.account.create({
+      data: { name: 'Live Period Row', email: 'live-period-row@integrationtest.example' },
+    });
+    // A confirmed, unattributed bank row — the unassigned_transactions
+    // condition, which keeps being true until someone attributes it.
+    await prisma.transaction.create({
+      data: {
+        accountId: account.id,
+        date: new Date(),
+        amountCents: 12_345,
+        type: 'expense',
+        description: 'TEST unattributed bank row',
+        source: 'bank',
+        status: 'confirmed',
+      },
+    });
+
+    const first = await insightService.generateInsights(account.id);
+    const created = first.find((c) => c.type === 'unassigned_transactions');
+    expect(created).toBeDefined();
+
+    // Second cycle re-derives the same candidate, so the sweep must not
+    // retire it — only rows the rules stopped producing get resolved.
+    await insightService.generateInsights(account.id);
+    const row = await prisma.insight.findUnique({ where: { id: created!.id } });
+    expect(row?.status).toBe('active');
+  });
+});
