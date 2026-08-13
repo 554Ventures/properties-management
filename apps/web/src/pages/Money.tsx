@@ -26,6 +26,7 @@ import {
 } from '../api/queries';
 import { InsightCard } from '../components/ai/InsightCard';
 import { TransactionEditModal } from '../components/forms/TransactionEditModal';
+import { RecurringSection } from '../components/money/RecurringSection';
 import { PageHeader } from '../components/shell/PageHeader';
 import { Button, buttonClasses } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
@@ -521,6 +522,8 @@ export function Money() {
           />
         </Card>
       )}
+
+      <RecurringSection properties={properties.data ?? []} canMoney={canMoney} />
 
       <TransactionEditModal
         open={editing !== null}

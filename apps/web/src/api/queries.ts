@@ -71,6 +71,10 @@ import type {
   PropertyWithStats,
   ReceiptScanResponse,
   RecordRentPaymentInput,
+  RecurringTemplate,
+  RecurringTemplateListResponse,
+  CreateRecurringTemplateInput,
+  UpdateRecurringTemplateInput,
   RentPayment,
   RentTrackerResponse,
   UnlinkedRentDepositsResponse,
@@ -768,6 +772,72 @@ export function useDismissBankDiscrepancy() {
     mutationFn: (id: string) =>
       api.post<BankDiscrepancyResolution>(`/transactions/bank-discrepancies/${id}/dismiss`),
     onSuccess: () => invalidateFinancials(qc),
+  });
+}
+
+// ------------------------------------------------------- recurring templates
+// A template is a standing instruction, never a ledger row (PLAN-REAL-EQUITY
+// §2/Phase 2b) — it gets its own list query rather than riding a parent
+// entity the way mortgages/valuations ride property detail. `nextOccurrence`
+// is always server-derived; nothing here recomputes it.
+
+export function useRecurringTemplates(includeArchived = false) {
+  return useQuery({
+    queryKey: ['recurring-templates', { includeArchived }],
+    queryFn: () =>
+      api.get<RecurringTemplateListResponse>(
+        `/recurring-templates${toQuery({ includeArchived: includeArchived ? 'true' : undefined })}`,
+      ),
+    staleTime: STALE_SHORT,
+  });
+}
+
+function invalidateRecurringTemplates(qc: ReturnType<typeof useQueryClient>) {
+  void qc.invalidateQueries({ queryKey: ['recurring-templates'] });
+}
+
+export function useCreateRecurringTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateRecurringTemplateInput) =>
+      api.post<RecurringTemplate>('/recurring-templates', input),
+    // Draft-on-create (decision D2) can land a row in the review queue
+    // immediately when the current occurrence is already due, so this
+    // invalidates financials too, not just the template list.
+    onSuccess: () => {
+      invalidateRecurringTemplates(qc);
+      invalidateFinancials(qc);
+    },
+  });
+}
+
+export function useUpdateRecurringTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...input }: UpdateRecurringTemplateInput & { id: string }) =>
+      api.patch<RecurringTemplate>(`/recurring-templates/${id}`, input),
+    onSuccess: () => invalidateRecurringTemplates(qc),
+  });
+}
+
+/** DELETE /recurring-templates/:id — archive = pause. Stops future drafts;
+ *  never touches a row already drafted. */
+export function useArchiveRecurringTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete(`/recurring-templates/${id}`),
+    onSuccess: () => invalidateRecurringTemplates(qc),
+  });
+}
+
+/** POST /recurring-templates/:id/restore — resume. Never backfills what was
+ *  missed while paused; only the next due occurrence drafts. */
+export function useRestoreRecurringTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.post<RecurringTemplate>(`/recurring-templates/${id}/restore`),
+    onSuccess: () => invalidateRecurringTemplates(qc),
   });
 }
 

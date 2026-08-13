@@ -27,6 +27,9 @@ export * from './property';
 // Mortgages (per-property liabilities; statement-checkpoint balances)
 export * from './mortgage';
 
+// Recurring transaction templates (scheduler drafts them into the review queue)
+export * from './recurring';
+
 // Property valuations (owner-provided asset values; append-only history)
 export * from './valuation';
 

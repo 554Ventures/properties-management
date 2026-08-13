@@ -43,6 +43,10 @@ export const TransactionSchema = z.object({
   // on the row or across splits.
   mortgageId: z.string().nullable().optional(),
   principalCents: z.number().int().nonnegative().nullable().optional(),
+  // Provenance for a row the scheduler drafted from a RecurringTemplate: it
+  // drives the "Auto-drafted" badge and lets the duplicate check know one side
+  // of a pair is an expectation rather than something the bank observed.
+  recurringTemplateId: z.string().nullable().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   // True when this row backs a rent deposit (or legacy RentPayment link) —

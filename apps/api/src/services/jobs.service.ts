@@ -17,6 +17,7 @@ import { processScheduledDeletions } from './account.service';
 import { expireStaleSessions } from './chat.service';
 import * as insightService from './insight.service';
 import { notifyCategory } from './notification.service';
+import * as recurringService from './recurring.service';
 import { generateWeeklyBriefReport, lastCompletedWeekStartInTz } from './report.service';
 import { importFromBank } from './transaction.service';
 
@@ -26,6 +27,9 @@ export interface DailyJobsResult {
   weeklyBriefsCreated: number;
   insightsCreated: number;
   bankTransactionsImported: number;
+  /** Rows drafted from recurring templates (0 on a normal night — a monthly
+   *  template only comes due once a month). */
+  recurringDrafted: number;
   accountsDeleted: number;
   /** awaiting_user sessions past their TTL, reopened as idle (paused state dropped). */
   chatSessionsExpired: number;
@@ -84,6 +88,7 @@ async function doRunDailyJobs(): Promise<DailyJobsResult> {
     weeklyBriefsCreated: 0,
     insightsCreated: 0,
     bankTransactionsImported: 0,
+    recurringDrafted: 0,
     accountsDeleted: deletions.deleted,
     chatSessionsExpired: sessionSweep.awaitingExpired,
     chatSessionsReleased: sessionSweep.runningReleased,
@@ -126,6 +131,34 @@ async function doRunDailyJobs(): Promise<DailyJobsResult> {
           },
         });
       }
+    }
+    // Recurring templates (PLAN-REAL-EQUITY Phase 2b): draft every occurrence
+    // that has come due into the review queue as pending_review — never
+    // confirmed, a template says what the landlord EXPECTS to be charged.
+    // Placed with the bank sync, before the insight refresh below, so a row
+    // drafted tonight is counted by tonight's review-queue insight. Isolated
+    // exactly like the sync above: a template that can no longer draft (a
+    // property deleted under it, say) is recorded against the account and never
+    // costs it its monthly review, weekly brief or insights. `draftDue` isolates
+    // its templates from each other too and hands back one error per failure,
+    // so a broken template costs the account neither its siblings' rows nor
+    // their place in the count; the catch here is for a failure of the sweep
+    // itself. Drafting is idempotent on the occurrence, so a run that fails
+    // halfway resumes tomorrow without re-drafting what it already wrote.
+    try {
+      const recurring = await recurringService.draftDue(accountId, timezone, now);
+      result.recurringDrafted += recurring.drafted;
+      for (const failure of recurring.errors) {
+        result.errors.push({
+          accountId,
+          message: `recurring drafting (template ${failure.templateId}): ${failure.message}`,
+        });
+      }
+    } catch (err) {
+      result.errors.push({
+        accountId,
+        message: `recurring drafting: ${err instanceof Error ? err.message : String(err)}`,
+      });
     }
     try {
       const existing = await prisma.report.findFirst({

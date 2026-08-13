@@ -140,6 +140,19 @@ export const SEED_PROPERTIES: SeedPropertySpec[] = [
 export const MAPLE_MORTGAGE_LENDER = 'First Federal Bank';
 export const MAPLE_MORTGAGE_BALANCE_CENTS = 18_200_000; // $182,000 statement checkpoint
 export const MAPLE_VALUATION_CENTS = 26_800_000; // $268,000 owner estimate
+
+// ── the mortgage payment as a standing instruction (Phase 2b item 9) ─────────
+// One RecurringTemplate on the Maple mortgage, seeded with
+// `lastDraftedOccurrence` ALREADY stamped at the occurrence due today: a daily
+// jobs run — in the demo or in the test suite — must draft nothing, or the
+// pinned REVIEW_QUEUE_ITEMS count and the pending-review insight built on it
+// would move. Like the mortgage above, no Transaction backs it, so every money
+// KPI pinned below is untouched.
+export const MAPLE_MORTGAGE_PAYMENT_DAY = 5; // due the 5th, matching the trailing interest line
+export const MAPLE_MORTGAGE_PAYMENT_CENTS = 386_000; // $3,860 total debit
+/** $660 of each payment buys down the loan; the $3,200 remainder is exactly the
+ *  trailing 'Mortgage Interest' expense, so the demo reads as one loan. */
+export const MAPLE_MORTGAGE_PRINCIPAL_CENTS = 66_000;
 /** Balance-sheet property assets: Maple at market value + the other eight at
  *  cost (the "Operating cash (period net)" line is range-dependent and is not
  *  pinned). Self-checked against SEED_PROPERTIES by the seed. */

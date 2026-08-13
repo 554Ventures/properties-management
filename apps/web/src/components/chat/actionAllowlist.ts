@@ -40,6 +40,11 @@ const ALLOWED_API_CALLS: ReadonlyArray<{ method: string; pathPattern: RegExp }> 
   { method: 'POST', pathPattern: new RegExp(`^/properties/${ID}/mortgages$`) },
   { method: 'PATCH', pathPattern: new RegExp(`^/mortgages/${ID}$`) },
   { method: 'POST', pathPattern: new RegExp(`^/properties/${ID}/valuations$`) },
+  // Recurring templates (PLAN-REAL-EQUITY §4 Phase 2b): only creation — no
+  // PATCH, no DELETE, no restore, matching the archive/restore exclusion
+  // precedent above. A template only ever drafts a pending row for the user
+  // to confirm; it never posts to the ledger itself.
+  { method: 'POST', pathPattern: /^\/recurring-templates$/ },
   { method: 'POST', pathPattern: /^\/tenants$/ },
   { method: 'PATCH', pathPattern: new RegExp(`^/tenants/${ID}$`) },
   { method: 'POST', pathPattern: /^\/contractors$/ },

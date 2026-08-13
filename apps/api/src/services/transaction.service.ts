@@ -91,6 +91,11 @@ export function toApiTransaction(t: DbTransactionWithSplits): Transaction {
     receiptUrl: t.receiptUrl,
     mortgageId: t.mortgageId,
     principalCents: t.principalCents,
+    // Provenance for a scheduler-drafted row. The review queue reads this to
+    // badge it "Auto-drafted" and to word the duplicate warning correctly, so
+    // it has to survive the mapping — the field is optional in the schema, so
+    // omitting it parses fine and simply makes the badge never appear.
+    recurringTemplateId: t.recurringTemplateId,
     createdAt: iso(t.createdAt),
     updatedAt: iso(t.updatedAt),
     splits: t.splits.map((s) => ({
@@ -1091,6 +1096,17 @@ const DUPLICATE_WINDOW_DAYS = 3;
  * are precisely the cross-source cases). Never auto-merged: the flag renders
  * as a warning with a dismiss-as-duplicate path, and bulk confirm skips it.
  * Computed fresh per queue load, like rent matches.
+ *
+ * One narrow extension for recurring templates (PLAN-REAL-EQUITY Phase 2b item
+ * 6): a bank-connected landlord with a mortgage template gets TWO rows for one
+ * payment — the one we drafted and the one the bank delivered — and both are
+ * `pending_review`, so under the confirmed-only rule neither is ever a
+ * candidate for the other and the queue invites a double-count. A
+ * template-drafted row therefore also acts as a candidate, and the pair is
+ * matched in both directions. The widening is bounded by ONE condition
+ * everywhere below: **exactly one side is template-drafted**. Two ordinary
+ * pending rows at the same amount (two $50 invoices paid the same afternoon)
+ * stay unflagged, as they always have.
  */
 async function computeDuplicates(
   accountId: string,
@@ -1099,10 +1115,19 @@ async function computeDuplicates(
   const matches = new Map<string, DuplicateSuggestion>();
   if (rows.length === 0) return matches;
   const times = rows.map((r) => r.date.getTime());
+  // Ordinary pending rows are pulled in only when a drafted row is actually on
+  // this page and needs something to match against; otherwise the pending half
+  // of the candidate set is just the drafted rows themselves.
+  const anyDrafted = rows.some((r) => r.recurringTemplateId != null);
   const candidates = await prisma.transaction.findMany({
     where: {
       accountId,
-      status: 'confirmed',
+      OR: [
+        { status: 'confirmed' },
+        anyDrafted
+          ? { status: 'pending_review' }
+          : { status: 'pending_review', recurringTemplateId: { not: null } },
+      ],
       amountCents: { in: [...new Set(rows.map((r) => r.amountCents))] },
       date: {
         gte: addDays(new Date(Math.min(...times)), -DUPLICATE_WINDOW_DAYS),
@@ -1123,6 +1148,19 @@ async function computeDuplicates(
       // day-distance heuristic, not a period/late boundary — a tz wobble is
       // immaterial against a 3-day tolerance.
       if (Math.abs(calendarDaysBetween(c.date, r.date)) > DUPLICATE_WINDOW_DAYS) return false;
+      // The template-draft pairing: one side drafted from a template, the other
+      // not. Both halves of the extension hang off it.
+      const acrossDraft = (c.recurringTemplateId != null) !== (r.recurringTemplateId != null);
+      // A pending candidate only counts across a draft — never two ordinary
+      // pending rows, which would flood every existing queue with false
+      // positives.
+      if (c.status !== 'confirmed' && !acrossDraft) return false;
+      // Vendors legitimately disagree across a draft: the template carries what
+      // the landlord typed ("First Federal Bank") and the feed carries the
+      // bank's descriptor ("FIRST FEDERAL BANK MTG PMT 0923"). Letting that
+      // disagreement hide the match is exactly how the double-count gets
+      // through, so the vendor rule doesn't apply to this pairing.
+      if (acrossDraft) return true;
       const cKey = c.vendor ? vendorMemoryKey(c.vendor) : null;
       return !rKey || !cKey || rKey === cKey;
     });

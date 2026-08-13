@@ -1,9 +1,27 @@
 // Date/period display helpers. Currency formatting always comes from
 // @hearth/shared (formatUsd / formatUsdWhole) — never reimplemented here.
+import type { RecurrenceCadence } from '@hearth/shared';
 
 /** ISO datetime → "Jul 3, 2026". */
 export function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+/**
+ * "YYYY-MM-DD" → "Sep 1, 2026". For a CALENDAR date, which is a different kind
+ * of value from the instants `formatDate` takes: `new Date('2026-09-01')` is
+ * parsed as UTC midnight, so formatting it in local time renders Aug 31 for
+ * everyone west of UTC. A recurring template due on the 1st would then read
+ * "Monthly, on the 1st · next due Aug 31" — self-contradictory in one row.
+ */
+export function formatCalendarDate(ymd: string): string {
+  const [year, month, day] = ymd.split('-').map(Number) as [number, number, number];
+  // Local-time constructor with explicit parts: no timezone shift to apply.
+  return new Date(year, month - 1, day).toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
@@ -119,6 +137,45 @@ export function trendText(pct: number): string {
 export function formatInterestRate(milliPct: number): string {
   const pct = (milliPct / 1000).toFixed(3).replace(/\.?0+$/, '');
   return `${pct}%`;
+}
+
+/** 1 → "1st", 12 → "12th", 22 → "22nd", 23 → "23rd" (the 11th–13th exceptions). */
+function ordinalSuffix(n: number): string {
+  const rem100 = n % 100;
+  if (rem100 >= 11 && rem100 <= 13) return `${n}th`;
+  switch (n % 10) {
+    case 1:
+      return `${n}st`;
+    case 2:
+      return `${n}nd`;
+    case 3:
+      return `${n}rd`;
+    default:
+      return `${n}th`;
+  }
+}
+
+/**
+ * `RecurringTemplate.cadence` + `anchorDate` → plain English, never
+ * "monthly"/an ISO date on their own: "Monthly, on the 1st" / "Quarterly, on
+ * the 15th" / "Annually, on Jan 15". `anchorDate` is a plain `YYYY-MM-DD`
+ * calendar date (no time, no zone) — read the day/month straight from the
+ * string, same as `formatCalendarDate` above. Parsing it with `new
+ * Date(anchorDate)` would reintroduce the exact bug this schema change fixed:
+ * the day silently drifting a day off depending on the reader's timezone.
+ */
+export function describeCadence(cadence: RecurrenceCadence, anchorDate: string): string {
+  const [year, month, day] = anchorDate.split('-').map(Number) as [number, number, number];
+  if (cadence === 'annual') {
+    // Local-time constructor with explicit parts (same as `formatCalendarDate`):
+    // no string-to-Date parsing, so no timezone shift to apply.
+    const monthLabel = new Date(year, month - 1, day).toLocaleDateString('en-US', {
+      month: 'short',
+    });
+    return `Annually, on ${monthLabel} ${day}`;
+  }
+  const label = cadence === 'monthly' ? 'Monthly' : 'Quarterly';
+  return `${label}, on the ${ordinalSuffix(day)}`;
 }
 
 /** camelCase / snake_case key → "Title Case" label; strips a "Cents" suffix. */

@@ -52,6 +52,15 @@ describe('isAllowedApiCall', () => {
     expect(isAllowedApiCall('POST', '/valuations')).toBe(false);
   });
 
+  it('allows creating a recurring template but never editing, archiving or restoring one', () => {
+    expect(isAllowedApiCall('POST', '/recurring-templates')).toBe(true);
+    expect(isAllowedApiCall('PATCH', '/recurring-templates/rt1')).toBe(false);
+    expect(isAllowedApiCall('DELETE', '/recurring-templates/rt1')).toBe(false);
+    expect(isAllowedApiCall('POST', '/recurring-templates/rt1/restore')).toBe(false);
+    expect(isAllowedApiCall('POST', '/recurring-templates/rt1')).toBe(false);
+    expect(isAllowedApiCall('GET', '/recurring-templates')).toBe(false);
+  });
+
   it('allows creating, editing and renewing leases, and adding a tenant to one', () => {
     expect(isAllowedApiCall('POST', '/leases')).toBe(true);
     expect(isAllowedApiCall('PATCH', '/leases/clx0f2q9d0001abcdWXYZ123')).toBe(true);

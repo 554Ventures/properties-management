@@ -1168,6 +1168,24 @@ describe('MoneyReview triage row (auto-expand)', () => {
   });
 });
 
+// "Auto-drafted" badge (PLAN-REAL-EQUITY §6 Phase 2 item 8): a row the
+// scheduler drafted from a RecurringTemplate carries `recurringTemplateId` —
+// text, not color alone, alongside the row's other state chips.
+describe('MoneyReview auto-drafted badge', () => {
+  it('shows the Auto-drafted badge only for a row with recurringTemplateId set', async () => {
+    stubDesktopViewport();
+    renderQueue([
+      { ...confidentExpense, id: 'tx-auto', recurringTemplateId: 'rt1' },
+      { ...secondExpense, recurringTemplateId: null },
+    ]);
+
+    await screen.findByText('HD SUPPLY #443');
+    const rows = queueRows();
+    expect(within(rows[0]!).getByText('Auto-drafted')).toBeInTheDocument();
+    expect(within(rows[1]!).queryByText('Auto-drafted')).not.toBeInTheDocument();
+  });
+});
+
 // A settled row is how "no jump on confirm" is enforced: the successful write
 // never removes the row from the layout, it swaps it for a same-height
 // "Confirmed"/"Dismissed" row at the same index, and only leaving the queue

@@ -141,6 +141,16 @@ export function ReviewItemCard({ item, categoryOptions, canMoney, onSettled }: R
     ambiguousRentMatch;
   const expanded = mustExpand || userExpanded;
 
+  // A template-drafted row and the bank's row for the same payment. Either side
+  // can be the one on screen: this row carries `recurringTemplateId`, or the
+  // match it found does (`source: 'recurring'`). Both are *pending*, so the
+  // ordinary "a confirmed transaction matches" copy would be simply untrue —
+  // and this is the pair most likely to be double-confirmed, since one of them
+  // arrived without the user doing anything.
+  const draftedPair =
+    Boolean(item.possibleDuplicate) &&
+    (Boolean(item.recurringTemplateId) || item.possibleDuplicate?.source === 'recurring');
+
   // The primary button names the outcome it will produce. A weak suggestion
   // deliberately does NOT name one — accepting it is a decision, not a reflex.
   const chosenCategoryName = categoryId
@@ -342,6 +352,15 @@ export function ReviewItemCard({ item, categoryOptions, canMoney, onSettled }: R
                   ). If it&rsquo;s the same money, Dismiss this one — or unlink the manual payment
                   on the Rent page first.
                 </>
+              ) : draftedPair ? (
+                <>
+                  {item.recurringTemplateId
+                    ? 'this is the row your recurring template drafted, and your bank sent one that matches'
+                    : 'your recurring template already drafted a row for this'}{' '}
+                  (&ldquo;{item.possibleDuplicate.description}&rdquo;,{' '}
+                  {formatDate(item.possibleDuplicate.date)}). They&rsquo;re the same payment —
+                  confirm one and dismiss the other, or you&rsquo;ll count it twice.
+                </>
               ) : (
                 <>
                   a confirmed {item.possibleDuplicate.source} transaction matches this amount and
@@ -389,6 +408,10 @@ export function ReviewItemCard({ item, categoryOptions, canMoney, onSettled }: R
               ) : (
                 !rentMatch && <StatusBadge tone="neutral">No suggestion</StatusBadge>
               ))}
+            {/* Provenance for a row the scheduler drafted from a
+                RecurringTemplate (PLAN-REAL-EQUITY §2/Phase 2b) — text, not
+                color alone, alongside the other state chips on this row. */}
+            {item.recurringTemplateId && <StatusBadge tone="neutral">Auto-drafted</StatusBadge>}
             <ReviewRowAmount item={item} />
             {canMoney && (
               <div className="flex items-center gap-1">

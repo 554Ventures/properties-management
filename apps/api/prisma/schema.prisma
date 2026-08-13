@@ -68,6 +68,7 @@ model Account {
   documents    Document[]
   contractors  Contractor[]
   pushDevices  PushDevice[]
+  recurringTemplates RecurringTemplate[]
   feedback     Feedback[]
   onboarding   OnboardingState?
   vendorCategoryMemories VendorCategoryMemory[]
@@ -361,6 +362,10 @@ model Transaction {
   // "splits sum to amountCents - (principalCents ?? 0)".
   mortgageId            String?
   principalCents        Int?
+  // Set when the scheduler drafted this row from a RecurringTemplate. Drives
+  // the "Auto-drafted" badge, and tells the duplicate check that this side of
+  // a pair is an expectation rather than something the bank observed.
+  recurringTemplateId   String?
   receiptUrl            String?
   externalId            String? // bank source only: Plaid transaction_id, dedups repeated syncs
   createdAt             DateTime @default(now())
@@ -372,6 +377,7 @@ model Transaction {
   category    Category?    @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   contractor  Contractor?  @relation(fields: [contractorId], references: [id], onDelete: SetNull)
   mortgage    Mortgage?    @relation(fields: [mortgageId], references: [id], onDelete: SetNull)
+  recurringTemplate RecurringTemplate? @relation(fields: [recurringTemplateId], references: [id], onDelete: SetNull)
   rentPayment RentPayment?
   rentDeposit RentPaymentDeposit?
   bankSyncDiscrepancies BankSyncDiscrepancy[]
@@ -383,7 +389,47 @@ model Transaction {
   // Balance derivation reads principal-bearing rows per mortgage on every
   // property-hub and balance-sheet load — same reason contractorId is indexed.
   @@index([mortgageId])
+  @@index([recurringTemplateId])
   @@unique([accountId, externalId])
+}
+
+// A standing instruction, never a ledger row (PLAN-REAL-EQUITY §2, Phase 2b).
+// The daily jobs loop drafts the most recent due occurrence into the review
+// queue as `pending_review` with source `recurring`; the user confirms it.
+// Nothing auto-confirms — a template says what you EXPECT to be charged, and
+// only the bank says what you actually were.
+//
+// `lastDraftedOccurrence` (YYYY-MM-DD) is the idempotency marker and survives
+// the drafted row being dismissed or deleted, so a dismissal is respected
+// rather than re-drafted the next night (same idea as Report period
+// uniqueness). archivedAt = paused; restoring never backfills missed
+// occurrences — only the most recent due one ever drafts.
+model RecurringTemplate {
+  id                     String    @id @default(cuid())
+  accountId              String
+  description            String
+  vendor                 String?
+  propertyId             String?
+  unitId                 String?
+  categoryId             String?
+  type                   String
+  amountCents            Int
+  cadence                String
+  anchorDate             DateTime
+  // A mortgage template stamps this breakdown onto each row it drafts, so the
+  // figures the user entered once are pre-filled rather than retyped monthly.
+  // Still their numbers — nothing here is computed (decision D4).
+  mortgageId             String?
+  principalCents         Int?
+  lastDraftedOccurrence  String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+  archivedAt             DateTime?
+
+  account      Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@index([accountId, archivedAt])
 }
 
 // One category slice of a transaction split across several categories (e.g. a

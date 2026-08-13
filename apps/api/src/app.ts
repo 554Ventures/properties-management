@@ -19,6 +19,7 @@ import { mcpRoutes } from './routes/mcp';
 import { mortgagesRoutes } from './routes/mortgages';
 import { onboardingRoutes } from './routes/onboarding';
 import { propertiesRoutes } from './routes/properties';
+import { recurringRoutes } from './routes/recurring';
 import { rentRoutes } from './routes/rent';
 import { reportsRoutes } from './routes/reports';
 import { settingsRoutes } from './routes/settings';
@@ -85,6 +86,7 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
       await api.register(tenantsRoutes);
       await api.register(leasesRoutes);
       await api.register(transactionsRoutes);
+      await api.register(recurringRoutes);
       await api.register(categoriesRoutes);
       await api.register(contractorsRoutes);
       await api.register(rentRoutes);
