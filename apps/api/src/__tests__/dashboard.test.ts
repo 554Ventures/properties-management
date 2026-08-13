@@ -21,6 +21,7 @@ import { addMonthsToPeriod, currentPeriod, monthStart } from '../lib/dates';
 import { prisma } from '../lib/prisma';
 import { getDemoAccountId } from '../plugins/auth';
 import * as dashboardService from '../services/dashboard.service';
+import * as propertyService from '../services/property.service';
 import * as transactionService from '../services/transaction.service';
 
 describe('dashboardService.getKpis (seed constants)', () => {
@@ -191,5 +192,39 @@ describe('tax set-aside for a young account', () => {
 
     await prisma.transaction.deleteMany({ where: { accountId: account.id } });
     await prisma.account.delete({ where: { id: account.id } });
+  });
+});
+
+describe('getPortfolioSummary counts', () => {
+  it('reports units owned separately from units leased, and pluralizes', async () => {
+    const account = await prisma.account.create({
+      data: { name: 'Vacancy Summary', email: 'vacancy-summary@example.com' },
+    });
+    // One property, two units, nothing leased. This is the shape that used to
+    // report the LEASED count as the unit count — a portfolio with a vacancy
+    // silently understated how many units it owns.
+    await propertyService.create(account.id, {
+      addressLine1: '9 Vacancy Ln',
+      city: 'Springfield',
+      state: 'IL',
+      zip: '62701',
+      units: [{ label: 'Unit A' }, { label: 'Unit B' }],
+    });
+
+    const { summary, kpis } = await dashboardService.getPortfolioSummary(account.id);
+    expect(kpis.totalUnits).toBe(0); // leased, not owned
+    expect(summary).toContain('1 property, 2 units (0 leased)');
+    expect(summary).toContain('rent collected on 0 of 0 leased units');
+    expect(summary).not.toContain('1 properties'); // singular noun for a count of 1
+
+    await prisma.account.delete({ where: { id: account.id } });
+  });
+
+  it('drops the leased parenthetical when every owned unit is leased', async () => {
+    const accountId = await getDemoAccountId();
+    const { summary } = await dashboardService.getPortfolioSummary(accountId);
+    // Seed is fully occupied, so owned === leased and the qualifier is noise.
+    expect(summary).toContain(`${SEED_PROPERTIES.length} properties, ${TOTAL_UNITS} units.`);
+    expect(summary).toContain(`${PAID_UNITS} of ${TOTAL_UNITS} leased units`);
   });
 });
