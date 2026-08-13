@@ -29,6 +29,26 @@ Settings gains an iOS-only "Mobile app" card (Face ID toggle — enabling authen
 
 **Push backend**: `PushDevice` model (account-scoped, token-unique), `POST/GET/DELETE /api/v1/devices`, `push.service.notifyAccount()` (never throws; prunes tokens APNs reports unregistered). Triggers: rent payment recorded → "Rent received"; daily 9am cron → each *newly created* `warning` insight. Adapter: `integrations/real/real-apns.ts` — ES256 provider JWT via `jose` (cached ~50 min) + raw `node:http2`; mock provider (`integrations/mock/mock-push.ts`) whenever `APNS_*` env is incomplete.
 
+## Brand assets (one source of truth)
+
+`apps/mobile/ios/App/App/AppIcon.icon` is an **Icon Composer document** (Xcode 26) and the origin of every icon in the product. It holds the white mark as SVG over an automatic gradient on `#B53C08`; `actool` compiles it into the Liquid Glass, dark and tinted variants plus the back-deployed rasters, so there is no `AppIcon.appiconset` — `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon` resolves to the `.icon`. Edit it in Icon Composer (`open apps/mobile/ios/App/App/AppIcon.icon`), never by hand-editing the PNGs it produces.
+
+Everything else is **generated from it** and must be regenerated together when the mark changes — export a 1024 master first, then downscale:
+
+```bash
+"$(xcode-select -p)/../Applications/Icon Composer.app/Contents/Executables/ictool" \
+  apps/mobile/ios/App/App/AppIcon.icon --export-image --output-file /tmp/icon-1024.png \
+  --platform iOS --rendition Default --width 1024 --height 1024 --scale 1
+```
+
+| Generated file | From the 1024 master |
+|---|---|
+| `apps/web/public/favicon.png` | 32×32, alpha kept (transparent corners survive dark tab bars) |
+| `apps/web/public/apple-touch-icon.png` | 180×180, flattened on white — also the logo in the Supabase email templates, which load it from the live site |
+| `apps/mobile/.../Assets.xcassets/Splash.imageset/*.png` | 2732×2732 white canvas, 160×160 mark centred (all three scale slots are the same file — Capacitor's convention) |
+
+`apps/web/public/logo.svg` is the one hand-maintained derivative: a flat vector restatement of the icon (square, gradient background, no corner rounding — the `rounded-*` class at each call site does that) used in the side nav, login, legal pages and OAuth consent. Keep its gradient in step with the `.icon` fill.
+
 ## Version-skew policy (binding)
 
 The shell's plugin **native code** is compiled in at build time; the **JS side** ships with the web deploy. To keep the injected bridge and the deployed JS compatible:
