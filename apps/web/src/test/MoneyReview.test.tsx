@@ -1,7 +1,11 @@
-// Bank-correction surface (WS5): "Bank changed these after you confirmed"
-// renders above the normal review queue whenever GET
-// /transactions/bank-discrepancies returns pending rows, and is absent when
-// it doesn't. Diff line + rent-linked guided unlink covered per kind.
+// Review queue tests, three groups:
+//   1. the triage row itself — collapsed one-click confirm, every auto-expand
+//      trigger, the expanded attribution grid, the warning strips, and the
+//      settled-row mechanism that keeps the list from moving under the pointer
+//   2. the manual rent charge picker (rent-match v2)
+//   3. the mortgage-payment breakdown, and the bank-correction surface (WS5):
+//      "Bank changed these after you confirmed" renders above the queue
+//      whenever GET /transactions/bank-discrepancies returns pending rows.
 import { formatUsd } from '@hearth/shared';
 import type {
   BankDiscrepancyRow,
@@ -15,7 +19,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ToastProvider, ToastViewport } from '../components/ui/Toast';
-import { formatShortDate } from '../lib/format';
+import { formatDate, formatShortDate } from '../lib/format';
 import { MoneyReview } from '../pages/MoneyReview';
 
 const emptyReviewQueue: ReviewQueueResponse = { items: [], nextCursor: null, total: 0 };
@@ -92,6 +96,25 @@ function makeFetch(routes: RouteFixture[]) {
       status: match.status ?? 200,
       headers: { 'Content-Type': 'application/json' },
     });
+  });
+}
+
+// Per-row actions go through RowActions, which reads `(min-width: 768px)` via
+// useMediaQuery — force the desktop inline-button layout (precedent:
+// RowActions.test.tsx, RentTracker.test.tsx) so Dismiss is queryable without
+// going through the mobile sheet.
+function stubDesktopViewport() {
+  vi.stubGlobal('matchMedia', (query: string): MediaQueryList => {
+    return {
+      matches: query === '(min-width: 768px)',
+      media: query,
+      onchange: null,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      dispatchEvent: () => false,
+    } as MediaQueryList;
   });
 }
 
@@ -369,7 +392,9 @@ describe('MoneyReview manual rent charge picker', () => {
       'Confirming marks T. Okafor’s Jul 2026 rent paid and files this under 21 Cedar Ct · Main as Rent.',
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    // The primary action names the outcome it produces (an armed rent link
+    // files the deposit as Rent), so "Confirm" alone no longer appears.
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm as Rent' }));
 
     await waitFor(() => {
       const call = fetchMock.mock.calls.find(
@@ -509,9 +534,12 @@ describe('MoneyReview mortgage payment breakdown', () => {
     renderMoneyReview();
 
     await screen.findByText('Mortgage payment');
-    expect(
-      screen.getByText('This bank row matches your mortgage — enter the breakdown below before confirming.'),
-    ).toBeInTheDocument();
+    // The detection now reads as a full-bleed strip above the row (bolded lead
+    // + the instruction), so the copy is asserted on the strip's container.
+    expect(screen.getByText('Matches your mortgage').parentElement).toHaveTextContent(
+      'Matches your mortgage — enter the breakdown below before confirming.',
+    );
+    // A mortgage row auto-expands: the breakdown is on screen without a click.
     expect(screen.getByLabelText(/^Principal/)).toBeInTheDocument();
     expect(screen.queryByLabelText('Category')).not.toBeInTheDocument();
     const confirmButton = screen.getByRole('button', { name: 'Confirm' });
@@ -711,11 +739,12 @@ describe('MoneyReview mortgage payment breakdown', () => {
     });
   });
 
-  // Defect 1: the breakdown used to be crammed into the card's 256px action
-  // column alongside property/unit/Confirm/Dismiss. It now renders as a
-  // full-width block below the header row; only the ordinary fields stay in
-  // the narrow column.
-  it('renders the breakdown as a full-width block outside the narrow action column, which keeps property/unit/Confirm/Dismiss', async () => {
+  // The breakdown used to be crammed into the card's 256px action column, then
+  // (defect 1) hung below the card as a full-width special case. It is now a
+  // block *inside* the row's expanded region, alongside the attribution grid —
+  // one layout, no exception. The header row keeps identity/amount/actions.
+  it('renders the breakdown as a block inside the expanded region, alongside property/unit, with the actions outside it', async () => {
+    stubDesktopViewport();
     vi.stubGlobal(
       'fetch',
       makeFetch([
@@ -727,23 +756,29 @@ describe('MoneyReview mortgage payment breakdown', () => {
         },
       ]),
     );
-    const { container } = renderMoneyReview();
+    renderMoneyReview();
 
     await screen.findByText('Mortgage payment');
-    expect(screen.getByText('Total (from your bank)')).toBeInTheDocument();
 
-    const narrowColumn = container.querySelector('.md\\:w-64');
-    expect(narrowColumn).not.toBeNull();
-    const scoped = within(narrowColumn as HTMLElement);
-    // The breakdown (and its "Total" readout) lives outside the narrow
-    // column now — only the ordinary fields and the action buttons stay in
-    // it.
-    expect(scoped.queryByText('Total (from your bank)')).not.toBeInTheDocument();
-    expect(scoped.queryByLabelText(/^Principal/)).not.toBeInTheDocument();
+    // The expanded region is the element the (absent, because this row must
+    // stay open) toggle would control: id `review-details-<id>`.
+    const region = document.getElementById('review-details-tx-mortgage');
+    expect(region).not.toBeNull();
+    const scoped = within(region as HTMLElement);
+    expect(scoped.getByText('Total (from your bank)')).toBeInTheDocument();
+    expect(scoped.getByLabelText(/^Principal/)).toBeInTheDocument();
     expect(scoped.getByLabelText('Property')).toBeInTheDocument();
     expect(scoped.getByLabelText('Unit')).toBeInTheDocument();
-    expect(scoped.getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
-    expect(scoped.getByRole('button', { name: /^Dismiss/ })).toBeInTheDocument();
+    // Actions stay on the header row, not in the form region.
+    expect(scoped.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
+    expect(scoped.queryByRole('button', { name: /^Dismiss/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+    // "— <description>" distinguishes the row action from the page's
+    // "Dismiss all"; RowActions appends the row context to every label.
+    expect(screen.getByRole('button', { name: /^Dismiss — / })).toBeInTheDocument();
+    // A row that must stay open offers no way to close it — collapsing it
+    // would hide the only control that can enable Confirm.
+    expect(screen.queryByRole('button', { name: /details/ })).not.toBeInTheDocument();
   });
 
   // Defect 2: there's deliberately no "Escrow" category — this affordance
@@ -814,5 +849,427 @@ describe('MoneyReview mortgage payment breakdown', () => {
     expect(document.getElementById(describedById!)).toHaveTextContent(
       '$1,000.00 of $1,000.00 allocated · row 2 still needs a category and amount',
     );
+  });
+});
+
+// ── the triage row ─────────────────────────────────────────────────────────
+// The queue is a place to clear things, so the default row is one line with a
+// primary action that names its outcome; the attribution form appears at full
+// card width only when the row can't be cleared in one click.
+
+const suppliesCategory = moneyCategory({ id: 'c-supplies', name: 'Supplies', type: 'expense' });
+const rentCategory = moneyCategory({ id: 'c-rent', name: 'Rent', type: 'income' });
+
+// The common case: a confident, learned suggestion.
+const confidentExpense: ReviewQueueItem = {
+  ...plainExpenseItem,
+  id: 'tx-supplies',
+  description: 'HD SUPPLY #443',
+  vendor: 'HD Supply',
+  amountCents: 16400,
+  aiSuggestedCategoryId: 'c-supplies',
+  aiConfidence: 0.84,
+  aiSuggestedCategoryName: 'Supplies',
+  suggestionSource: 'learned',
+};
+
+// An exact-amount, in-window match on a wholly unpaid charge — the API's
+// uncontested 0.9 score.
+const uncontestedRentMatch = {
+  rentPaymentId: 'rp-match',
+  leaseId: 'l1',
+  tenantName: 'T. Okafor',
+  propertyId: 'p1',
+  propertyLabel: '21 Cedar Ct',
+  unitId: 'u1',
+  unitLabel: 'Main',
+  period: '2026-07',
+  dueDate: '2026-07-01T00:00:00.000Z',
+  amountCents: 115000,
+  paidCents: 0,
+  confidence: 0.9,
+  matchedName: null,
+};
+
+const strongRentSuggestion = {
+  aiSuggestedCategoryId: 'c-rent',
+  aiConfidence: 0.95,
+  aiSuggestedCategoryName: 'Rent',
+};
+
+const secondExpense: ReviewQueueItem = {
+  ...confidentExpense,
+  id: 'tx-second',
+  description: 'LOWES #00907',
+  vendor: "Lowe's",
+  amountCents: 6875,
+};
+
+/** The queue list, scoped away from the breadcrumb list and the filter bar
+ *  (whose "Property"/"Type" labels would otherwise collide with a row's). */
+function queueList(): HTMLElement {
+  return screen.getByRole('list', { name: 'Pending transactions' });
+}
+
+function queueRows(): HTMLElement[] {
+  return within(queueList()).getAllByRole('listitem');
+}
+
+function renderQueue(items: ReviewQueueItem[], categories: Category[] = [suppliesCategory, rentCategory], extra: RouteFixture[] = []) {
+  const fetchMock = makeFetch([
+    {
+      method: 'GET',
+      path: '/api/v1/transactions/review',
+      body: { items, nextCursor: null, total: items.length },
+    },
+    { method: 'GET', path: '/api/v1/categories', body: categories },
+    { method: 'GET', path: '/api/v1/properties', body: [] },
+    // The mortgage editor's last-month-prefill lookup.
+    { method: 'GET', path: '/api/v1/transactions', body: { items: [], nextCursor: null, total: 0 } },
+    ...extra,
+  ]);
+  vi.stubGlobal('fetch', fetchMock);
+  renderMoneyReview();
+  return fetchMock;
+}
+
+describe('MoneyReview triage row (collapsed)', () => {
+  it('confirms in one click, with the primary button naming the outcome and no form on screen', async () => {
+    stubDesktopViewport();
+    const fetchMock = renderQueue([confidentExpense], [suppliesCategory], [
+      { method: 'POST', path: '/api/v1/transactions/tx-supplies/confirm', body: {} },
+    ]);
+
+    await screen.findByText('HD SUPPLY #443');
+    // vendor · date on one line, and no attribution form until it's asked for.
+    // (Dates render through the app's local-timezone formatter, so expected
+    // strings are computed, never hardcoded.)
+    expect(
+      screen.getByText(`HD Supply · ${formatDate(confidentExpense.date)}`),
+    ).toBeInTheDocument();
+    const row = within(queueRows()[0]!);
+    expect(row.queryByLabelText('Category')).not.toBeInTheDocument();
+    expect(row.queryByLabelText('Property')).not.toBeInTheDocument();
+    expect(row.queryByLabelText('Treatment')).not.toBeInTheDocument();
+    // The suggestion chip keeps its confidence and the learning note.
+    expect(
+      screen.getByRole('button', { name: /suggests: Supplies \(84%\) — from your past choice/ }),
+    ).toBeInTheDocument();
+    // Expense: signed amount, tabular, distinguished by the sign not just color.
+    expect(screen.getByText(`−${formatUsd(16400)}`)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm as Supplies' }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url) === '/api/v1/transactions/tx-supplies/confirm' &&
+          (init as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(call).toBeDefined();
+      // No categoryId means "accept the suggestion", which keeps the audit
+      // actor ai_suggested_user_confirmed.
+      expect((call![1] as RequestInit).body).toBe('{}');
+    });
+    expect(await screen.findByText('Confirmed “HD SUPPLY #443”.')).toBeInTheDocument();
+  });
+
+  it('the expand control is a real toggle that opens all four attribution fields', async () => {
+    stubDesktopViewport();
+    renderQueue([confidentExpense], [suppliesCategory]);
+
+    await screen.findByText('HD SUPPLY #443');
+    const toggle = screen.getByRole('button', { name: /^Edit details/ });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    // The region is unmounted while collapsed, so there must be no
+    // `aria-controls` pointing at a missing id — an invalid reference assistive
+    // tech has to guess at. `aria-expanded` carries the state on its own.
+    expect(toggle).not.toHaveAttribute('aria-controls');
+
+    fireEvent.click(toggle);
+
+    const opened = screen.getByRole('button', { name: /^Hide details/ });
+    expect(opened).toHaveAttribute('aria-expanded', 'true');
+    // Now that it exists, the reference must be present and resolve.
+    const regionId = opened.getAttribute('aria-controls');
+    expect(regionId).toBe('review-details-tx-supplies');
+    const region = document.getElementById(regionId!);
+    expect(region).not.toBeNull();
+    const scoped = within(region as HTMLElement);
+    expect(scoped.getByLabelText('Category')).toBeInTheDocument();
+    expect(scoped.getByLabelText('Property')).toBeInTheDocument();
+    expect(scoped.getByLabelText('Unit')).toBeInTheDocument();
+    expect(scoped.getByLabelText('Treatment')).toBeInTheDocument();
+    // Unit still depends on Property, and says why it's disabled.
+    const unit = scoped.getByLabelText('Unit');
+    expect(unit).toBeDisabled();
+    const unitWhy = unit.getAttribute('aria-describedby');
+    expect(unitWhy).toBeTruthy();
+    expect(document.getElementById(unitWhy!)).toHaveTextContent('Pick a property first.');
+
+    // Choosing a category renames the outcome the primary button will produce.
+    fireEvent.change(scoped.getByLabelText('Category'), { target: { value: 'c-supplies' } });
+    expect(screen.getByRole('button', { name: 'Confirm as Supplies' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /^Hide details/ }));
+    expect(document.getElementById(regionId!)).toBeNull();
+  });
+});
+
+describe('MoneyReview triage row (auto-expand)', () => {
+  it('a row with no suggestion opens itself, and says so instead of guessing', async () => {
+    stubDesktopViewport();
+    const noSuggestion: ReviewQueueItem = {
+      ...confidentExpense,
+      id: 'tx-none',
+      description: 'SUMMIT ROOFING LLC',
+      vendor: 'Summit Roofing',
+      aiSuggestedCategoryId: null,
+      aiConfidence: null,
+      aiSuggestedCategoryName: null,
+      suggestionSource: undefined,
+    };
+    renderQueue([noSuggestion], [suppliesCategory]);
+
+    await screen.findByText('SUMMIT ROOFING LLC');
+    expect(screen.getByLabelText('Category')).toBeInTheDocument();
+    expect(screen.getByText('No suggestion')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /details/ })).not.toBeInTheDocument();
+  });
+
+  it('a suggestion under the 0.7 gate opens the row, strips the warning, and refuses to name the outcome', async () => {
+    stubDesktopViewport();
+    renderQueue([{ ...confidentExpense, id: 'tx-weak', aiConfidence: 0.55 }], [suppliesCategory]);
+
+    await screen.findByText('HD SUPPLY #443');
+    expect(screen.getByLabelText('Category')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /details/ })).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/Low confidence \(55%\) — check this one/).parentElement,
+    ).toHaveTextContent(
+      'Low confidence (55%) — check this one before confirming. Pick the category yourself below, or accept the suggestion if it looks right.',
+    );
+    // A weak suggestion is a decision, not a reflex — the button doesn't
+    // pre-name it (accepting it is still one click via the chip + Confirm).
+    expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Confirm as Supplies' })).not.toBeInTheDocument();
+  });
+
+  it('a possible duplicate opens the row and reads its full copy across the card', async () => {
+    stubDesktopViewport();
+    const duplicateOf = {
+      transactionId: 'tx-old',
+      description: 'Roof repair — flashing and shingles',
+      date: '2026-08-14T00:00:00.000Z',
+      source: 'bank' as const,
+    };
+    renderQueue(
+      [{ ...confidentExpense, id: 'tx-dupe', possibleDuplicate: duplicateOf }],
+      [suppliesCategory],
+    );
+
+    await screen.findByText('HD SUPPLY #443');
+    expect(screen.getByLabelText('Category')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /details/ })).not.toBeInTheDocument();
+    expect(screen.getByText(/Possible duplicate:/).parentElement).toHaveTextContent(
+      `a confirmed bank transaction matches this amount and date (“Roof repair — flashing and shingles”, ${formatDate(duplicateOf.date)}). If it’s the same money, Dismiss this one.`,
+    );
+  });
+
+  it('keeps the rent-aware duplicate copy when the match backs a manually recorded rent', async () => {
+    stubDesktopViewport();
+    const manualRent = {
+      transactionId: 'tx-manual-rent',
+      description: 'July rent — T. Okafor',
+      date: '2026-07-02T00:00:00.000Z',
+      source: 'manual' as const,
+      rentPeriod: '2026-07',
+    };
+    renderQueue([{ ...plainIncomeItem, id: 'tx-dupe-rent', possibleDuplicate: manualRent }]);
+
+    await screen.findByText('Zelle payment');
+    expect(screen.getByText(/Possible duplicate:/).parentElement).toHaveTextContent(
+      `this looks like the deposit behind the rent you recorded manually for Jul 2026 (“July rent — T. Okafor”, ${formatDate(manualRent.date)}). If it’s the same money, Dismiss this one — or unlink the manual payment on the Rent page first.`,
+    );
+  });
+
+  it('a mortgage payment opens itself with the breakdown, and Confirm explains why it is blocked', async () => {
+    stubDesktopViewport();
+    renderQueue([mortgageDetectedItem], mortgageCategories);
+
+    await screen.findByText('Mortgage payment');
+    expect(screen.getByLabelText(/^Principal/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /details/ })).not.toBeInTheDocument();
+    const confirmButton = screen.getByRole('button', { name: 'Confirm' });
+    expect(confirmButton).toBeDisabled();
+    const describedById = confirmButton.getAttribute('aria-describedby');
+    expect(describedById).toBeTruthy();
+    expect(document.getElementById(describedById!)).toHaveTextContent(
+      'Enter the principal to see what still needs a category.',
+    );
+    // Treatment is suppressed for a mortgage row: principal and a P&L
+    // classification are mutually exclusive.
+    expect(screen.queryByLabelText('Treatment')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Not a mortgage payment' })).toBeInTheDocument();
+  });
+
+  it('an ambiguous rent match opens the row, keeping the match in its AiSurface chip', async () => {
+    stubDesktopViewport();
+    // 0.85 is the API's "a name broke an amount/date tie" score — the match came
+    // out of an ambiguity, so the row is worth opening. The category suggestion
+    // is strong, so nothing else forces it open.
+    renderQueue([
+      {
+        ...plainIncomeItem,
+        id: 'tx-amb',
+        ...strongRentSuggestion,
+        rentMatch: { ...uncontestedRentMatch, confidence: 0.85, matchedName: 'OKAFOR' },
+      },
+    ]);
+
+    await screen.findByText('Zelle payment');
+    expect(screen.getByLabelText('Category')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /details/ })).not.toBeInTheDocument();
+    // The chip is a pill, so it carries the label only — the property and unit
+    // read as prose beside it rather than wrapping the pill onto three lines.
+    expect(
+      screen.getByRole('button', {
+        name: /suggests: T\. Okafor's Jul 2026 rent \(85%\) — deposit names OKAFOR/,
+      }),
+    ).toBeInTheDocument();
+    // Location and consequence read as one sentence beside the pill.
+    expect(
+      screen.getByText(
+        '21 Cedar Ct · Main — linking marks that charge paid instead of counting this deposit as new income.',
+      ),
+    ).toBeInTheDocument();
+    // The manual picker is reachable in the opened row.
+    expect(screen.getByRole('button', { name: 'Link to rent…' })).toBeInTheDocument();
+  });
+
+  it('an uncontested rent match stays collapsed — it is still a one-click row', async () => {
+    stubDesktopViewport();
+    renderQueue([
+      {
+        ...plainIncomeItem,
+        id: 'tx-clean',
+        ...strongRentSuggestion,
+        rentMatch: uncontestedRentMatch,
+      },
+    ]);
+
+    await screen.findByText('Zelle payment');
+    expect(screen.queryByLabelText('Category')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Edit details/ })).toBeInTheDocument();
+    // …and the match still reads across the card, above the row.
+    expect(screen.getByText(/T\. Okafor's Jul 2026 rent/)).toBeInTheDocument();
+  });
+});
+
+// A settled row is how "no jump on confirm" is enforced: the successful write
+// never removes the row from the layout, it swaps it for a same-height
+// "Confirmed"/"Dismissed" row at the same index, and only leaving the queue
+// (pointer or focus) drops it.
+describe('MoneyReview holds scroll position on confirm', () => {
+  function dynamicQueue() {
+    let cleared = false;
+    let reviewCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = String(input).replace(/^https?:\/\/[^/]+/, '').split('?')[0] ?? '';
+      const method = (init?.method ?? 'GET').toUpperCase();
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url === '/api/v1/transactions/review' && method === 'GET') {
+        reviewCalls += 1;
+        const items = cleared ? [secondExpense] : [confidentExpense, secondExpense];
+        return json({ items, nextCursor: null, total: items.length });
+      }
+      if (url === '/api/v1/categories' && method === 'GET') return json([suppliesCategory]);
+      if (url === '/api/v1/properties' && method === 'GET') return json([]);
+      if (
+        (url === '/api/v1/transactions/tx-supplies/confirm' ||
+          url === '/api/v1/transactions/tx-supplies/dismiss') &&
+        method === 'POST'
+      ) {
+        cleared = true;
+        return json({ id: 'tx-supplies' });
+      }
+      return json({ error: { code: 'not_found', message: url } }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderMoneyReview();
+    return { reviewCalls: () => reviewCalls };
+  }
+
+  it('keeps the confirmed row at its index and its height after the queue refetches without it', async () => {
+    stubDesktopViewport();
+    const { reviewCalls } = dynamicQueue();
+
+    await screen.findByText('HD SUPPLY #443');
+    const before = reviewCalls();
+    // The live card's height is measured the instant before it settles; the
+    // settled card holds it, so nothing below the row can move.
+    const rect = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockReturnValue({ height: 402 } as DOMRect);
+    fireEvent.click(within(queueRows()[0]!).getByRole('button', { name: 'Confirm as Supplies' }));
+    await screen.findByText('Confirmed as Supplies');
+    rect.mockRestore();
+
+    // The server has since dropped the row from the queue…
+    await waitFor(() => expect(reviewCalls()).toBeGreaterThan(before));
+    // …and it is still exactly where it was, at the height it had.
+    const rowsAfter = queueRows();
+    expect(rowsAfter).toHaveLength(2);
+    expect(rowsAfter[0]).toHaveTextContent('HD SUPPLY #443');
+    expect(rowsAfter[0]).toHaveTextContent('Confirmed as Supplies');
+    expect(rowsAfter[1]).toHaveTextContent('LOWES #00907');
+    expect(rowsAfter[0]!.firstElementChild).toHaveStyle({ minHeight: '402px' });
+    // Its controls are gone, so a second click can't re-fire anything.
+    expect(
+      within(rowsAfter[0]!).queryByRole('button', { name: 'Confirm as Supplies' }),
+    ).not.toBeInTheDocument();
+
+    // Leaving the queue is what finally drops it — and it never comes back as
+    // pending, even though this render's queue response still listed it.
+    fireEvent(queueList().parentElement!, new Event('pointerleave'));
+    await waitFor(() => expect(queueRows()).toHaveLength(1));
+    expect(screen.queryByText('HD SUPPLY #443')).not.toBeInTheDocument();
+  });
+
+  it('keeps focus on the settled row, and only a real move out of the queue drops it', async () => {
+    stubDesktopViewport();
+    dynamicQueue();
+
+    await screen.findByText('HD SUPPLY #443');
+    fireEvent.click(within(queueRows()[0]!).getByRole('button', { name: 'Confirm as Supplies' }));
+    await screen.findByText('Confirmed as Supplies');
+
+    // The pressed button unmounted; focus lands on the outcome, not the body.
+    expect(queueRows()[0]!.contains(document.activeElement)).toBe(true);
+
+    // A focusout with no new target is exactly that unmount — it must not
+    // drop the row (that would undo the whole point).
+    fireEvent.focusOut(queueList(), { relatedTarget: null });
+    expect(queueRows()).toHaveLength(2);
+
+    // Tabbing out of the queue is a real move away, so the row leaves.
+    fireEvent.focusOut(queueList(), { relatedTarget: screen.getByLabelText('Search') });
+    await waitFor(() => expect(queueRows()).toHaveLength(1));
+  });
+
+  it('dismissing settles the row in place the same way', async () => {
+    stubDesktopViewport();
+    dynamicQueue();
+
+    await screen.findByText('HD SUPPLY #443');
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss — “HD SUPPLY #443”' }));
+
+    expect(await screen.findByText('Dismissed')).toBeInTheDocument();
+    const rowsAfter = queueRows();
+    expect(rowsAfter).toHaveLength(2);
+    expect(rowsAfter[0]).toHaveTextContent('HD SUPPLY #443');
+    expect(rowsAfter[1]).toHaveTextContent('LOWES #00907');
   });
 });
