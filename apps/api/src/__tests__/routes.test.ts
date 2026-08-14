@@ -170,7 +170,7 @@ describe('GET endpoints satisfy the shared response schemas', () => {
 
   it('/categories', async () => {
     const categories = CategoryListResponseSchema.parse(await getJson('/api/v1/categories'));
-    expect(categories.length).toBe(16);
+    expect(categories.length).toBe(17);
     expect(categories.every((c) => c.isSystem)).toBe(true);
   });
 

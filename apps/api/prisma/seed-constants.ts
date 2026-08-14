@@ -2,6 +2,11 @@
 // prisma/seed.ts and the tests (ARCHITECTURE "Risks": seed-number drift).
 // Change a number here and the dashboard tests change with it.
 import { addMonthsToPeriod, currentPeriod, monthStart } from '../src/lib/dates';
+import {
+  NON_RENTAL_INCOME_CATEGORY,
+  NOT_ON_SCHEDULE_E,
+  SCHEDULE_E_RENTS_LINE,
+} from '../src/lib/schedule-e';
 import { slugify } from '../src/lib/strings';
 
 // ── demo account ─────────────────────────────────────────────────────────────
@@ -263,9 +268,14 @@ export const SEED_CATEGORIES: Array<{
   type: 'income' | 'expense';
   irsScheduleELine: string;
 }> = [
-  { name: 'Rent', type: 'income', irsScheduleELine: 'Line 3 – Rents received' },
-  { name: 'Late Fees', type: 'income', irsScheduleELine: 'Line 3 – Rents received' },
-  { name: 'Other Income', type: 'income', irsScheduleELine: 'Line 3 – Rents received' },
+  // Income lines come from the constants so the report service's Line 3 branch
+  // and the seeded data can never drift (lib/schedule-e.ts).
+  { name: 'Rent', type: 'income', irsScheduleELine: SCHEDULE_E_RENTS_LINE },
+  { name: 'Late Fees', type: 'income', irsScheduleELine: SCHEDULE_E_RENTS_LINE },
+  // "Other Income" is other RENTAL income (laundry, parking, pet rent) — still
+  // Line 3. Receipts that aren't rental income at all get the category below.
+  { name: 'Other Income', type: 'income', irsScheduleELine: SCHEDULE_E_RENTS_LINE },
+  { name: NON_RENTAL_INCOME_CATEGORY, type: 'income', irsScheduleELine: NOT_ON_SCHEDULE_E },
   { name: 'Repairs', type: 'expense', irsScheduleELine: 'Line 14 – Repairs' },
   { name: 'Capital Improvements', type: 'expense', irsScheduleELine: 'Line 18 – Depreciation (capitalized)' },
   { name: 'Utilities', type: 'expense', irsScheduleELine: 'Line 17 – Utilities' },

@@ -717,3 +717,95 @@ describe('period-keyed insights supersede their prior periods', () => {
     expect(row?.status).toBe('active');
   });
 });
+
+// Every seeded income category maps to Schedule E "Line 3 – Rents received",
+// so before the Not Rental Income category existed a tax refund had nowhere
+// else to land. This rule flags what's already on the books; it never
+// recategorizes anyone's history.
+describe('misfiled_income', () => {
+  async function nonRentalCategory() {
+    return prisma.category.findFirstOrThrow({
+      where: { name: 'Not Rental Income', type: 'income', isSystem: true },
+    });
+  }
+
+  it('flags Line-3 income that reads as non-rental, and clears once recategorized', async () => {
+    const account = await prisma.account.create({
+      data: { name: 'Misfiled Income', email: 'misfiled-income@integrationtest.example' },
+    });
+    const rent = await prisma.category.findFirstOrThrow({
+      where: { name: 'Rent', type: 'income', isSystem: true },
+    });
+    const txn = await prisma.transaction.create({
+      data: {
+        accountId: account.id,
+        date: new Date(),
+        amountCents: 184_200,
+        type: 'income',
+        description: 'IRS TREAS 310 TAX REF',
+        source: 'bank',
+        status: 'confirmed',
+        categoryId: rent.id,
+      },
+    });
+
+    const created = await insightService.generateInsights(account.id);
+    const card = created.find((c) => c.type === 'misfiled_income');
+    expect(card).toBeDefined();
+    expect(card?.severity).toBe('warning');
+    expect(card?.title).toBe('1 deposit may not be rental income');
+    expect(card?.actionTarget).toBe('/money?type=income');
+    expect(card?.body).toContain('$1,842');
+    expect(card?.body).toContain('Not Rental Income');
+
+    // The fix the card asks for retires it — the condition stopped being true.
+    await prisma.transaction.update({
+      where: { id: txn.id },
+      data: { categoryId: (await nonRentalCategory()).id },
+    });
+    await insightService.generateInsights(account.id);
+    const row = await prisma.insight.findUnique({ where: { id: card!.id } });
+    expect(row?.status).toBe('resolved');
+  });
+
+  it('ignores income already treated as a transfer (out of the books entirely)', async () => {
+    const account = await prisma.account.create({
+      data: { name: 'Treated Transfer', email: 'treated-transfer@integrationtest.example' },
+    });
+    await prisma.transaction.create({
+      data: {
+        accountId: account.id,
+        date: new Date(),
+        amountCents: 500_000,
+        type: 'income',
+        description: 'TRANSFER FROM CHECKING 4471',
+        source: 'bank',
+        status: 'confirmed',
+        classification: 'transfer',
+      },
+    });
+
+    const created = await insightService.generateInsights(account.id);
+    expect(created.find((c) => c.type === 'misfiled_income')).toBeUndefined();
+  });
+
+  it('stays quiet on ordinary rent', async () => {
+    const account = await prisma.account.create({
+      data: { name: 'Ordinary Rent', email: 'ordinary-rent@integrationtest.example' },
+    });
+    await prisma.transaction.create({
+      data: {
+        accountId: account.id,
+        date: new Date(),
+        amountCents: 195_000,
+        type: 'income',
+        description: 'Rent — Dana Okafor — 2026-08',
+        source: 'bank',
+        status: 'confirmed',
+      },
+    });
+
+    const created = await insightService.generateInsights(account.id);
+    expect(created.find((c) => c.type === 'misfiled_income')).toBeUndefined();
+  });
+});
