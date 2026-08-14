@@ -224,18 +224,40 @@ export async function update(
   input: UpdateLeaseInput,
   actor: AuditActor = 'user',
 ): Promise<Lease> {
-  await getOwned(accountId, id);
-  const row = await prisma.lease.update({
-    where: { id },
-    data: {
-      ...(input.rentCents !== undefined ? { rentCents: input.rentCents } : {}),
-      ...(input.dueDay !== undefined ? { dueDay: input.dueDay } : {}),
-      // omitted → unchanged; null → clear to account default; number → set (WS7).
-      ...(input.lateFeeCents !== undefined ? { lateFeeCents: input.lateFeeCents } : {}),
-      ...(input.startDate !== undefined ? { startDate: new Date(input.startDate) } : {}),
-      ...(input.endDate !== undefined ? { endDate: new Date(input.endDate) } : {}),
-      ...(input.status !== undefined ? { status: input.status } : {}),
-    },
+  const existing = await getOwned(accountId, id);
+  // Reconcile only when a field that can change a charge's derived amount is
+  // actually in the patch: rentCents/startDate/endDate feed the blend
+  // formula directly, and status matters too — reconcileUnitCharges filters
+  // covering leases to status in ('active','ended'), so a transition into or
+  // out of that pair (e.g. reactivating an 'ended' lease) changes which
+  // leases cover a period even with dates/rent unchanged. dueDay and
+  // lateFeeCents never enter the charge-amount formula, so an edit touching
+  // only those skips the reconcile query/transaction work entirely —
+  // conditional over unconditional since most lease edits are exactly that
+  // (correcting a due day or late-fee policy) and reconcile is a real query
+  // plus a possible unit-wide charge scan.
+  const affectsCharges =
+    input.rentCents !== undefined ||
+    input.startDate !== undefined ||
+    input.endDate !== undefined ||
+    input.status !== undefined;
+  const tz = affectsCharges ? await accountTimezone(accountId) : null;
+
+  const { row, adjustments } = await prisma.$transaction(async (tx) => {
+    const updated = await tx.lease.update({
+      where: { id },
+      data: {
+        ...(input.rentCents !== undefined ? { rentCents: input.rentCents } : {}),
+        ...(input.dueDay !== undefined ? { dueDay: input.dueDay } : {}),
+        // omitted → unchanged; null → clear to account default; number → set (WS7).
+        ...(input.lateFeeCents !== undefined ? { lateFeeCents: input.lateFeeCents } : {}),
+        ...(input.startDate !== undefined ? { startDate: new Date(input.startDate) } : {}),
+        ...(input.endDate !== undefined ? { endDate: new Date(input.endDate) } : {}),
+        ...(input.status !== undefined ? { status: input.status } : {}),
+      },
+    });
+    const changes = tz ? await reconcileUnitCharges(tx, existing.unitId, tz) : [];
+    return { row: updated, adjustments: changes };
   });
   await writeAudit(accountId, {
     actor,
@@ -244,6 +266,7 @@ export async function update(
     entityId: id,
     detail: { rentCents: row.rentCents, dueDay: row.dueDay, lateFeeCents: row.lateFeeCents, status: row.status },
   });
+  await auditChargeAdjustments(accountId, actor, 'lease_updated', adjustments);
   return toApiLease(row);
 }
 
@@ -317,7 +340,7 @@ async function reconcileUnitCharges(
 async function auditChargeAdjustments(
   accountId: string,
   actor: AuditActor,
-  reason: 'lease_terminated' | 'lease_renewal_switchover' | 'lease_created',
+  reason: 'lease_terminated' | 'lease_renewal_switchover' | 'lease_created' | 'lease_updated',
   adjustments: ChargeAdjustment[],
 ): Promise<void> {
   for (const a of adjustments) {
