@@ -57,6 +57,7 @@ import {
 import type { UsageLog } from '../ai/agent-loop';
 import { createReceiptExtractor, type ReceiptImageMimetype } from '../ai/receipt';
 import { writeAudit, type AuditActor } from './audit.service';
+import { descriptorNamesTenant } from './name-match';
 import {
   RENT_MATCH_WINDOW_DAYS,
   findRentMatchCandidates,
@@ -1214,6 +1215,7 @@ export async function confirm(
       input.categoryId,
       actor,
       input.linkSource === 'manual',
+      input.tenantId,
     );
   }
   assertClassificationValid(input.classification, existing.type);
@@ -1375,6 +1377,13 @@ export async function confirm(
  * the Rent category, and the RentPayment flips to paid with the link set —
  * the same `RentPayment.transactionId` link recordPayment creates, just
  * pointing at the bank row instead of a new manual one.
+ *
+ * The deposit also carries who paid, exactly as recordPayment's does: an
+ * explicit `tenantId` (validated against the lease) when the caller states one,
+ * otherwise the tenant the bank descriptor names — but only when it names
+ * exactly one of the lease's tenants. Without that, two roommates closing one
+ * charge with two Zelle deposits left both co-tenants reading `paidCents: 0`
+ * while the charge itself read paid.
  */
 async function confirmWithRentLink(
   accountId: string,
@@ -1383,6 +1392,7 @@ async function confirmWithRentLink(
   categoryIdOverride: string | undefined,
   actor: AuditActor,
   manualLink = false,
+  tenantId?: string,
 ): Promise<Transaction> {
   if (existing.type !== 'income') {
     throw new BadRequestError('only an income transaction can be linked to a rent payment');
@@ -1397,9 +1407,35 @@ async function confirmWithRentLink(
   }
   const payment = await prisma.rentPayment.findFirst({
     where: { id: rentPaymentId, lease: { unit: { property: { accountId } } } },
-    include: { lease: { include: { unit: true } } },
+    include: {
+      lease: {
+        include: {
+          unit: true,
+          leaseTenants: { include: { tenant: true }, orderBy: { isPrimary: 'desc' } },
+        },
+      },
+    },
   });
   if (!payment) throw new NotFoundError('rent payment', rentPaymentId);
+  // Attribution integrity, same rule and same wording as recordPayment: a
+  // deposit can only credit a tenant who is actually on this lease, otherwise
+  // per-tenant share tracking would silently lie.
+  if (tenantId && !payment.lease.leaseTenants.some((lt) => lt.tenantId === tenantId)) {
+    throw new BadRequestError('tenant is not on this lease');
+  }
+  // Inferred attribution: the bank descriptor ("ZELLE FROM HEIDI PREBYS")
+  // usually names the payer, and the same matcher already decides the higher-
+  // stakes question of WHICH charge a deposit pays. It only ever fills a gap —
+  // an explicit tenantId wins — and it refuses to guess: zero or 2+ lease
+  // tenants named leaves the deposit unattributed, exactly as today.
+  const descriptor = `${existing.description} ${existing.vendor ?? ''}`;
+  const namedTenants = tenantId
+    ? []
+    : payment.lease.leaseTenants.filter((lt) =>
+        descriptorNamesTenant(lt.tenant.fullName, descriptor),
+      );
+  const inferred = namedTenants.length === 1 ? namedTenants[0] : undefined;
+  const depositTenantId = tenantId ?? inferred?.tenantId ?? null;
   // The heuristic only ever suggests exact-remaining matches, but the endpoint
   // accepts any rentPaymentId — a deposit may undershoot the remaining balance
   // (partial payment) but never overshoot it. Mirrors recordPayment's guard.
@@ -1461,6 +1497,7 @@ async function confirmWithRentLink(
         rentPaymentId: payment.id,
         transactionId: existing.id,
         amountCents: existing.amountCents,
+        tenantId: depositTenantId,
         method,
         paidAt: existing.date,
       },
@@ -1506,6 +1543,13 @@ async function confirmWithRentLink(
       paidCents: updatedPayment.paidCents,
       method,
       via: existing.source === 'bank' ? 'bank_import' : 'transaction_link',
+      // Who the deposit credits, and on whose say-so: 'stated' is the caller's
+      // own tenantId, 'inferred' is the descriptor naming exactly one lease
+      // tenant. Omitted entirely when the deposit stays unattributed, so a
+      // reader never has to tell "nobody" apart from "not recorded".
+      ...(depositTenantId
+        ? { tenantId: depositTenantId, tenantAttribution: tenantId ? 'stated' : 'inferred' }
+        : {}),
     },
   });
   return toApiTransaction(row);

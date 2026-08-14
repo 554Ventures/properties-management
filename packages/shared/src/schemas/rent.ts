@@ -119,6 +119,14 @@ export const RecordRentPaymentInputSchema = z.object({
   tenantId: z.string().optional(), // which co-tenant paid (must be on the lease)
 });
 
+// PATCH /rent/payments/:id/deposits/:depositId — re-point (or clear) which
+// co-tenant an ALREADY-linked deposit credits. Attribution only: no money
+// moves, so the charge's paidCents/status/remaining are untouched. `null`
+// clears it back to "the unit paid, we don't know who".
+export const AttributeRentDepositInputSchema = z.object({
+  tenantId: z.string().nullable(), // must be on the charge's lease
+});
+
 // An open (due/processing, unarchived) expected rent charge a deposit could be
 // manually linked to — the option row of the manual charge picker (rent-match
 // v2). Reused by GET /rent/open-charges and the ambiguous-deposit candidates.

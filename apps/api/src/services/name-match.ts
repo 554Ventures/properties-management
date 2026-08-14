@@ -47,6 +47,16 @@ function nameMatchesDescriptor(fullName: string, descriptorTokens: ReadonlySet<s
 }
 
 /**
+ * Does this descriptor text mention this one tenant? The same rule
+ * `matchTenantName` applies, exposed per-name so a caller can ask how MANY
+ * tenants a descriptor names rather than just which one it names first —
+ * deposit attribution must refuse to guess when two tenants both match.
+ */
+export function descriptorNamesTenant(fullName: string, descriptorText: string): boolean {
+  return nameMatchesDescriptor(fullName, new Set(nameTokens(descriptorText)));
+}
+
+/**
  * First (primary-first) tenant name the descriptor text mentions, else null.
  * Callers build `descriptorText` as `description + ' ' + (vendor ?? '')`.
  */

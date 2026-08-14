@@ -893,6 +893,55 @@ export async function unlinkDeposit(
 }
 
 /**
+ * Say which co-tenant an already-linked deposit credits (or clear it with
+ * `null`). Attribution only — the deposit's amount and the charge's
+ * paidCents/status/remaining are deliberately untouched, because who paid and
+ * how much was received are separate facts. This exists so a deposit imported
+ * before attribution was recorded can be repaired in place: the alternative,
+ * unlink-and-relink, briefly reopens a settled charge and rewrites its history
+ * to fix a field that never affected the money.
+ */
+export async function attributeDeposit(
+  accountId: string,
+  rentPaymentId: string,
+  depositId: string,
+  tenantId: string | null,
+  actor: AuditActor = 'user',
+): Promise<RentPayment> {
+  const deposit = await prisma.rentPaymentDeposit.findFirst({
+    where: {
+      id: depositId,
+      rentPaymentId,
+      rentPayment: { lease: { unit: { property: { accountId } } } },
+    },
+    include: { rentPayment: { include: { lease: { include: { leaseTenants: true } } } } },
+  });
+  if (!deposit) throw new NotFoundError('rent deposit', depositId);
+  // Same rule as recordPayment: credit only a tenant actually on this lease.
+  if (tenantId && !deposit.rentPayment.lease.leaseTenants.some((lt) => lt.tenantId === tenantId)) {
+    throw new BadRequestError('tenant is not on this lease');
+  }
+  if (deposit.tenantId === tenantId) return toApiRentPayment(deposit.rentPayment);
+
+  await prisma.rentPaymentDeposit.update({ where: { id: deposit.id }, data: { tenantId } });
+  await writeAudit(accountId, {
+    actor,
+    action: 'rent_payment.deposit_attributed',
+    entityType: 'rent_payment',
+    entityId: rentPaymentId,
+    detail: {
+      period: deposit.rentPayment.period,
+      depositId: deposit.id,
+      transactionId: deposit.transactionId,
+      amountCents: deposit.amountCents,
+      previousTenantId: deposit.tenantId,
+      tenantId,
+    },
+  });
+  return toApiRentPayment(deposit.rentPayment);
+}
+
+/**
  * Resolve the effective late-fee policy for a charge (WS7): an explicit
  * lease override (Lease.lateFeeCents, where 0 means "explicitly none for this
  * lease" and beats the account default) falls back to the account default only
