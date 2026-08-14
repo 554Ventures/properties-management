@@ -367,21 +367,67 @@ describe('schedule_e income line mapping', () => {
     };
 
     expect(data.totals.otherIncomeCents).toBe(12_300);
-    // Rents received = confirmed income minus the off-line-3 row; net includes both.
+    // Rents received = confirmed income minus the off-line-3 row.
     const { from, to } = yearRange(taxYear);
     const income = await prisma.transaction.aggregate({
       where: { accountId, status: 'confirmed', type: 'income', date: { gte: from, lt: to } },
       _sum: { amountCents: true },
     });
     expect(data.totals.rentsReceivedCents).toBe((income._sum.amountCents ?? 0) - 12_300);
+    // The Schedule E net EXCLUDES off-line-3 income — it isn't rental income,
+    // so folding it in would put it back on the return.
     expect(data.totals.netCents).toBe(
-      data.totals.rentsReceivedCents + data.totals.otherIncomeCents - data.totals.totalExpensesCents,
+      data.totals.rentsReceivedCents - data.totals.totalExpensesCents,
     );
 
     await prisma.report.delete({ where: { id: report.id } });
     await prisma.transaction.delete({ where: { id: txn.id } });
     await prisma.category.delete({ where: { id: category.id } });
     await prisma.auditLog.deleteMany({ where: { accountId, entityId: report.id } });
+  });
+
+  // The seeded escape hatch: without it every income category maps to Line 3,
+  // so a tax refund or an interest deposit is rental income on the return.
+  it('the seeded Not Rental Income category keeps a Treasury refund off Line 3 and out of net', async () => {
+    const accountId = await getDemoAccountId();
+    const taxYear = new Date().getUTCFullYear();
+    const nonRental = await prisma.category.findFirstOrThrow({
+      where: { name: 'Not Rental Income', type: 'income', isSystem: true },
+    });
+    expect(nonRental.irsScheduleELine).toBe('Not reported on Schedule E');
+
+    const baseline = await reportService.generate(accountId, { type: 'schedule_e', taxYear });
+    const baseData = (await reportService.getById(accountId, baseline.id)).data as ScheduleEData;
+
+    const txn = await prisma.transaction.create({
+      data: {
+        accountId,
+        date: new Date(),
+        amountCents: 184_200,
+        type: 'income',
+        description: 'TEST IRS TREAS 310 TAX REF',
+        source: 'manual',
+        status: 'confirmed',
+        categoryId: nonRental.id,
+      },
+    });
+    await prisma.report.delete({ where: { id: baseline.id } });
+    const report = await reportService.generate(accountId, { type: 'schedule_e', taxYear });
+    const data = (await reportService.getById(accountId, report.id)).data as ScheduleEData & {
+      totals: { otherIncomeCents: number };
+    };
+
+    // The refund moved nothing on the form: rents, expenses and net are all
+    // exactly what they were before it landed.
+    expect(data.totals.otherIncomeCents).toBe(184_200);
+    expect(data.totals.rentsReceivedCents).toBe(baseData.totals.rentsReceivedCents);
+    expect(data.totals.netCents).toBe(baseData.totals.netCents);
+
+    await prisma.report.delete({ where: { id: report.id } });
+    await prisma.transaction.delete({ where: { id: txn.id } });
+    await prisma.auditLog.deleteMany({
+      where: { accountId, entityId: { in: [baseline.id, report.id] } },
+    });
   });
 });
 

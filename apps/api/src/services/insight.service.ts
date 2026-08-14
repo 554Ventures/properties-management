@@ -19,9 +19,15 @@ import {
   monthEndExclusiveInTz,
   monthStartInTz,
   periodLabel,
+  yearRangeInTz,
 } from '../lib/dates';
 import { NotFoundError } from '../lib/errors';
 import { ordinaryExpense, pnlBucket, pnlCategoryLines } from '../lib/pnl';
+import {
+  isScheduleERentsLine,
+  matchNonRentalIncome,
+  NON_RENTAL_INCOME_CATEGORY,
+} from '../lib/schedule-e';
 import { prisma } from '../lib/prisma';
 import { slugify } from '../lib/strings';
 import { accountTimezone } from './account.service';
@@ -658,6 +664,65 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
     });
   }
 
+  // Rule 10 — misfiled_income: confirmed income that reads like a non-rental
+  // receipt (an IRS/Treasury refund, bank interest, a transfer from the
+  // landlord's own account) but still maps to Schedule E Line 3. Until the
+  // "Not Rental Income" category existed every seeded income category pointed
+  // at Line 3, so these had nowhere else to go — and the suggester proposed
+  // "Rent" for all of them. This surfaces the rows already on the books instead
+  // of silently recategorizing anyone's history; the fix stays a human click.
+  //
+  // Tax-year scoped (Jan 1 → now on the account's calendar), because that's the
+  // window that ends up on a return. Excludes rows already treated as
+  // transfers/owner contributions — those are out of the books already.
+  const { from: yStart, to: yEnd } = yearRangeInTz(
+    Number(period.slice(0, 4)),
+    tz,
+  );
+  const yearIncome = await prisma.transaction.findMany({
+    where: {
+      accountId,
+      status: 'confirmed',
+      type: 'income',
+      classification: null,
+      date: { gte: yStart, lt: yEnd },
+    },
+    select: {
+      description: true,
+      vendor: true,
+      amountCents: true,
+      category: { select: { irsScheduleELine: true } },
+    },
+  });
+  // Split rows can carry several categories; the row-level category is what the
+  // review card and the Money list show, so that's what the landlord acts on.
+  const misfiled = yearIncome.filter(
+    (t) =>
+      isScheduleERentsLine(t.category?.irsScheduleELine) &&
+      matchNonRentalIncome(`${t.description} ${t.vendor ?? ''}`) !== null,
+  );
+  if (misfiled.length > 0) {
+    const one = misfiled.length === 1;
+    const totalCents = misfiled.reduce((sum, t) => sum + t.amountCents, 0);
+    const examples = [...new Set(misfiled.map((t) => t.description))].slice(0, 2).join(', ');
+    candidates.push({
+      scope: 'portfolio',
+      type: 'misfiled_income',
+      severity: 'warning',
+      title: `${misfiled.length} deposit${one ? '' : 's'} may not be rental income`,
+      body: `${formatUsdWhole(totalCents)} of confirmed income this year looks like it came from somewhere other than a tenant (${examples}). It is counted on Schedule E as rents received. Recategorize anything that isn't rent as "${NON_RENTAL_INCOME_CATEGORY}", or set its treatment to a transfer if it was never income.`,
+      actionLabel: 'Review income',
+      actionTarget: '/money?type=income',
+      action: { label: 'Review income', action: { kind: 'navigate', to: '/money?type=income' } },
+      propertyId: null,
+      tenantId: null,
+      leaseId: null,
+      // Count-keyed, not period-keyed: a dismissal holds until a NEW suspect
+      // lands, and the sweep below resolves the stale card either way.
+      dedupeKey: `misfiled_income:${period.slice(0, 4)}:${misfiled.length}`,
+    });
+  }
+
   // Supersede stale period-keyed rows. The rules below re-derive from scratch
   // every cycle and emit a candidate only while their condition is currently
   // true, with the period baked into the dedupeKey — so next month is always a
@@ -676,6 +741,7 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
     'underperforming_property',
     'contractor_cost_spike',
     'unassigned_transactions',
+    'misfiled_income',
   ];
   await prisma.insight.updateMany({
     where: {

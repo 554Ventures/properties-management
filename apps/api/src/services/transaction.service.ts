@@ -47,6 +47,7 @@ import {
 } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { isUniqueConstraintError } from '../lib/prisma-errors';
+import { NON_RENTAL_INCOME_CATEGORY, NON_RENTAL_INCOME_RULES } from '../lib/schedule-e';
 import {
   getConnectedPlaid,
   getConnectedStripeFc,
@@ -264,6 +265,16 @@ const FALLBACK = { categoryName: 'Supplies', confidence: 0.62 };
 // arrive as income. It must never ride a bulk confirm, and at 0.5 the review
 // card shows the low-confidence warning too.
 const INCOME_FALLBACK = { categoryName: 'Rent', confidence: 0.5 };
+// Income keyword rules. Expenses have a vendor to reason about; on income the
+// bank descriptor IS the signal. Without these, an IRS refund or an interest
+// deposit rides INCOME_FALLBACK onto Schedule E Line 3 as "Rent" — the
+// suggester actively proposing a tax error. Patterns and their confidence split
+// live in lib/schedule-e.ts, shared with the misfiled_income insight.
+const INCOME_KEYWORD_RULES = NON_RENTAL_INCOME_RULES.map((r) => ({
+  pattern: r.pattern,
+  categoryName: NON_RENTAL_INCOME_CATEGORY,
+  confidence: r.confidence,
+}));
 
 export type SuggestionSource = 'learned' | 'keyword' | 'fallback';
 
@@ -286,8 +297,9 @@ export async function suggestCategory(
   let pick: { categoryName: string; confidence: number };
   let source: SuggestionSource;
   if (partialTxn.type === 'income') {
-    pick = INCOME_FALLBACK;
-    source = 'fallback';
+    const rule = INCOME_KEYWORD_RULES.find((r) => r.pattern.test(text));
+    pick = rule ?? INCOME_FALLBACK;
+    source = rule ? 'keyword' : 'fallback';
   } else {
     const rule = KEYWORD_RULES.find((r) => r.pattern.test(text));
     pick = rule ?? FALLBACK;

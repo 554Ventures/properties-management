@@ -30,6 +30,7 @@ import {
 import { BadRequestError, NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { renderReportPdf, type PdfBlock } from '../lib/pdf';
+import { isScheduleERentsLine, SCHEDULE_E_OTHER_EXPENSE_LINE } from '../lib/schedule-e';
 import { createEmailAdapter } from '../integrations/factory';
 import {
   createWeeklyBriefComposer,
@@ -447,17 +448,21 @@ async function buildScheduleE(
         // Income maps through the category's IRS line like expenses do
         // (uncategorized defaults to rents); a category mapped off Line 3
         // stays out of "Rents received" instead of silently inflating it.
-        const line = cl.category?.irsScheduleELine ?? 'Line 3 – Rents received';
-        if (line === 'Line 3 – Rents received') row.rentsReceivedCents += cl.amountCents;
+        if (isScheduleERentsLine(cl.category?.irsScheduleELine))
+          row.rentsReceivedCents += cl.amountCents;
         else row.otherIncomeCents += cl.amountCents;
       } else {
         // Refunds arrive here as negative expense against their category's line.
-        const line = cl.category?.irsScheduleELine ?? 'Line 19 – Other';
+        const line = cl.category?.irsScheduleELine ?? SCHEDULE_E_OTHER_EXPENSE_LINE;
         row.expenseLines[line] = (row.expenseLines[line] ?? 0) + cl.amountCents;
         row.totalExpensesCents += cl.amountCents;
       }
     }
-    row.netCents = row.rentsReceivedCents + row.otherIncomeCents - row.totalExpensesCents;
+    // The Schedule E net is Line 3 minus the deductible expense lines. Off-line-3
+    // income is reported ALONGSIDE it precisely because it does not belong on
+    // this form — folding it into the net would put a tax refund back on the
+    // return, which is the thing the mapping exists to prevent.
+    row.netCents = row.rentsReceivedCents - row.totalExpensesCents;
     rowsByProperty.set(key, row);
   }
   const propertyRows = [...rowsByProperty.values()].sort((a, b) =>

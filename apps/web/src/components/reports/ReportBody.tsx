@@ -89,10 +89,15 @@ function buildTiles(type: ReportType, data: Obj): Tile[] {
         return [...netTiles(totals, 'Net'), countTile('Transactions', numAt(totals, 'count'))];
       case 'monthly_review':
         return netTiles(totals, 'Net this month', 'Collected');
+      // "Other income" is income whose category maps off Schedule E (a tax
+      // refund, bank interest). It sits beside the net rather than inside it —
+      // it isn't rental income — so it needs its own tile, or money that left
+      // "Rents received" would vanish from the summary entirely.
       case 'schedule_e': {
         return [
           moneyTile('Net', numAt(totals, 'netCents')),
           moneyTile('Rents received', numAt(totals, 'rentsReceivedCents')),
+          moneyTile('Other income', numAt(totals, 'otherIncomeCents')),
           moneyTile('Total expenses', numAt(totals, 'totalExpensesCents')),
         ];
       }
@@ -101,6 +106,7 @@ function buildTiles(type: ReportType, data: Obj): Tile[] {
         return [
           moneyTile('Net', numAt(scheduleETotals, 'netCents')),
           moneyTile('Rents received', numAt(scheduleETotals, 'rentsReceivedCents')),
+          moneyTile('Other income', numAt(scheduleETotals, 'otherIncomeCents')),
           moneyTile('Total expenses', numAt(scheduleETotals, 'totalExpensesCents')),
           countTile('Properties', numAt(data, 'propertyCount')),
         ];

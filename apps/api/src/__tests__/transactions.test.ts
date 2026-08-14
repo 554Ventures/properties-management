@@ -26,6 +26,7 @@ import * as propertyService from '../services/property.service';
 import * as rentService from '../services/rent.service';
 import { deriveRentStatus, pickRentMatch, type RentMatchCandidate } from '../services/rent.service';
 import * as tenantService from '../services/tenant.service';
+import { BULK_CONFIRM_MIN_CONFIDENCE } from '../services/transaction.service';
 
 let app: FastifyInstance;
 const createdIds: string[] = [];
@@ -87,6 +88,74 @@ describe('POST /transactions', () => {
     });
     expect(txn.aiSuggestedCategoryId).toBe(supplies?.id);
     expect(txn.aiConfidence).toBe(0.62);
+  });
+
+  // Every seeded income category maps to Schedule E Line 3, and income used to
+  // fall back to "Rent" unconditionally — so an IRS refund was actively
+  // suggested as rental income. These two pin the split confidence.
+  it('suggests Not Rental Income for a Treasury refund, at bulk-confirmable strength', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/transactions',
+      payload: {
+        date: iso(new Date()),
+        amountCents: 184200,
+        type: 'income',
+        description: 'IRS TREAS 310 TAX REF',
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    const txn = TransactionSchema.parse(res.json());
+    createdIds.push(txn.id);
+
+    const nonRental = await prisma.category.findFirst({
+      where: { name: 'Not Rental Income', type: 'income', isSystem: true },
+    });
+    expect(nonRental).not.toBeNull();
+    expect(txn.aiSuggestedCategoryId).toBe(nonRental?.id);
+    expect(txn.aiConfidence).toBe(0.84);
+  });
+
+  it('keeps a transfer-shaped deposit below the bulk-confirm threshold', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/transactions',
+      payload: {
+        date: iso(new Date()),
+        amountCents: 500000,
+        type: 'income',
+        description: 'TRANSFER FROM CHECKING 4471',
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    const txn = TransactionSchema.parse(res.json());
+    createdIds.push(txn.id);
+
+    // The right answer here is a `transfer` TREATMENT, which a category
+    // suggestion can't set — so it must never ride a bulk confirm.
+    expect(txn.aiConfidence).toBe(0.5);
+    expect(txn.aiConfidence!).toBeLessThan(BULK_CONFIRM_MIN_CONFIDENCE);
+  });
+
+  it('still falls back to Rent @ 0.5 for an ordinary deposit', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/transactions',
+      payload: {
+        date: iso(new Date()),
+        amountCents: 195000,
+        type: 'income',
+        description: 'Deposit',
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    const txn = TransactionSchema.parse(res.json());
+    createdIds.push(txn.id);
+    const rent = await prisma.category.findFirst({
+      where: { name: 'Rent', type: 'income', isSystem: true },
+    });
+    expect(txn.aiSuggestedCategoryId).toBe(rent?.id);
+    expect(txn.aiConfidence).toBe(0.5);
   });
 });
 
