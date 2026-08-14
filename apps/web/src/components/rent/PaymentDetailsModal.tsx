@@ -1,11 +1,13 @@
 // Payment details modal for the rent tracker (extracted from RentTracker.tsx)
 // — purely presentational: summary + late-fee waive row + per-tenant share
-// breakdown (for split leases) + linked deposits with Unlink, all driven by
-// the parent's mutation state so this component owns no data fetching.
+// breakdown (for split leases) + linked deposits with Unlink and (for a
+// shared lease) a "Paid by" repair select, all driven by the parent's
+// mutation state so this component owns no data fetching.
 import { formatUsd } from '@hearth/shared';
 import type { RentTrackerRow } from '@hearth/shared';
 import { Button } from '../ui/Button';
 import { Modal } from '../ui/Modal';
+import { Select } from '../ui/Select';
 import { formatDate, formatMonthLong } from '../../lib/format';
 
 export interface PaymentDetailsModalProps {
@@ -16,6 +18,11 @@ export interface PaymentDetailsModalProps {
   canRent: boolean;
   unlinkBusy: boolean;
   onUnlink: (depositId: string) => void;
+  /** True while any deposit's "Paid by" repair is in flight. */
+  attributeBusy: boolean;
+  /** Re-points (or, with `null`, clears) which co-tenant a deposit credits.
+   *  Attribution only — no money moves. */
+  onAttribute: (depositId: string, tenantId: string | null) => void;
   /** Opens the waive confirm; the parent closes this modal itself. */
   onWaive: () => void;
   onClose: () => void;
@@ -27,6 +34,8 @@ export function PaymentDetailsModal({
   canRent,
   unlinkBusy,
   onUnlink,
+  attributeBusy,
+  onAttribute,
   onWaive,
   onClose,
 }: PaymentDetailsModalProps): JSX.Element {
@@ -94,18 +103,60 @@ export function PaymentDetailsModal({
             {row.deposits.map((d) => (
               <li
                 key={d.id}
-                className="flex items-center justify-between gap-3 rounded-md border border-border-strong px-3 py-2 text-sm"
+                className="flex flex-col gap-1.5 rounded-md border border-border-strong px-3 py-2 text-sm"
               >
-                <span className="tabular-nums font-medium text-ink">{formatUsd(d.amountCents)}</span>
-                <span className="text-ink-muted">
-                  {formatDate(d.paidAt)}
-                  {d.method ? ` · ${d.method}` : ''}
-                </span>
-                {canRent && (
-                  <Button variant="ghost" busy={unlinkBusy} onClick={() => onUnlink(d.id)}>
-                    Unlink
-                  </Button>
-                )}
+                <div className="flex items-center justify-between gap-3">
+                  <span className="tabular-nums font-medium text-ink">
+                    {formatUsd(d.amountCents)}
+                  </span>
+                  <span className="text-ink-muted">
+                    {formatDate(d.paidAt)}
+                    {d.method ? ` · ${d.method}` : ''}
+                  </span>
+                  {canRent && (
+                    <Button variant="ghost" busy={unlinkBusy} onClick={() => onUnlink(d.id)}>
+                      Unlink
+                    </Button>
+                  )}
+                </div>
+                {/* Only for a shared lease — a single-tenant charge has
+                    exactly one possible payer, so there's nothing to repair.
+                    "Not recorded" is a legitimate, expected state (unlinked
+                    from an ambiguous descriptor), not an error — the select
+                    offers it plainly rather than forcing a choice. */}
+                {showTenants &&
+                  (canRent ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label
+                        htmlFor={`deposit-tenant-${d.id}`}
+                        className="text-xs font-medium text-ink-muted"
+                      >
+                        Paid by
+                      </label>
+                      <Select
+                        id={`deposit-tenant-${d.id}`}
+                        value={d.tenantId ?? ''}
+                        disabled={attributeBusy}
+                        onChange={(e) => onAttribute(d.id, e.target.value || null)}
+                        className="w-auto py-1"
+                      >
+                        <option value="">Not recorded</option>
+                        {row.tenants.map((t) => (
+                          <option key={t.tenantId} value={t.tenantId}>
+                            {t.tenantName}
+                          </option>
+                        ))}
+                      </Select>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-ink-muted">
+                      Paid by{' '}
+                      <span className="font-medium text-ink">
+                        {row.tenants.find((t) => t.tenantId === d.tenantId)?.tenantName ??
+                          'not recorded'}
+                      </span>
+                    </p>
+                  ))}
               </li>
             ))}
           </ul>

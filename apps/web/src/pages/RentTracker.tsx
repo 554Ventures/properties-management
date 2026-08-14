@@ -10,12 +10,15 @@ import { formatUsd } from '@hearth/shared';
 import type {
   AmbiguousRentDeposit,
   RentPaymentMethod,
+  RentTenantShare,
   RentTrackerRow,
   SendRemindersResponse,
+  UnlinkedRentDeposit,
 } from '@hearth/shared';
 import { useSearchParams } from 'react-router';
 import {
   useApplyLateFee,
+  useAttributeDeposit,
   useConfirmTransaction,
   useInsights,
   useRecordPayment,
@@ -149,6 +152,7 @@ export function RentTracker() {
   const [detailsRow, setDetailsRow] = useState<RentTrackerRow | null>(null);
   const [composedReminders, setComposedReminders] = useState<ComposedReminder[]>([]);
   const unlink = useUnlinkDeposit();
+  const attributeDeposit = useAttributeDeposit();
   // Apply/waive confirm dialogs (WS7) — separate top-level dialogs rather
   // than nesting inside the details modal, matching the rest of the page's
   // one-dialog-at-a-time pattern.
@@ -333,6 +337,28 @@ export function RentTracker() {
     );
   };
 
+  // Repair-only: no money moves, but the modal is showing a snapshot of this
+  // row, so it closes on success the same way Unlink does rather than risk
+  // rendering a stale attribution after the tracker refetches.
+  const attributeDepositTenant = (row: RentTrackerRow, depositId: string, tenantId: string | null) => {
+    attributeDeposit.mutate(
+      { rentPaymentId: row.rentPaymentId, depositId, tenantId },
+      {
+        onSuccess: () => {
+          const tenantName = tenantId
+            ? row.tenants.find((t) => t.tenantId === tenantId)?.tenantName
+            : null;
+          toast(
+            tenantName ? `Deposit attributed to ${tenantName}.` : 'Deposit attribution cleared.',
+            'positive',
+          );
+          setDetailsRow(null);
+        },
+        onError: () => toast('Could not update who paid. Try again.', 'danger'),
+      },
+    );
+  };
+
   // Server resolves the effective policy (lease override or account
   // default) — the tracker doesn't know the amount up front, so feeCents is
   // omitted and the confirm copy stays amount-free until the response lands.
@@ -418,53 +444,17 @@ export function RentTracker() {
                   </p>
                   <ul className="divide-y divide-border">
                     {unlinkedItems.map((item) => (
-                      <li
+                      <UnlinkedDepositItem
                         key={item.transactionId}
-                        className="flex flex-col gap-2 py-2.5 sm:flex-row sm:items-center sm:justify-between"
-                      >
-                        <div className="text-sm">
-                          <p className="text-ink">
-                            <span className="font-medium tabular-nums">
-                              {formatUsd(item.amountCents)}
-                            </span>
-                            <span className="text-ink-muted">
-                              {' '}
-                              · &ldquo;{item.description}&rdquo; · {formatDate(item.date)}
-                            </span>
-                          </p>
-                          <p className="text-xs text-ink-muted">
-                            Could apply to {item.tenantName}&rsquo;s {formatMonthLong(item.period)}{' '}
-                            charge — {formatUsd(item.remainingCents)} still due for {item.unitLabel}{' '}
-                            at {item.propertyLabel}
-                          </p>
-                        </div>
-                        {canMoney && (
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            busy={
-                              linkDeposit.isPending &&
-                              linkDeposit.variables?.id === item.transactionId
-                            }
-                            onClick={() =>
-                              linkDeposit.mutate(
-                                { id: item.transactionId, rentPaymentId: item.rentPaymentId },
-                                {
-                                  onSuccess: () =>
-                                    toast(
-                                      `Deposit applied to ${item.tenantName}'s ${formatMonthLong(item.period)} rent.`,
-                                      'positive',
-                                    ),
-                                  onError: () =>
-                                    toast('Could not link the deposit. Try again.', 'danger'),
-                                },
-                              )
-                            }
-                          >
-                            Link to rent
-                          </Button>
-                        )}
-                      </li>
+                        item={item}
+                        // The charge's own tracker row (same period) carries
+                        // its tenant roster — no separate fetch needed.
+                        tenants={
+                          rows.find((r) => r.rentPaymentId === item.rentPaymentId)?.tenants ?? []
+                        }
+                        linkDeposit={linkDeposit}
+                        canMoney={canMoney}
+                      />
                     ))}
                   </ul>
                 </div>
@@ -487,6 +477,7 @@ export function RentTracker() {
                       <AmbiguousDepositItem
                         key={item.transactionId}
                         item={item}
+                        rows={rows}
                         linkDeposit={linkDeposit}
                         canMoney={canMoney}
                       />
@@ -905,6 +896,10 @@ export function RentTracker() {
         canRent={canRent}
         unlinkBusy={unlink.isPending}
         onUnlink={(depositId) => detailsRow && unlinkDeposit(detailsRow, depositId)}
+        attributeBusy={attributeDeposit.isPending}
+        onAttribute={(depositId, tenantId) =>
+          detailsRow && attributeDepositTenant(detailsRow, depositId, tenantId)
+        }
         onWaive={() => {
           if (!detailsRow) return;
           setWaiveRow(detailsRow);
@@ -949,6 +944,94 @@ export function RentTracker() {
   );
 }
 
+// A deposit that fits exactly one open charge — the plain "Link to rent"
+// nudge, plus (for a shared lease) a "Paid by" field so the deposit doesn't
+// land unattributed the moment it's linked. Own component so each row keeps
+// its own chosen-tenant state.
+function UnlinkedDepositItem({
+  item,
+  tenants,
+  linkDeposit,
+  canMoney,
+}: {
+  item: UnlinkedRentDeposit;
+  tenants: RentTenantShare[];
+  linkDeposit: ReturnType<typeof useConfirmTransaction>;
+  canMoney: boolean;
+}) {
+  const [tenantId, setTenantId] = useState('');
+  const { toast } = useToast();
+
+  return (
+    <li className="flex flex-col gap-2 py-2.5 sm:flex-row sm:items-center sm:justify-between">
+      <div className="text-sm">
+        <p className="text-ink">
+          <span className="font-medium tabular-nums">{formatUsd(item.amountCents)}</span>
+          <span className="text-ink-muted">
+            {' '}
+            · &ldquo;{item.description}&rdquo; · {formatDate(item.date)}
+          </span>
+        </p>
+        <p className="text-xs text-ink-muted">
+          Could apply to {item.tenantName}&rsquo;s {formatMonthLong(item.period)} charge —{' '}
+          {formatUsd(item.remainingCents)} still due for {item.unitLabel} at {item.propertyLabel}
+        </p>
+      </div>
+      {canMoney && (
+        <div className="flex flex-wrap items-center gap-2">
+          {tenants.length > 1 && (
+            <span className="flex items-center gap-1.5">
+              <label
+                htmlFor={`unlinked-deposit-tenant-${item.transactionId}`}
+                className="text-xs font-medium text-ink-muted"
+              >
+                Paid by
+              </label>
+              <Select
+                id={`unlinked-deposit-tenant-${item.transactionId}`}
+                value={tenantId}
+                onChange={(e) => setTenantId(e.target.value)}
+                className="w-auto py-1"
+              >
+                <option value="">Not recorded</option>
+                {tenants.map((t) => (
+                  <option key={t.tenantId} value={t.tenantId}>
+                    {t.tenantName}
+                  </option>
+                ))}
+              </Select>
+            </span>
+          )}
+          <Button
+            variant="secondary"
+            size="sm"
+            busy={linkDeposit.isPending && linkDeposit.variables?.id === item.transactionId}
+            onClick={() =>
+              linkDeposit.mutate(
+                {
+                  id: item.transactionId,
+                  rentPaymentId: item.rentPaymentId,
+                  ...(tenantId ? { tenantId } : {}),
+                },
+                {
+                  onSuccess: () =>
+                    toast(
+                      `Deposit applied to ${item.tenantName}'s ${formatMonthLong(item.period)} rent.`,
+                      'positive',
+                    ),
+                  onError: () => toast('Could not link the deposit. Try again.', 'danger'),
+                },
+              )
+            }
+          >
+            Link to rent
+          </Button>
+        </div>
+      )}
+    </li>
+  );
+}
+
 // A deposit that fits more than one open charge — a labeled Select of
 // candidates (own component so each row keeps its own chosen-candidate
 // state) plus a Link button that stays disabled until one is chosen. Uses
@@ -956,23 +1039,40 @@ export function RentTracker() {
 // unlinked-deposit nudge above.
 function AmbiguousDepositItem({
   item,
+  rows,
   linkDeposit,
   canMoney,
 }: {
   item: AmbiguousRentDeposit;
+  /** The current period's tracker rows — the source of each candidate's
+   *  tenant roster, so the "Paid by" field needs no fetch of its own. */
+  rows: RentTrackerRow[];
   linkDeposit: ReturnType<typeof useConfirmTransaction>;
   canMoney: boolean;
 }) {
   const [selectedId, setSelectedId] = useState('');
+  const [tenantId, setTenantId] = useState('');
   const { toast } = useToast();
   const selected = item.candidates.find((c) => c.rentPaymentId === selectedId);
+  const tenants = rows.find((r) => r.rentPaymentId === selectedId)?.tenants ?? [];
+
+  // A different candidate is a different lease — a tenant chosen for the
+  // last one shouldn't silently carry over.
+  useEffect(() => {
+    setTenantId('');
+  }, [selectedId]);
 
   const link = () => {
     if (!selected) return;
     linkDeposit.mutate(
-      // linkSource 'manual': the user chose the charge, so the audit actor
-      // stays 'user' (an accepted AI suggestion audits differently).
-      { id: item.transactionId, rentPaymentId: selected.rentPaymentId, linkSource: 'manual' },
+      {
+        id: item.transactionId,
+        rentPaymentId: selected.rentPaymentId,
+        // linkSource 'manual': the user chose the charge, so the audit actor
+        // stays 'user' (an accepted AI suggestion audits differently).
+        linkSource: 'manual',
+        ...(tenantId ? { tenantId } : {}),
+      },
       {
         onSuccess: () =>
           toast(
@@ -1017,6 +1117,28 @@ function AmbiguousDepositItem({
               ))}
             </Select>
           </div>
+          {tenants.length > 1 && (
+            <div className="flex flex-1 flex-col gap-1.5">
+              <label
+                htmlFor={`ambiguous-tenant-${item.transactionId}`}
+                className="text-xs font-medium text-ink-muted"
+              >
+                Paid by
+              </label>
+              <Select
+                id={`ambiguous-tenant-${item.transactionId}`}
+                value={tenantId}
+                onChange={(e) => setTenantId(e.target.value)}
+              >
+                <option value="">Not recorded</option>
+                {tenants.map((t) => (
+                  <option key={t.tenantId} value={t.tenantId}>
+                    {t.tenantName}
+                  </option>
+                ))}
+              </Select>
+            </div>
+          )}
           <Button
             variant="secondary"
             size="sm"

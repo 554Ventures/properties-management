@@ -11,12 +11,14 @@ import type {
   BankDiscrepancyRow,
   Category,
   CurrentUser,
+  LeaseDetailResponse,
   RentChargeOption,
   ReviewQueueItem,
   ReviewQueueResponse,
 } from '@hearth/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import axe from 'axe-core';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ToastProvider, ToastViewport } from '../components/ui/Toast';
@@ -462,6 +464,223 @@ describe('MoneyReview manual rent charge picker', () => {
     // The manual pick replaced the chip's link — only one linked charge shown.
     expect(screen.getByText(/Confirming marks/)).toHaveTextContent(/T\. Okafor/);
     expect(screen.getByText(/Confirming marks/)).not.toHaveTextContent(/A\. Nguyen/);
+  });
+});
+
+// Rent deposit tenant attribution: a "Paid by" field wherever a deposit gets
+// linked, offered only once the linked charge's lease turns out to have more
+// than one tenant — the option list itself doesn't carry the roster, so it's
+// fetched (GET /leases/:id) once a charge is chosen.
+const sharedLeaseDetail: LeaseDetailResponse = {
+  lease: {
+    id: 'l1',
+    unitId: 'u1',
+    rentCents: 115000,
+    dueDay: 1,
+    lateFeeCents: null,
+    startDate: '2025-08-01T12:00:00.000Z',
+    endDate: '2026-07-31T12:00:00.000Z',
+    status: 'active',
+    esignEnvelopeId: null,
+    esignStatus: null,
+    createdAt: '2025-08-01T12:00:00.000Z',
+    unitLabel: 'Main',
+    propertyId: 'p1',
+    propertyLabel: '21 Cedar Ct',
+    tenants: [
+      {
+        id: 't-okafor',
+        accountId: 'acc1',
+        fullName: 'T. Okafor',
+        email: null,
+        phone: null,
+        notes: null,
+        createdAt: '2025-08-01T00:00:00.000Z',
+        archivedAt: null,
+        isPrimary: true,
+        shareCents: 57500,
+      },
+      {
+        id: 't-roommate',
+        accountId: 'acc1',
+        fullName: 'R. Diallo',
+        email: null,
+        phone: null,
+        notes: null,
+        createdAt: '2025-08-01T00:00:00.000Z',
+        archivedAt: null,
+        isPrimary: false,
+        shareCents: 57500,
+      },
+    ],
+  },
+  rentPayments: [],
+};
+
+const soleLeaseDetail: LeaseDetailResponse = {
+  ...sharedLeaseDetail,
+  lease: { ...sharedLeaseDetail.lease, id: 'l2', tenants: [sharedLeaseDetail.lease.tenants[0]!] },
+};
+
+describe('MoneyReview rent deposit "Paid by" attribution', () => {
+  it('the manual picker offers "Paid by" only for a multi-tenant charge, and sends the chosen tenant on confirm', async () => {
+    const fetchMock = makeFetch([
+      { method: 'GET', path: '/api/v1/transactions/review', body: reviewQueueWithPlainIncome },
+      { method: 'GET', path: '/api/v1/categories', body: [] },
+      { method: 'GET', path: '/api/v1/properties', body: [] },
+      {
+        method: 'GET',
+        path: '/api/v1/rent/open-charges',
+        body: { items: [openChargeFits, openChargeTooSmall] },
+      },
+      { method: 'GET', path: '/api/v1/leases/l1', body: sharedLeaseDetail },
+      { method: 'GET', path: '/api/v1/leases/l2', body: soleLeaseDetail },
+      { method: 'POST', path: '/api/v1/transactions/tx-income/confirm', body: {} },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+    renderMoneyReview();
+
+    await screen.findByText('Zelle payment');
+    fireEvent.click(screen.getByRole('button', { name: 'Link to rent…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Link to a rent charge' });
+    await within(dialog).findByText(/T\. Okafor/);
+
+    // No charge picked yet — nothing to ask "paid by" about.
+    expect(within(dialog).queryByLabelText('Paid by')).not.toBeInTheDocument();
+
+    const fitsRadio = within(dialog).getByRole('radio', {
+      name: `T. Okafor — Jul 2026 — 21 Cedar Ct · Main — ${formatUsd(115000)} remaining`,
+    });
+    fireEvent.click(fitsRadio);
+
+    const tenantSelect = await within(dialog).findByLabelText('Paid by');
+    expect(within(dialog).getByText('Not recorded')).toBeInTheDocument();
+    fireEvent.change(tenantSelect, { target: { value: 't-roommate' } });
+
+    const results = await axe.run(dialog, { rules: { 'color-contrast': { enabled: false } } });
+    expect(results.violations.map((v) => v.id)).toEqual([]);
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Link' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm as Rent' }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url) === '/api/v1/transactions/tx-income/confirm' &&
+          (init as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(call).toBeDefined();
+      expect((call![1] as RequestInit).body).toBe(
+        JSON.stringify({ rentPaymentId: 'rp-fits', linkSource: 'manual', tenantId: 't-roommate' }),
+      );
+    });
+  });
+
+  it('offers no "Paid by" field for a single-tenant charge', async () => {
+    const fetchMock = makeFetch([
+      { method: 'GET', path: '/api/v1/transactions/review', body: reviewQueueWithPlainIncome },
+      { method: 'GET', path: '/api/v1/categories', body: [] },
+      { method: 'GET', path: '/api/v1/properties', body: [] },
+      { method: 'GET', path: '/api/v1/rent/open-charges', body: { items: [openChargeFits] } },
+      { method: 'GET', path: '/api/v1/leases/l1', body: soleLeaseDetail },
+      { method: 'POST', path: '/api/v1/transactions/tx-income/confirm', body: {} },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+    renderMoneyReview();
+
+    await screen.findByText('Zelle payment');
+    fireEvent.click(screen.getByRole('button', { name: 'Link to rent…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Link to a rent charge' });
+    await within(dialog).findByText(/T\. Okafor/);
+    fireEvent.click(
+      within(dialog).getByRole('radio', {
+        name: `T. Okafor — Jul 2026 — 21 Cedar Ct · Main — ${formatUsd(115000)} remaining`,
+      }),
+    );
+
+    // The lease-detail fetch resolves with exactly one tenant — confirmed via
+    // the request itself, then a settled poll for the field that never
+    // appears (a single-tenant lease has exactly one possible answer).
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([url]) => String(url) === '/api/v1/leases/l1')).toBe(true),
+    );
+    await waitFor(() => {
+      expect(within(dialog).queryByLabelText('Paid by')).not.toBeInTheDocument();
+    });
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Link' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm as Rent' }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url) === '/api/v1/transactions/tx-income/confirm' &&
+          (init as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(call).toBeDefined();
+      // No tenantId key at all — omitted, not sent empty.
+      expect((call![1] as RequestInit).body).toBe(
+        JSON.stringify({ rentPaymentId: 'rp-fits', linkSource: 'manual' }),
+      );
+    });
+  });
+
+  it('an accepted AI rent-match chip offers "Paid by" in the confirmation strip for a multi-tenant charge, and sends it on confirm', async () => {
+    const suggestedItem: ReviewQueueItem = {
+      ...plainIncomeItem,
+      id: 'tx-suggested',
+      rentMatch: {
+        rentPaymentId: 'rp-suggested',
+        leaseId: 'l1',
+        tenantName: 'T. Okafor',
+        propertyId: 'p1',
+        propertyLabel: '21 Cedar Ct',
+        unitId: 'u1',
+        unitLabel: 'Main',
+        period: '2026-07',
+        dueDate: '2026-07-01T00:00:00.000Z',
+        amountCents: 115000,
+        paidCents: 0,
+        confidence: 0.9,
+      },
+    };
+    const fetchMock = makeFetch([
+      {
+        method: 'GET',
+        path: '/api/v1/transactions/review',
+        body: { items: [suggestedItem], nextCursor: null, total: 1 },
+      },
+      { method: 'GET', path: '/api/v1/categories', body: [] },
+      { method: 'GET', path: '/api/v1/properties', body: [] },
+      { method: 'GET', path: '/api/v1/leases/l1', body: sharedLeaseDetail },
+      { method: 'POST', path: '/api/v1/transactions/tx-suggested/confirm', body: {} },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+    renderMoneyReview();
+
+    await screen.findByText('Zelle payment');
+    fireEvent.click(screen.getByRole('button', { name: /suggests: T\. Okafor/ }));
+
+    const tenantSelect = await screen.findByLabelText('Paid by');
+    fireEvent.change(tenantSelect, { target: { value: 't-okafor' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm as Rent' }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url) === '/api/v1/transactions/tx-suggested/confirm' &&
+          (init as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(call).toBeDefined();
+      expect((call![1] as RequestInit).body).toBe(
+        JSON.stringify({
+          rentPaymentId: 'rp-suggested',
+          linkSource: 'suggestion',
+          tenantId: 't-okafor',
+        }),
+      );
+    });
   });
 });
 

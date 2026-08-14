@@ -16,6 +16,7 @@ import { ApiClientError } from '../../api/client';
 import {
   useConfirmTransaction,
   useDismissTransaction,
+  useLeaseDetail,
   useProperties,
   usePropertyDetail,
   useUpdateTransaction,
@@ -56,6 +57,7 @@ const RENT_MATCH_UNCONTESTED_CONFIDENCE = 0.9;
 
 interface LinkedRent {
   rentPaymentId: string;
+  leaseId: string;
   tenantName: string;
   period: string;
   propertyLabel: string;
@@ -63,6 +65,10 @@ interface LinkedRent {
   // Audit provenance: an accepted AI chip audits ai_suggested_user_confirmed,
   // a hand-picked charge audits plain 'user'.
   source: 'suggestion' | 'manual';
+  // Which co-tenant the deposit credits — set by the manual picker's own
+  // "Paid by" field, or here in the card for an accepted AI suggestion.
+  // Undefined lets the server infer it from the deposit's descriptor.
+  tenantId?: string;
 }
 
 export interface ReviewItemCardProps {
@@ -116,6 +122,10 @@ export function ReviewItemCard({ item, categoryOptions, canMoney, onSettled }: R
   const propertyDetail = usePropertyDetail(propertyId || undefined);
   const units = propertyDetail.data?.units ?? [];
   const rentMatch = item.rentMatch;
+  // The linked charge's lease tenants, for the "Paid by" field below — fetched
+  // only once a charge is armed (suggestion or manual pick), never up front.
+  const linkedLeaseDetail = useLeaseDetail(linkedRent?.leaseId);
+  const linkedLeaseTenants = linkedLeaseDetail.data?.lease.tenants ?? [];
   // Surfaced only when already loaded (the units fetch above) — never a new
   // request just for this hint.
   const mortgageEscrowNote = propertyDetail.data?.mortgages.find(
@@ -165,7 +175,12 @@ export function ReviewItemCard({ item, categoryOptions, canMoney, onSettled }: R
 
   const confirmItem = () => {
     const payload = linkedRent
-      ? { id: item.id, rentPaymentId: linkedRent.rentPaymentId, linkSource: linkedRent.source }
+      ? {
+          id: item.id,
+          rentPaymentId: linkedRent.rentPaymentId,
+          linkSource: linkedRent.source,
+          tenantId: linkedRent.tenantId,
+        }
       : isMortgagePayment
         ? {
             id: item.id,
@@ -286,6 +301,7 @@ export function ReviewItemCard({ item, categoryOptions, canMoney, onSettled }: R
                 onApply={() =>
                   setLinkedRent({
                     rentPaymentId: rentMatch.rentPaymentId,
+                    leaseId: rentMatch.leaseId,
                     tenantName: rentMatch.tenantName,
                     period: rentMatch.period,
                     propertyLabel: rentMatch.propertyLabel,
@@ -317,6 +333,35 @@ export function ReviewItemCard({ item, categoryOptions, canMoney, onSettled }: R
                 Don't link to rent
               </Button>
             </div>
+            {/* Only for a shared lease — a single-tenant charge has exactly
+                one possible answer, so asking would be noise. Covers both
+                paths into `linkedRent` (the suggestion chip and the manual
+                picker) in one place, editable either way. */}
+            {linkedLeaseTenants.length > 1 && (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <label
+                  htmlFor={`review-rent-tenant-${item.id}`}
+                  className="text-xs font-medium text-ink-muted"
+                >
+                  Paid by
+                </label>
+                <Select
+                  id={`review-rent-tenant-${item.id}`}
+                  value={linkedRent.tenantId ?? ''}
+                  onChange={(e) =>
+                    setLinkedRent({ ...linkedRent, tenantId: e.target.value || undefined })
+                  }
+                  className="w-auto py-1"
+                >
+                  <option value="">Not recorded</option>
+                  {linkedLeaseTenants.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.fullName}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            )}
           </ReviewStrip>
         )}
         {isMortgagePayment && !linkedRent && (
@@ -592,14 +637,16 @@ export function ReviewItemCard({ item, categoryOptions, canMoney, onSettled }: R
           open={pickerOpen}
           onClose={() => setPickerOpen(false)}
           amountCents={item.amountCents}
-          onChoose={(option) => {
+          onChoose={(option, tenantId) => {
             setLinkedRent({
               rentPaymentId: option.rentPaymentId,
+              leaseId: option.leaseId,
               tenantName: option.tenantName,
               period: option.period,
               propertyLabel: option.propertyLabel,
               unitLabel: option.unitLabel,
               source: 'manual',
+              tenantId,
             });
             setPickerOpen(false);
           }}
