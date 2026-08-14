@@ -12,6 +12,7 @@
     "db:serve": "tsx scripts/dev-postgres.ts",
     "db:setup": "tsx scripts/db-setup.ts",
     "db:seed": "tsx prisma/seed.ts",
+    "audit:lease-dates": "tsx scripts/lease-date-audit.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
