@@ -65,6 +65,9 @@ beforeAll(async () => {
       { label: 'R4' },
       { label: 'R5' },
       { label: 'R6' },
+      { label: 'R7' },
+      { label: 'R8' },
+      { label: 'R9' },
     ],
   });
   propertyId = property.id;
@@ -285,6 +288,114 @@ describe('re-lease after a mid-month vacancy', () => {
       amountCents: blended,
       reason: 'lease_created',
     });
+  });
+});
+
+describe('lease update reconciliation', () => {
+  it('editing endDate to remove an overlap with a successor recomputes the charge to the single-lease amount', async () => {
+    const unitId = unitIds[6]!;
+    const oldRent = 90_000;
+    const newRent = 100_000;
+    // B is the unit's real, ongoing lease — on its own it covers the whole period.
+    const bId = await makeLease(unitId, newRent, addDays(periodStart, -100), addDays(periodStart, 265));
+    await rentService.materializeExpectedPayments(accountId, period);
+    const before = await prisma.rentPayment.findUniqueOrThrow({
+      where: { leaseId_period: { leaseId: bId, period } },
+    });
+    expect(before.amountCents).toBe(newRent);
+
+    // A is a predecessor that should have ended well before B started. Its
+    // endDate is pushed 10 days into B's tenure directly (not through
+    // leaseService), matching the production bug: a bad endDate edit that
+    // creates an overlap, made before this fix existed to reconcile it.
+    const aId = await makeLease(unitId, oldRent, addDays(periodStart, -400), addDays(periodStart, -101));
+    await prisma.lease.update({
+      where: { id: aId },
+      data: { endDate: addDays(periodStart, 10) },
+    });
+    const aOverlap = await prisma.lease.findUniqueOrThrow({ where: { id: aId } });
+    const bLease = await prisma.lease.findUniqueOrThrow({ where: { id: bId } });
+    const overlapCovering = rentService.coveringLeases([aOverlap, bLease], period, TZ);
+    const staleBlended = rentService.blendedChargeCents(overlapCovering, period, TZ);
+    expect(staleBlended).not.toBe(newRent); // sanity: the overlap really shifts the figure
+    await prisma.rentPayment.update({ where: { id: before.id }, data: { amountCents: staleBlended } });
+
+    // The fix: correct A's endDate back to before the period, eliminating the
+    // overlap with B — exactly the production repro (update_lease correcting
+    // an overlapping endDate).
+    await leaseService.update(accountId, aId, { endDate: iso(addDays(periodStart, -101)) });
+
+    const after = await prisma.rentPayment.findUniqueOrThrow({ where: { id: before.id } });
+    expect(after.amountCents).toBe(newRent);
+    expect(after.status).toBe('due');
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { accountId, action: 'rent_payment.adjusted', entityId: before.id },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(JSON.parse(audit!.detailJson!)).toMatchObject({
+      priorAmountCents: staleBlended,
+      amountCents: newRent,
+      reason: 'lease_updated',
+    });
+  });
+
+  it('editing rentCents updates the open charge for periods the lease covers', async () => {
+    const unitId = unitIds[7]!;
+    const oldRent = 80_000;
+    const newRent = 85_000;
+    const leaseId = await makeLease(unitId, oldRent, addDays(periodStart, -365), addDays(periodStart, 180));
+    await rentService.materializeExpectedPayments(accountId, period);
+    const before = await prisma.rentPayment.findUniqueOrThrow({
+      where: { leaseId_period: { leaseId, period } },
+    });
+    expect(before.amountCents).toBe(oldRent);
+
+    await leaseService.update(accountId, leaseId, { rentCents: newRent });
+
+    const after = await prisma.rentPayment.findUniqueOrThrow({ where: { id: before.id } });
+    expect(after.amountCents).toBe(newRent);
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { accountId, action: 'rent_payment.adjusted', entityId: before.id },
+    });
+    expect(JSON.parse(audit!.detailJson!)).toMatchObject({
+      priorAmountCents: oldRent,
+      amountCents: newRent,
+      reason: 'lease_updated',
+    });
+  });
+
+  it('never touches an already-paid charge', async () => {
+    const unitId = unitIds[8]!;
+    const rent = 70_000;
+    const leaseId = await makeLease(unitId, rent, addDays(periodStart, -365), addDays(periodStart, 180));
+    await rentService.materializeExpectedPayments(accountId, period);
+    await rentService.recordPayment(accountId, {
+      leaseId,
+      period,
+      amountCents: rent,
+      method: 'manual',
+    });
+    const paid = await prisma.rentPayment.findUniqueOrThrow({
+      where: { leaseId_period: { leaseId, period } },
+    });
+    expect(paid.status).toBe('paid');
+
+    await leaseService.update(accountId, leaseId, { rentCents: rent + 5_000 });
+
+    const after = await prisma.rentPayment.findUniqueOrThrow({ where: { id: paid.id } });
+    expect(after.amountCents).toBe(rent); // untouched — paid rows are history, not a projection
+    expect(after.status).toBe('paid');
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { accountId, action: 'rent_payment.adjusted', entityId: paid.id },
+    });
+    expect(audit).toBeNull();
+
+    // Ledger cleanup for the recorded payment (kept out of afterAll: the
+    // transaction row is account-scoped, not lease-scoped).
+    await prisma.transaction.deleteMany({ where: { id: after.transactionId! } });
   });
 });
 
