@@ -63,7 +63,7 @@ import {
   materializeExpectedPayments,
   pickRentMatch,
 } from './rent.service';
-import { matchContractorId, vendorKey, vendorMemoryKey } from './vendor';
+import { categoryMemoryKey, matchContractorId, vendorKey, vendorMemoryKey } from './vendor';
 
 /** Every producer of an API transaction reads the split lines with it, so
  *  `splits` is never guessed at (empty array = an unsplit row). */
@@ -252,7 +252,8 @@ async function documentCountsByTransactionId(
 
 // ── AI category suggestion ───────────────────────────────────────────────────
 // Per-account vendor memory first (corrections stick — plan §A), then the
-// mock keyword table (no AI call in this path).
+// mock keyword table (no AI call in this path). The memory key falls back to
+// the descriptor when the feed carries no vendor (see categoryMemoryKey).
 
 const KEYWORD_RULES: Array<{ pattern: RegExp; categoryName: string; confidence: number }> = [
   { pattern: /plumb|roof|repair/i, categoryName: 'Repairs', confidence: 0.84 },
@@ -282,7 +283,7 @@ export async function suggestCategory(
   accountId: string,
   partialTxn: { type: TransactionType; description?: string; vendor?: string | null },
 ): Promise<{ categoryId: string; confidence: number; source: SuggestionSource } | null> {
-  const memoryKey = partialTxn.vendor ? vendorMemoryKey(partialTxn.vendor) : '';
+  const memoryKey = categoryMemoryKey(partialTxn.vendor, partialTxn.description);
   if (memoryKey) {
     const memory = await prisma.vendorCategoryMemory.findUnique({
       where: {
@@ -327,16 +328,18 @@ const MEMORY_REINFORCE_STEP = 0.01;
  * mapping (a correction to a different category resets the row); `reinforce`
  * only bumps an existing row that already backs `categoryId` — accepting a
  * keyword-table suggestion must not mint a memory, or the 0.62 "Supplies"
- * fallback would lock itself in.
+ * fallback would lock itself in. That guard is mode-based, so it holds
+ * identically for descriptor-derived keys: a descriptor-only row that accepts
+ * the fallback still writes nothing.
  */
 async function recordVendorCategoryChoice(
   accountId: string,
-  vendor: string | null,
+  row: { vendor: string | null; description: string },
   type: string,
   categoryId: string | null,
   mode: 'correct' | 'reinforce',
 ): Promise<void> {
-  const key = vendor ? vendorMemoryKey(vendor) : '';
+  const key = categoryMemoryKey(row.vendor, row.description);
   if (!key || !categoryId) return;
   const where = { accountId_vendorKey_type: { accountId, vendorKey: key, type } };
   const existing = await prisma.vendorCategoryMemory.findUnique({ where });
@@ -730,12 +733,18 @@ export async function update(
     return tx.transaction.findUniqueOrThrow({ where: { id }, include: withSplits });
   });
   // Second learning signal (plan §A5): recategorizing an already-saved row is
-  // a correction too. Uses the row's effective vendor (the patch may have
-  // changed it in the same call). Split lines deliberately teach nothing —
+  // a correction too. Uses the row's effective vendor/description (the patch
+  // may have changed either in the same call). Split lines teach nothing —
   // vendor memory maps a vendor to ONE category, and a split has no single
   // answer to remember.
   if (input.categoryId !== undefined && input.categoryId !== prior.categoryId) {
-    await recordVendorCategoryChoice(accountId, row.vendor, row.type, input.categoryId, 'correct');
+    await recordVendorCategoryChoice(
+      accountId,
+      { vendor: row.vendor, description: row.description },
+      row.type,
+      input.categoryId,
+      'correct',
+    );
   }
   await writeAudit(accountId, {
     actor,
@@ -991,7 +1000,9 @@ export async function getReviewQueue(
   // that has since moved to a different category stops claiming it.
   const memoryKeys = [
     ...new Set(
-      items.filter((r) => r.vendor && r.aiSuggestedCategoryId).map((r) => vendorMemoryKey(r.vendor as string)),
+      items
+        .filter((r) => r.aiSuggestedCategoryId)
+        .map((r) => categoryMemoryKey(r.vendor, r.description)),
     ),
   ].filter(Boolean);
   const memories = memoryKeys.length
@@ -1001,9 +1012,9 @@ export async function getReviewQueue(
     : [];
   const memoryCategory = new Map(memories.map((m) => [`${m.vendorKey}|${m.type}`, m.categoryId]));
   const isLearned = (r: DbTransaction): boolean =>
-    !!r.vendor &&
     !!r.aiSuggestedCategoryId &&
-    memoryCategory.get(`${vendorMemoryKey(r.vendor)}|${r.type}`) === r.aiSuggestedCategoryId;
+    memoryCategory.get(`${categoryMemoryKey(r.vendor, r.description)}|${r.type}`) ===
+      r.aiSuggestedCategoryId;
   const last = items[items.length - 1];
   return {
     items: items.map((r) => ({
@@ -1331,7 +1342,7 @@ export async function confirm(
   if (input.categoryId) {
     await recordVendorCategoryChoice(
       accountId,
-      existing.vendor,
+      { vendor: existing.vendor, description: existing.description },
       existing.type,
       input.categoryId,
       input.categoryId === existing.aiSuggestedCategoryId ? 'reinforce' : 'correct',
@@ -1339,7 +1350,7 @@ export async function confirm(
   } else if (usedSuggestion) {
     await recordVendorCategoryChoice(
       accountId,
-      existing.vendor,
+      { vendor: existing.vendor, description: existing.description },
       existing.type,
       existing.aiSuggestedCategoryId,
       'reinforce',
