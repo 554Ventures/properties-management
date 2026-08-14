@@ -306,10 +306,11 @@ model Category {
 
 // Per-account vendor → category memory (TRUSTWORTHY_TRANSACTIONS_PLAN.md §A).
 // Written when a user corrects (or repeatedly accepts) a category on a
-// transaction with a vendor; consulted by suggestCategory before the keyword
-// table so corrections stick. vendorKey is the normalized memory key
-// (services/vendor.ts vendorMemoryKey — bank-descriptor noise stripped), NOT
-// the raw vendor string.
+// transaction; consulted by suggestCategory before the keyword table so
+// corrections stick. vendorKey is the normalized memory key
+// (services/vendor.ts categoryMemoryKey — vendor when the feed enriches one,
+// otherwise the descriptor, with per-transaction noise stripped), NOT the raw
+// vendor string.
 model VendorCategoryMemory {
   id         String   @id @default(cuid())
   accountId  String
