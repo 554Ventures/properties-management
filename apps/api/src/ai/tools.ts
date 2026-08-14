@@ -642,7 +642,7 @@ export const serviceTools: ServiceToolDef[] = [
   {
     name: 'confirm_transaction',
     description:
-      'WRITES: confirms (categorizes) a pending-review transaction, moving it into the ledger. Pass categoryId to override the AI suggestion; omit it to accept the suggestion. Pass propertyId/unitId to attribute the transaction. Pass rentPaymentId to link an income transaction (a bank deposit or an already-confirmed manual entry) to that expected rent payment and mark it paid — amounts must match exactly, and property/unit then come from the lease. For a MORTGAGE PAYMENT (the row carries a mortgageId, stamped when its vendor matched a lender): pass principalCents for the portion that repays the loan — it is not an expense and it reduces the mortgage balance — and put the remainder on categoryId (usually Mortgage Interest) or across splits, which must sum to amountCents minus principalCents. Never estimate the principal: it comes from the lender statement, so ask the user for the figure rather than deriving one from the rate or balance.',
+      'WRITES: confirms (categorizes) a pending-review transaction, moving it into the ledger. Pass categoryId to override the AI suggestion; omit it to accept the suggestion. Pass propertyId/unitId to attribute the transaction. Pass rentPaymentId to link an income transaction (a bank deposit or an already-confirmed manual entry) to that expected rent payment and mark it paid — amounts must match exactly, and property/unit then come from the lease. Alongside rentPaymentId you may pass tenantId to say which co-tenant paid (it must be a tenant on that lease); leave it out and the payer is taken from the bank descriptor when it names exactly one of the lease tenants, and left blank when it is ambiguous. Attribution never changes how much the charge has been paid — only the per-tenant split — and attribute_rent_deposit can correct it afterwards. For a MORTGAGE PAYMENT (the row carries a mortgageId, stamped when its vendor matched a lender): pass principalCents for the portion that repays the loan — it is not an expense and it reduces the mortgage balance — and put the remainder on categoryId (usually Mortgage Interest) or across splits, which must sum to amountCents minus principalCents. Never estimate the principal: it comes from the lender statement, so ask the user for the figure rather than deriving one from the rate or balance.',
     // The REST contract itself, so this tool cannot silently fall behind it —
     // it did exactly that when confirm gained the mortgage breakdown, leaving
     // the assistant able to confirm a mortgage payment only by expensing the
@@ -695,6 +695,25 @@ export const serviceTools: ServiceToolDef[] = [
     execute: (accountId, input, actor) => {
       const { rentPaymentId, depositId } = input as { rentPaymentId: string; depositId: string };
       return rentService.unlinkDeposit(accountId, rentPaymentId, depositId, actor);
+    },
+  },
+  {
+    name: 'attribute_rent_deposit',
+    description:
+      'WRITES: records which co-tenant an already-linked deposit came from (depositId + rentPaymentId from get_rent_status rows; tenantId from that row\'s `tenants` list, or null to clear it). This moves NO money — the charge keeps the same paidCents, status and remaining balance; what changes is the per-tenant split, so a roommate who has paid their share stops reading as unsettled. The tenant must be on that charge\'s lease. Use this to fix a deposit that was linked without a payer, rather than unlinking and re-linking it, which would briefly reopen a settled charge.',
+    inputSchema: z.object({
+      rentPaymentId: z.string(),
+      depositId: z.string(),
+      tenantId: z.string().nullable(),
+    }),
+    write: true,
+    execute: (accountId, input, actor) => {
+      const { rentPaymentId, depositId, tenantId } = input as {
+        rentPaymentId: string;
+        depositId: string;
+        tenantId: string | null;
+      };
+      return rentService.attributeDeposit(accountId, rentPaymentId, depositId, tenantId, actor);
     },
   },
   {
@@ -849,6 +868,8 @@ export const WRITE_TOOL_PERMISSIONS: Partial<Record<string, MemberPermission>> =
   record_rent_payment: 'rent',
   // Same 'rent' grant as DELETE /rent/payments/:id/deposits/:depositId.
   unlink_rent_deposit: 'rent',
+  // Same 'rent' grant as PATCH /rent/payments/:id/deposits/:depositId.
+  attribute_rent_deposit: 'rent',
   apply_late_fee: 'rent',
   send_rent_reminders: 'rent',
   generate_report: 'reports',

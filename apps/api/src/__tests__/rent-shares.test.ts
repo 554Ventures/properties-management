@@ -378,3 +378,345 @@ describe('GET /rent/unlinked-deposits (the linkage nudge)', () => {
     });
   });
 });
+
+// A deposit that arrives through the bank and is linked with POST
+// /transactions/:id/confirm used to persist tenantId: null unconditionally, so
+// two roommates closing one charge with two Zelle deposits left the charge
+// reading "paid" while BOTH co-tenants read paidCents: 0, settled: false.
+describe('confirm-path deposit attribution', () => {
+  const startedAt = new Date();
+
+  beforeAll(async () => {
+    // Start from an untouched charge — earlier blocks left a recorded payment
+    // on it, and the two-roommate repro needs both halves of it open.
+    const row = await parkRow();
+    const deposits = await prisma.rentPaymentDeposit.findMany({
+      where: { rentPaymentId: row.rentPaymentId },
+    });
+    await prisma.transaction.deleteMany({
+      where: { id: { in: deposits.map((d) => d.transactionId) } },
+    });
+    await prisma.rentPayment.update({
+      where: { id: row.rentPaymentId },
+      data: {
+        paidCents: 0,
+        status: 'due',
+        method: null,
+        paidAt: null,
+        externalRef: null,
+        transactionId: null,
+      },
+    });
+  });
+
+  /** A confirmed Rent income on Park's unit, ready to be linked as a deposit. */
+  async function depositTxn(description: string, amountCents: number) {
+    const row = await parkRow();
+    const rentCategory = await prisma.category.findFirstOrThrow({
+      where: { name: 'Rent', type: 'income', isSystem: true },
+    });
+    return prisma.transaction.create({
+      data: {
+        accountId,
+        propertyId: row.propertyId,
+        unitId: row.unitId,
+        categoryId: rentCategory.id,
+        date: new Date(),
+        amountCents,
+        type: 'income',
+        description,
+        source: 'bank',
+        status: 'pending_review',
+      },
+    });
+  }
+
+  /** Undo one linked deposit and delete the ledger row behind it. */
+  async function undo(txnId: string, rentPaymentId: string) {
+    const deposit = await prisma.rentPaymentDeposit.findUnique({ where: { transactionId: txnId } });
+    if (deposit) await rentService.unlinkDeposit(accountId, rentPaymentId, deposit.id);
+    await prisma.transaction.delete({ where: { id: txnId } });
+  }
+
+  it('attributes an explicit tenantId to that co-tenant, and settles their share', async () => {
+    const row = await parkRow();
+    const park = row.tenants.find((t) => t.tenantName === PARK_NAME)!;
+    const amountCents = 10_000;
+
+    const txn = await depositTxn('TEST BANK DEPOSIT UNSIGNED', amountCents);
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/transactions/${txn.id}/confirm`,
+      payload: { rentPaymentId: row.rentPaymentId, tenantId: park.tenantId },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const deposit = await prisma.rentPaymentDeposit.findUniqueOrThrow({
+      where: { transactionId: txn.id },
+    });
+    expect(deposit.tenantId).toBe(park.tenantId);
+    const after = await parkRow();
+    expect(after.tenants.find((t) => t.tenantId === park.tenantId)!.paidCents).toBe(amountCents);
+    expect(after.deposits.find((d) => d.transactionId === txn.id)!.tenantId).toBe(park.tenantId);
+
+    await undo(txn.id, row.rentPaymentId);
+  });
+
+  it('leaves BOTH co-tenants settled when two deposits close one charge — and the charge itself reads exactly as it does unattributed', async () => {
+    // Baseline: the pre-fix behaviour, both deposits linked with no payer.
+    const before = await parkRow();
+    const half = before.amountCents / 2;
+    expect(before.paidCents).toBe(0); // Park's charge starts the block untouched
+    const blandA = await depositTxn('TEST DEPOSIT ONE', half);
+    const blandB = await depositTxn('TEST DEPOSIT TWO', half);
+    for (const t of [blandA, blandB]) {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/transactions/${t.id}/confirm`,
+        payload: { rentPaymentId: before.rentPaymentId },
+      });
+      expect(res.statusCode).toBe(200);
+    }
+    const unattributed = await parkRow();
+    // The bug, reproduced: charge covered, nobody credited.
+    expect(unattributed.tenants.every((t) => t.paidCents === 0 && !t.settled)).toBe(true);
+    const chargeFigures = {
+      amountCents: unattributed.amountCents,
+      paidCents: unattributed.paidCents,
+      lateFeeCents: unattributed.lateFeeCents,
+      status: unattributed.status,
+      remainingCents: unattributed.amountCents + unattributed.lateFeeCents - unattributed.paidCents,
+    };
+    expect(chargeFigures.paidCents).toBe(PARK_RENT_CENTS);
+    await undo(blandA.id, before.rentPaymentId);
+    await undo(blandB.id, before.rentPaymentId);
+
+    // Same two deposits, now each naming its payer.
+    const row = await parkRow();
+    const park = row.tenants.find((t) => t.tenantName === PARK_NAME)!;
+    const osei = row.tenants.find((t) => t.tenantName === PARK_COTENANT_NAME)!;
+    const parkTxn = await depositTxn('TEST DEPOSIT ONE', half);
+    const oseiTxn = await depositTxn('TEST DEPOSIT TWO', half);
+    for (const [t, tenantId] of [
+      [parkTxn, park.tenantId],
+      [oseiTxn, osei.tenantId],
+    ] as const) {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/transactions/${t.id}/confirm`,
+        payload: { rentPaymentId: row.rentPaymentId, tenantId },
+      });
+      expect(res.statusCode).toBe(200);
+    }
+
+    const attributed = await parkRow();
+    expect(attributed.tenants.map((t) => [t.paidCents, t.settled])).toEqual([
+      [PARK_SHARE_CENTS, true],
+      [PARK_SHARE_CENTS, true],
+    ]);
+    // Attribution moves attribution, never money: the charge is identical.
+    expect({
+      amountCents: attributed.amountCents,
+      paidCents: attributed.paidCents,
+      lateFeeCents: attributed.lateFeeCents,
+      status: attributed.status,
+      remainingCents: attributed.amountCents + attributed.lateFeeCents - attributed.paidCents,
+    }).toEqual(chargeFigures);
+
+    await undo(parkTxn.id, row.rentPaymentId);
+    await undo(oseiTxn.id, row.rentPaymentId);
+  });
+
+  it('refuses a tenant who is not on the charge\'s lease, and links nothing', async () => {
+    const row = await parkRow();
+    const stranger = await prisma.tenant.findFirstOrThrow({
+      where: { accountId, fullName: OKAFOR_NAME },
+    });
+    const txn = await depositTxn('TEST BANK DEPOSIT STRANGER', 10_000);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/transactions/${txn.id}/confirm`,
+      payload: { rentPaymentId: row.rentPaymentId, tenantId: stranger.id },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toMatch(/not on this lease/);
+    // Rejected before anything was written: no deposit, still pending review.
+    expect(await prisma.rentPaymentDeposit.findUnique({ where: { transactionId: txn.id } })).toBeNull();
+    expect((await prisma.transaction.findUniqueOrThrow({ where: { id: txn.id } })).status).toBe(
+      'pending_review',
+    );
+    expect((await parkRow()).paidCents).toBe(row.paidCents);
+
+    await prisma.transaction.delete({ where: { id: txn.id } });
+  });
+
+  it('infers the payer when the bank descriptor names exactly one lease tenant, and says so in the audit', async () => {
+    const row = await parkRow();
+    const park = row.tenants.find((t) => t.tenantName === PARK_NAME)!;
+    const txn = await depositTxn('TEST ZELLE FROM D PARK', 10_000);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/transactions/${txn.id}/confirm`,
+      payload: { rentPaymentId: row.rentPaymentId },
+    });
+    expect(res.statusCode).toBe(200);
+    const deposit = await prisma.rentPaymentDeposit.findUniqueOrThrow({
+      where: { transactionId: txn.id },
+    });
+    expect(deposit.tenantId).toBe(park.tenantId);
+
+    // Inferred, not stated — the audit trail has to keep those apart.
+    const audit = await prisma.auditLog.findFirstOrThrow({
+      where: { accountId, action: 'rent_payment.recorded', entityId: row.rentPaymentId },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(JSON.parse(audit.detailJson!)).toMatchObject({
+      tenantId: park.tenantId,
+      tenantAttribution: 'inferred',
+    });
+
+    await undo(txn.id, row.rentPaymentId);
+  });
+
+  it('attributes nobody when the descriptor names no tenant or names both', async () => {
+    const row = await parkRow();
+    const bland = await depositTxn('TEST MYSTERY DEPOSIT', 10_000);
+    const both = await depositTxn('TEST ZELLE FROM PARK AND OSEI', 10_000);
+
+    for (const t of [bland, both]) {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/transactions/${t.id}/confirm`,
+        payload: { rentPaymentId: row.rentPaymentId },
+      });
+      expect(res.statusCode).toBe(200);
+      const deposit = await prisma.rentPaymentDeposit.findUniqueOrThrow({
+        where: { transactionId: t.id },
+      });
+      expect(deposit.tenantId).toBeNull();
+    }
+    // Ambiguity costs nothing but attribution: the charge still collected both.
+    expect((await parkRow()).paidCents).toBe(row.paidCents + 20_000);
+
+    await undo(bland.id, row.rentPaymentId);
+    await undo(both.id, row.rentPaymentId);
+  });
+
+  it('lets an explicit tenantId beat the name in the descriptor, audited as stated', async () => {
+    const row = await parkRow();
+    const osei = row.tenants.find((t) => t.tenantName === PARK_COTENANT_NAME)!;
+    // Descriptor says Park; the caller says Osei (a Zelle sent from the wrong
+    // roommate's account). The human statement wins.
+    const txn = await depositTxn('TEST ZELLE FROM D PARK', 10_000);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/transactions/${txn.id}/confirm`,
+      payload: { rentPaymentId: row.rentPaymentId, tenantId: osei.tenantId },
+    });
+    expect(res.statusCode).toBe(200);
+    const deposit = await prisma.rentPaymentDeposit.findUniqueOrThrow({
+      where: { transactionId: txn.id },
+    });
+    expect(deposit.tenantId).toBe(osei.tenantId);
+    const audit = await prisma.auditLog.findFirstOrThrow({
+      where: { accountId, action: 'rent_payment.recorded', entityId: row.rentPaymentId },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(JSON.parse(audit.detailJson!)).toMatchObject({
+      tenantId: osei.tenantId,
+      tenantAttribution: 'stated',
+    });
+
+    await undo(txn.id, row.rentPaymentId);
+  });
+
+  // The repair path for deposits linked before any of this existed: ~15 closed
+  // charges in production carry a null-attributed deposit, and unlink/re-link
+  // would reopen a settled charge to change a field that moves no money.
+  it('re-points an already-linked deposit without touching the charge, and refuses a stranger', async () => {
+    const row = await parkRow();
+    const park = row.tenants.find((t) => t.tenantName === PARK_NAME)!;
+    const txn = await depositTxn('TEST DEPOSIT TO REPAIR', 10_000);
+    const confirmRes = await app.inject({
+      method: 'POST',
+      url: `/api/v1/transactions/${txn.id}/confirm`,
+      payload: { rentPaymentId: row.rentPaymentId },
+    });
+    expect(confirmRes.statusCode).toBe(200);
+    const deposit = await prisma.rentPaymentDeposit.findUniqueOrThrow({
+      where: { transactionId: txn.id },
+    });
+    expect(deposit.tenantId).toBeNull(); // the shape production is stuck in
+    const linked = await parkRow();
+
+    const stranger = await prisma.tenant.findFirstOrThrow({
+      where: { accountId, fullName: OKAFOR_NAME },
+    });
+    const refused = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/rent/payments/${row.rentPaymentId}/deposits/${deposit.id}`,
+      payload: { tenantId: stranger.id },
+    });
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json().error.message).toMatch(/not on this lease/);
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/rent/payments/${row.rentPaymentId}/deposits/${deposit.id}`,
+      payload: { tenantId: park.tenantId },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(
+      (await prisma.rentPaymentDeposit.findUniqueOrThrow({ where: { id: deposit.id } })).tenantId,
+    ).toBe(park.tenantId);
+
+    const repaired = await parkRow();
+    expect(repaired.tenants.find((t) => t.tenantId === park.tenantId)!.paidCents).toBe(10_000);
+    // Money is untouched: same charge figures before and after the repair.
+    expect({
+      paidCents: repaired.paidCents,
+      lateFeeCents: repaired.lateFeeCents,
+      status: repaired.status,
+      paidAt: repaired.paidAt,
+    }).toEqual({
+      paidCents: linked.paidCents,
+      lateFeeCents: linked.lateFeeCents,
+      status: linked.status,
+      paidAt: linked.paidAt,
+    });
+    const audit = await prisma.auditLog.findFirstOrThrow({
+      where: { accountId, action: 'rent_payment.deposit_attributed', entityId: row.rentPaymentId },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(audit.actor).toBe('user');
+    expect(JSON.parse(audit.detailJson!)).toMatchObject({
+      depositId: deposit.id,
+      tenantId: park.tenantId,
+      previousTenantId: null,
+    });
+
+    // …and it clears back to "the unit paid, we don't know who".
+    const cleared = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/rent/payments/${row.rentPaymentId}/deposits/${deposit.id}`,
+      payload: { tenantId: null },
+    });
+    expect(cleared.statusCode).toBe(200);
+    expect(
+      (await prisma.rentPaymentDeposit.findUniqueOrThrow({ where: { id: deposit.id } })).tenantId,
+    ).toBeNull();
+
+    await undo(txn.id, row.rentPaymentId);
+  });
+
+  afterAll(async () => {
+    // Every test undoes its own links; this clears the audit trail they left so
+    // later files see the seeded account.
+    await prisma.auditLog.deleteMany({
+      where: { accountId, entityType: 'rent_payment', createdAt: { gte: startedAt } },
+    });
+  });
+});

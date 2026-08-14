@@ -870,6 +870,271 @@ describe('RentTracker ambiguous rent deposits', () => {
   }, 20_000);
 });
 
+// Rent deposit tenant attribution: a "Paid by" field on the link nudges
+// (offered only when the charge's own tracker row — same period, no extra
+// fetch — shows a shared lease) and a repair select on already-linked
+// deposits in the Payment details modal.
+describe('RentTracker deposit "Paid by" attribution', () => {
+  const sharedRow = makeRow({
+    rentPaymentId: 'rp-shared',
+    leaseId: 'l-shared',
+    tenantId: 't-primary',
+    tenantName: 'K. Alvarez',
+    status: 'due',
+    daysLate: undefined,
+    tenants: [
+      {
+        tenantId: 't-primary',
+        tenantName: 'K. Alvarez',
+        isPrimary: true,
+        shareCents: 57500,
+        shareSpecified: true,
+        paidCents: 0,
+        settled: false,
+      },
+      {
+        tenantId: 't-second',
+        tenantName: 'L. Novak',
+        isPrimary: false,
+        shareCents: 57500,
+        shareSpecified: true,
+        paidCents: 0,
+        settled: false,
+      },
+    ],
+  });
+  const sharedTracker: RentTrackerResponse = {
+    period,
+    collectedCents: 0,
+    outstandingCents: 115000,
+    paidUnits: 0,
+    partialUnits: 0,
+    totalUnits: 1,
+    rows: [sharedRow],
+  };
+
+  it('offers "Paid by" on the unlinked-deposit nudge for a shared charge and sends the chosen tenant on link', async () => {
+    stubDesktopViewport();
+    const unlinkedItem: UnlinkedRentDepositsResponse['items'][number] = {
+      transactionId: 'tx-unlinked-shared',
+      description: 'Zelle payment',
+      amountCents: 57500,
+      date: '2026-07-05T00:00:00.000Z',
+      rentPaymentId: 'rp-shared',
+      leaseId: 'l-shared',
+      tenantName: 'K. Alvarez',
+      unitLabel: 'Main',
+      propertyLabel: '21 Cedar Ct',
+      period,
+      remainingCents: 115000,
+    };
+    const fetchMock = makeFetch([
+      { method: 'GET', path: '/api/v1/rent/tracker', body: sharedTracker },
+      { method: 'GET', path: '/api/v1/rent/unlinked-deposits', body: { items: [unlinkedItem] } },
+      { method: 'GET', path: '/api/v1/insights', body: [] },
+      { method: 'POST', path: '/api/v1/transactions/tx-unlinked-shared/confirm', body: {} },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+    const { container } = renderRentTracker();
+
+    const panel = await screen.findByRole('region', { name: 'AI insights' });
+    await within(panel).findByText(/Zelle payment/);
+
+    const select = within(panel).getByLabelText('Paid by');
+    expect(within(panel).getByText('Not recorded')).toBeInTheDocument();
+    fireEvent.change(select, { target: { value: 't-second' } });
+
+    const results = await axe.run(container, { rules: { 'color-contrast': { enabled: false } } });
+    expect(results.violations.map((v) => v.id)).toEqual([]);
+
+    fireEvent.click(within(panel).getByRole('button', { name: 'Link to rent' }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url) === '/api/v1/transactions/tx-unlinked-shared/confirm' &&
+          (init as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(call).toBeDefined();
+      expect((call![1] as RequestInit).body).toBe(
+        JSON.stringify({ rentPaymentId: 'rp-shared', tenantId: 't-second' }),
+      );
+    });
+  }, 20_000);
+
+  it('offers "Paid by" on the ambiguous-deposit item once a shared-lease candidate is chosen, and sends the tenant on link', async () => {
+    stubDesktopViewport();
+    const ambiguousItem: AmbiguousRentDeposit = {
+      transactionId: 'tx-ambiguous-shared',
+      description: 'Check #9001',
+      amountCents: 57500,
+      date: '2026-07-05T00:00:00.000Z',
+      candidates: [
+        {
+          rentPaymentId: 'rp-shared',
+          leaseId: 'l-shared',
+          tenantName: 'K. Alvarez',
+          unitLabel: 'Main',
+          propertyLabel: '21 Cedar Ct',
+          period,
+          remainingCents: 115000,
+        },
+        {
+          rentPaymentId: 'rp-other',
+          leaseId: 'l-other',
+          tenantName: 'J. Rivera',
+          unitLabel: 'Unit B',
+          propertyLabel: '12 Maple St',
+          period,
+          remainingCents: 115000,
+        },
+      ],
+    };
+    const fetchMock = makeFetch([
+      { method: 'GET', path: '/api/v1/rent/tracker', body: sharedTracker },
+      {
+        method: 'GET',
+        path: '/api/v1/rent/unlinked-deposits',
+        body: { items: [], ambiguous: [ambiguousItem] },
+      },
+      { method: 'GET', path: '/api/v1/insights', body: [] },
+      { method: 'POST', path: '/api/v1/transactions/tx-ambiguous-shared/confirm', body: {} },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+    renderRentTracker();
+
+    const panel = await screen.findByRole('region', { name: 'AI insights' });
+    await within(panel).findByText(/Check #9001/);
+
+    // No candidate chosen yet — nothing to ask "paid by" about.
+    expect(within(panel).queryByLabelText('Paid by')).not.toBeInTheDocument();
+
+    fireEvent.change(within(panel).getByLabelText('Matching charge'), {
+      target: { value: 'rp-shared' },
+    });
+    const tenantSelect = await within(panel).findByLabelText('Paid by');
+    fireEvent.change(tenantSelect, { target: { value: 't-second' } });
+    fireEvent.click(within(panel).getByRole('button', { name: 'Link' }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url) === '/api/v1/transactions/tx-ambiguous-shared/confirm' &&
+          (init as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(call).toBeDefined();
+      expect((call![1] as RequestInit).body).toBe(
+        JSON.stringify({ rentPaymentId: 'rp-shared', linkSource: 'manual', tenantId: 't-second' }),
+      );
+    });
+  });
+
+  it('repairs an already-linked deposit’s attribution from the Payment details modal, and can clear it back to "not recorded"', async () => {
+    stubDesktopViewport();
+    const paidRow = makeRow({
+      rentPaymentId: 'rp-repair',
+      leaseId: 'l-repair',
+      tenantId: 't-a',
+      tenantName: 'K. Alvarez',
+      status: 'paid',
+      paidCents: 115000,
+      paidAt: '2026-07-02T00:00:00.000Z',
+      lastDepositAt: '2026-07-02T00:00:00.000Z',
+      deposits: [
+        {
+          id: 'dep-1',
+          transactionId: 'tx-1',
+          amountCents: 115000,
+          tenantId: 't-a',
+          method: 'bank',
+          paidAt: '2026-07-02T00:00:00.000Z',
+        },
+      ],
+      tenants: [
+        {
+          tenantId: 't-a',
+          tenantName: 'K. Alvarez',
+          isPrimary: true,
+          shareCents: 57500,
+          shareSpecified: true,
+          paidCents: 115000,
+          settled: true,
+        },
+        {
+          tenantId: 't-b',
+          tenantName: 'L. Novak',
+          isPrimary: false,
+          shareCents: 57500,
+          shareSpecified: true,
+          paidCents: 0,
+          settled: false,
+        },
+      ],
+    });
+    const localTracker: RentTrackerResponse = {
+      period,
+      collectedCents: 115000,
+      outstandingCents: 0,
+      paidUnits: 1,
+      partialUnits: 0,
+      totalUnits: 1,
+      rows: [paidRow],
+    };
+    const fetchMock = makeFetch([
+      { method: 'GET', path: '/api/v1/rent/tracker', body: localTracker },
+      { method: 'GET', path: '/api/v1/rent/unlinked-deposits', body: { items: [] } },
+      { method: 'GET', path: '/api/v1/insights', body: [] },
+      {
+        method: 'PATCH',
+        path: '/api/v1/rent/payments/rp-repair/deposits/dep-1',
+        body: paidRow,
+      },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+    renderRentTracker();
+
+    const row = (await screen.findByText('K. Alvarez')).closest('tr') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: /Details — K\. Alvarez/ }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Payment details — K. Alvarez' });
+    const select = within(dialog).getByLabelText('Paid by');
+    expect(select).toHaveValue('t-a');
+    fireEvent.change(select, { target: { value: 't-b' } });
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url) === '/api/v1/rent/payments/rp-repair/deposits/dep-1' &&
+          (init as RequestInit | undefined)?.method === 'PATCH',
+      );
+      expect(call).toBeDefined();
+      expect((call![1] as RequestInit).body).toBe(JSON.stringify({ tenantId: 't-b' }));
+    });
+    expect(await screen.findByText('Deposit attributed to L. Novak.')).toBeInTheDocument();
+    // Attribution-only: the repair modal closes the same way Unlink does
+    // (it's showing a snapshot of the row that just changed underneath it).
+    expect(
+      screen.queryByRole('dialog', { name: 'Payment details — K. Alvarez' }),
+    ).not.toBeInTheDocument();
+
+    // Reopen and clear it back to "not recorded".
+    fireEvent.click(within(row).getByRole('button', { name: /Details — K\. Alvarez/ }));
+    const reopened = await screen.findByRole('dialog', { name: 'Payment details — K. Alvarez' });
+    fireEvent.change(within(reopened).getByLabelText('Paid by'), { target: { value: '' } });
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          String(url) === '/api/v1/rent/payments/rp-repair/deposits/dep-1' &&
+          (init as RequestInit | undefined)?.method === 'PATCH',
+      );
+      expect(call).toHaveLength(2);
+      expect((call[1]![1] as RequestInit).body).toBe(JSON.stringify({ tenantId: null }));
+    });
+    expect(await screen.findByText('Deposit attribution cleared.')).toBeInTheDocument();
+  });
+});
+
 describe('RentTracker reminder send flow (F1)', () => {
   it('a server-side send (deliveredVia email) shows "Sent to X" icon + text with the mailto demoted to a copy link', async () => {
     stubDesktopViewport();

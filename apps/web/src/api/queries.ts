@@ -13,6 +13,7 @@ import type {
   ActivityItem,
   AddLeaseTenantInput,
   ApplyLateFeeInput,
+  AttributeRentDepositInput,
   BankDiscrepancyListResponse,
   BankDiscrepancyResolution,
   Category,
@@ -999,6 +1000,22 @@ export function useUnlinkDeposit() {
   return useMutation({
     mutationFn: (input: { rentPaymentId: string; depositId: string }) =>
       api.delete(`/rent/payments/${input.rentPaymentId}/deposits/${input.depositId}`),
+    onSuccess: () => invalidateFinancials(qc),
+  });
+}
+
+// Repair which co-tenant an already-linked deposit credits — attribution
+// only, no money moves. `tenantId: null` clears it back to "we don't know
+// who paid".
+export function useAttributeDeposit() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      rentPaymentId,
+      depositId,
+      ...input
+    }: AttributeRentDepositInput & { rentPaymentId: string; depositId: string }) =>
+      api.patch<RentPayment>(`/rent/payments/${rentPaymentId}/deposits/${depositId}`, input),
     onSuccess: () => invalidateFinancials(qc),
   });
 }

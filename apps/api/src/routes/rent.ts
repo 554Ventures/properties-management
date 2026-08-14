@@ -1,5 +1,6 @@
 import {
   ApplyLateFeeInputSchema,
+  AttributeRentDepositInputSchema,
   PeriodSchema,
   RecordRentPaymentInputSchema,
   SendRemindersInputSchema,
@@ -51,6 +52,23 @@ export async function rentRoutes(app: FastifyInstance): Promise<void> {
     '/rent/payments/:id/deposits/:depositId',
     needsRent,
     async (req) => rentService.unlinkDeposit(req.accountId, req.params.id, req.params.depositId),
+  );
+
+  // Say who paid an already-linked deposit (or clear it with tenantId: null).
+  // Attribution only — no money moves, so the charge comes back with the same
+  // paidCents and status it went in with; it's the per-tenant shares that change.
+  app.patch<{ Params: { id: string; depositId: string } }>(
+    '/rent/payments/:id/deposits/:depositId',
+    needsRent,
+    async (req) => {
+      const input = parseBody(AttributeRentDepositInputSchema, req.body);
+      return rentService.attributeDeposit(
+        req.accountId,
+        req.params.id,
+        req.params.depositId,
+        input.tenantId,
+      );
+    },
   );
 
   // Apply a late fee to a late charge (WS7). Explicit human action — the fee is

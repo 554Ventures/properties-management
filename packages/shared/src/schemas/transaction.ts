@@ -122,6 +122,13 @@ export const ConfirmTransactionInputSchema = z.object({
   // 'user'; omitted or 'suggestion' = accepting an AI-computed match,
   // auditing as 'ai_suggested_user_confirmed'.
   linkSource: z.enum(['suggestion', 'manual']).optional(),
+  // Which co-tenant the deposit credits (must be on the charge's lease) — the
+  // same attribution `RecordRentPaymentInput.tenantId` carries, so a deposit
+  // that arrives through the bank tracks per-tenant shares exactly like one
+  // logged by hand. Only meaningful alongside `rentPaymentId`. Omitted, the
+  // service infers the tenant when the bank descriptor names exactly one of
+  // the lease's tenants, and attributes nobody when it's ambiguous.
+  tenantId: z.string().optional(),
   propertyId: z.string().optional(),
   unitId: z.string().optional(),
   classification: TransactionClassificationSchema.optional(), // review time is the natural moment to say "this is a transfer"

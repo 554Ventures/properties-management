@@ -121,6 +121,7 @@ export type RentTenantShare = z.infer<typeof s.RentTenantShareSchema>;
 export type RentTrackerRow = z.infer<typeof s.RentTrackerRowSchema>;
 export type RentTrackerResponse = z.infer<typeof s.RentTrackerResponseSchema>;
 export type RecordRentPaymentInput = z.infer<typeof s.RecordRentPaymentInputSchema>;
+export type AttributeRentDepositInput = z.infer<typeof s.AttributeRentDepositInputSchema>;
 export type ApplyLateFeeInput = z.infer<typeof s.ApplyLateFeeInputSchema>;
 export type UnlinkedRentDeposit = z.infer<typeof s.UnlinkedRentDepositSchema>;
 export type UnlinkedRentDepositsResponse = z.infer<typeof s.UnlinkedRentDepositsResponseSchema>;
