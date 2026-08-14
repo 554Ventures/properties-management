@@ -7,6 +7,13 @@
 
 > "Hearth" is the placeholder product name used in the wireframes' wordmark. It is used throughout this document for concreteness; treat it as a working title, not a final brand decision.
 
+> ### ⚠ Proposed amendment A1 — Maintenance — *opened 2026-08-13, PENDING RATIFICATION*
+>
+> **Sections touched:** §4 (IA table), §5.10 (new), §8 (two entity rows), §11 (fourth bullet), §14 (Phase 2).
+> **Raised by:** [PLAN-MAINTENANCE.md](PLAN-MAINTENANCE.md) decision **D1**, which found that this PRD contains no maintenance scope whatsoever — no nav row, no feature spec, no entity, no phase — while `Contractor` and a nav item labelled "Maintenance" shipped anyway, and while the Phase-2 tenant portal is scoped elsewhere as "pay rent, **maintenance requests**, view/sign lease". The portal therefore depends on a landlord-side record this document never designed.
+> **What ratification decides:** whether maintenance becomes approved product scope. It does **not** approve a technical design — the data model, status/priority enums, permission area, and phasing live in PLAN-MAINTENANCE.md, where D2/D3 (status depth, priority levels) remain open.
+> **Every block below carrying an `[A1]` marker is proposed text, not approved scope.** To ratify: delete the `[A1]` markers and this banner, and set §14's entry live. To reject: delete the marked blocks, and record the rejection in PLAN-MAINTENANCE.md §8 D1.
+
 ---
 
 ## 1. Summary
@@ -55,6 +62,7 @@ One persistent left navigation ("the spine") on desktop, collapsing to a bottom 
 |---|---|---|
 | Dashboard | Home overview | — |
 | Properties | Properties list | Property detail |
+| Maintenance **`[A1]`** | Work orders · Contractors | Work-order detail / contractor detail |
 | Tenants & Leases | Tenants list | Tenant / lease detail |
 | Money | Income & expenses | Add / snap receipt |
 | Rent Collection | Rent tracker | Remind late tenant |
@@ -63,6 +71,8 @@ One persistent left navigation ("the spine") on desktop, collapsing to a bottom 
 | Settings | Account, integrations, notifications | — |
 
 A persistent **global assistant affordance** (chat bubble / drawer trigger) is available from every screen regardless of which nav item is active — it is not itself a nav destination, it's a layer above the nav. See §9.
+
+> **`[A1]`** *Note on this table's drift, surfaced but deliberately not resolved by this amendment.* The paragraph above calls the nav map "a hard requirement… the app's core usability contract," but the shipped nav has diverged in four ways beyond the row added here: **Tenants & Leases** was retired into the Property hub (2026-07-13, `/tenants` → `/properties`), **✦ AI Insights** was retired into Reports (2026-07-11, monthly reviews render in the report viewer), **Documents** was added, and **Maintenance** shipped without ever appearing here. Only the Maintenance row is amended, because that is the scope question on the table; the other three are already-shipped decisions recorded in FEATURES.md that this document has simply never caught up to. Reconciling them is its own pass, and pretending otherwise by quietly rewriting the table would erase the fact that the contract was overridden four times.
 
 ---
 
@@ -130,6 +140,31 @@ All of the above adapt to a narrow-viewport layout: left nav becomes a bottom ta
 
 Out of wireframe scope but required for a shippable v1: account/profile, connected integrations (bank via Plaid, Stripe payouts, Docusign, email), notification preferences, and data export/account deletion. Kept intentionally minimal for v1 given the single-owner-account model.
 
+### 5.10 Maintenance **`[A1]`**
+
+**Out of wireframe scope.** The wireframes have no maintenance screen, so this section has no source artifact to defer to — it is specified from the persona (§3) rather than carried over. Technical design: [PLAN-MAINTENANCE.md](PLAN-MAINTENANCE.md).
+
+Rent and repairs are what an independent landlord's week is actually made of. The product models rent to the cent and models repairs not at all: a request arrives, and the only trace it can leave is an expense weeks later. This section makes the repair itself a record.
+
+- **Contractor directory** (shipped ahead of this document; ratified here): trades directory — name, trade, rating, contact, notes — with usage statistics (jobs, average cost, last used) **derived** from the ledger, never stored separately.
+- **Work orders:** a maintenance item as a first-class record — what needs doing, at which property and **unit**, how urgent, who is assigned, when it is scheduled, and whether it is done. A work order is created before any money moves and may legitimately never cost anything (the landlord fixes it themself).
+- **Cost linkage:** an expense links to the work order it paid for, exactly as a deposit links to a rent charge. A work order's cost is **derived from linked, confirmed ledger transactions** — the ledger stays the single financial source of truth, and no maintenance figure can drift from it. A job may carry several expenses (deposit, final invoice, materials).
+- **Attribution as a by-product:** because a work order names its unit, a linked expense inherits that attribution. This is the product's answer to unit-level cost visibility — it arrives from a workflow the landlord already wants, rather than from a form field the app nags about.
+- **Surfacing follows the "AI distributed, not siloed" rule** and the hub-in-place rule: open work orders appear in the Property hub's "Needs attention" triage, on unit and contractor detail, and in the ledger's row markers — not only on a maintenance page the user has to remember to visit.
+
+Acceptance criteria:
+
+- A work order can be created, assigned, scheduled, completed, and cancelled, and every one of those states can be reversed — including from the assistant (§9) and an authorized MCP client (§10), per the standing rule that the AI must never be able to create a state it cannot clear.
+- A work order's displayed cost always equals the sum of its linked confirmed transactions under the ledger's own classification semantics. There is no independent cost field a user can edit into disagreement with the ledger. A *quoted* figure is storable and is shown as a comparison, clearly distinguished from actual spend.
+- Status and urgency are conveyed as text/icon, never colour alone (§6), and dates are the landlord's calendar dates, not timestamps.
+- Maintenance writes are gated by the existing **properties** permission area; creating or linking the *expense* remains gated by **money**, so a teammate may run maintenance without being able to spend.
+
+Non-goals for this section, stated so they are not assumed:
+
+- **No tenant-facing submission** — that arrives with the tenant portal (§11, §14 Phase 2), and the record designed here is its prerequisite, not a substitute.
+- **No recurring maintenance schedules**, no inspection checklists, no vendor bidding or dispatch. The persona is one person with a day job and single-digit properties; this is a record of work, not a CMMS.
+- **No new report and no new financial aggregate.** Repairs already reach Schedule E through their expense categories (§5.6).
+
 ---
 
 ## 6. Design system direction
@@ -190,6 +225,8 @@ The wireframes' hand-drawn aesthetic (Caveat/Kalam fonts, thick black borders, f
 | `Transaction` | property_id, unit_id?, amount, type (income/expense), category, source (manual/receipt-ocr/bank-feed), confidence, status (pending-review/confirmed), receipt attachment ref | Central ledger entity; every report is derived from this table. |
 | `Category` | IRS-aligned expense/income categories | Seeded, user-extensible. |
 | `RentPayment` | lease_id, period, amount, method (online/manual), status | Distinct from generic `Transaction` so payment-processor state (pending/settled/failed) is tracked precisely. |
+| `Contractor` **`[A1]`** | name, trade, rating, contact, notes | A directory row. Usage statistics (jobs, average cost, last used) are **derived** from linked transactions, never stored. Shipped ahead of this document; ratified by amendment A1. |
+| `WorkOrder` **`[A1]`** | property_id, unit_id?, title, status, urgency, contractor_id?, reported/scheduled/due/completed dates, quoted amount?, reporter | The maintenance record (§5.10). Cost is **derived** from `Transaction`s linked to it (many-to-one) — there is no stored cost field, so a work order can never disagree with the ledger. Carries its reporter's origin (landlord in v1) so tenant-submitted requests are additive (§11). |
 | `Report` | type, period/tax year, property scope, generated_at, source data snapshot | Generated on demand or on schedule; snapshotted so a filed year's report doesn't silently change if categorization changes later. |
 | `Insight` | scope (portfolio/property/tenant), type, text, related entity refs, status (active/dismissed/actioned) | Backs both dashboard insight cards and the AI Insights monthly review. |
 | `ChatSession` / `ChatMessage` | session_id, role, content blocks (text/chart/table/action_card/ask_user_question), tool calls/results | See §9.3 for the message content-block schema. |
@@ -266,6 +303,7 @@ Although out of scope, the following v1 decisions are made specifically so a pha
 - `Tenant` is already a distinct entity from `Account`, so adding tenant login/auth later is additive, not a migration.
 - `RentPayment` already models payment method and processor status independent of who initiated it, so a future tenant-initiated payment fits the existing shape.
 - `Lease` already carries an e-signature envelope reference, which a tenant portal could surface directly (view/sign own lease) without new fields.
+- **`[A1]`** `WorkOrder` (§5.10) already records *who reported an issue* and *where the report came from*, with landlord being the only origin v1 ever writes. A tenant-submitted maintenance request — one of the three things the portal is scoped to do — therefore becomes a new origin value on an existing record, not a new subsystem. The two pieces the portal genuinely adds are a comment thread between landlord and tenant and a notification back to the reporter; both are additive, and v1 deliberately ships a single notes field rather than a half-modelled thread that would have to be migrated out.
 
 ---
 
@@ -295,7 +333,7 @@ Although out of scope, the following v1 decisions are made specifically so a pha
 ## 14. Suggested phasing
 
 - **Phase 1 (v1, this PRD):** Dashboard, Properties, Tenants & Leases (incl. Docusign), Money (incl. Plaid + receipt OCR), Rent Collection (incl. Stripe), Reports & Tax, AI Insights (monthly review), global chat assistant (incl. chart/table/action-card rendering and `askUserQuestion`), external MCP server (read-only + opt-in write tools).
-- **Phase 2:** Tenant portal, multi-user/team roles, live QuickBooks sync, native mobile.
+- **Phase 2:** Tenant portal, multi-user/team roles, live QuickBooks sync, native mobile, **`[A1]`** maintenance work orders (§5.10) — landlord-side record and its cost linkage, which the tenant portal's maintenance-request flow depends on and must therefore precede it.
 - **Phase 3:** Whatever Phase 1 usage data suggests — e.g., expanding the AI Insights cadence beyond monthly, or a custom-report builder if "ask AI to build a report" usage shows recurring unmet patterns.
 
 ---
