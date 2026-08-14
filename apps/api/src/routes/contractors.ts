@@ -11,6 +11,14 @@ import * as contractorService from '../services/contractor.service';
 export async function contractorsRoutes(app: FastifyInstance): Promise<void> {
   // The maintenance directory is part of property operations → 'properties' grant.
   const needsProperties = { preHandler: requirePermission('properties') };
+  // Logging a job is not a directory edit — it mints a confirmed expense in the
+  // ledger (contractor.service.logJob → transaction.service.create), so it is
+  // gated by the permission that governs the *effect*, not the surface it's
+  // reached from. Gating it on 'properties' let a member denied 'money' write
+  // to the ledger. 'money' alone (not both) is correct: a member holding 'money'
+  // can already produce the same row via POST /transactions, where a matching
+  // vendor name links the contractor automatically (ARCHITECTURE §4).
+  const needsMoney = { preHandler: requirePermission('money') };
 
   app.get('/contractors', async (req) => contractorService.list(req.accountId));
 
@@ -38,7 +46,7 @@ export async function contractorsRoutes(app: FastifyInstance): Promise<void> {
     contractorService.restore(req.accountId, req.params.id),
   );
 
-  app.post<{ Params: { id: string } }>('/contractors/:id/jobs', needsProperties, async (req) => {
+  app.post<{ Params: { id: string } }>('/contractors/:id/jobs', needsMoney, async (req) => {
     const input = parseBody(LogContractorJobInputSchema, req.body);
     return contractorService.logJob(req.accountId, req.params.id, input);
   });

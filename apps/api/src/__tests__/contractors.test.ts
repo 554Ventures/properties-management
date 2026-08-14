@@ -7,6 +7,7 @@
 // Everything created here is cleaned up so the seeded portfolio stays pristine.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
+import { SignJWT } from 'jose';
 import {
   ContractorDetailResponseSchema,
   ContractorListResponseSchema,
@@ -24,6 +25,7 @@ import { buildApp } from '../app';
 import { addDays, addMonthsToPeriod, currentPeriod, periodOf } from '../lib/dates';
 import { prisma } from '../lib/prisma';
 import { getDemoAccountId } from '../plugins/auth';
+import { resetAuthServiceCache } from '../services/auth.service';
 import * as contractorService from '../services/contractor.service';
 import * as transactionService from '../services/transaction.service';
 
@@ -523,5 +525,154 @@ describe('create_contractor tool — model/MCP-invoked writes audit as system', 
     expect(rows).toHaveLength(1);
     expect(rows[0]!.action).toBe('create');
     expect(rows[0]!.actor).toBe('system');
+  });
+});
+
+// The directory and the ledger are two different permissions, and this route
+// straddles them: POST /contractors/:id/jobs is reached from the contractor
+// surface but its effect is a confirmed expense. It was gated on 'properties'
+// until 2026-08-13, so a member denied 'money' could write to the ledger
+// through it (PLAN-MAINTENANCE.md D5). What's asserted here is the *split* —
+// re-gating it to 'money' is only correct if directory edits stay on
+// 'properties'; a blanket swap would trade one wrong guard for another.
+describe("logJob is gated on 'money' while directory writes stay on 'properties'", () => {
+  const TEST_SECRET = 'test-jwt-secret-with-at-least-32-characters!';
+  let authzApp: FastifyInstance;
+  let authzAccountId: string;
+  let contractorId: string;
+  let propertyId: string;
+
+  beforeAll(async () => {
+    process.env.SUPABASE_JWT_SECRET = TEST_SECRET;
+    resetAuthServiceCache();
+    authzApp = await buildApp();
+
+    const account = await prisma.account.create({
+      data: { name: 'LogJob Authz Co', email: 'logjob-authz@contractortest.example' },
+    });
+    authzAccountId = account.id;
+    await prisma.user.createMany({
+      data: [
+        {
+          accountId: authzAccountId,
+          supabaseUserId: 'logjob-authz-properties',
+          email: 'properties-only@contractortest.example',
+          role: 'member',
+          permissionsJson: JSON.stringify(['properties']), // deliberately missing 'money'
+        },
+        {
+          accountId: authzAccountId,
+          supabaseUserId: 'logjob-authz-money',
+          email: 'money-only@contractortest.example',
+          role: 'member',
+          permissionsJson: JSON.stringify(['money']), // deliberately missing 'properties'
+        },
+      ],
+    });
+    const contractor = await prisma.contractor.create({
+      data: { accountId: authzAccountId, name: 'Guarded Gutters', trade: 'Gutters' },
+    });
+    contractorId = contractor.id;
+    const property = await prisma.property.create({
+      data: { accountId: authzAccountId, addressLine1: '1 Guard St', city: 'Springfield', state: 'IL', zip: '62701' },
+    });
+    propertyId = property.id;
+  });
+
+  afterAll(async () => {
+    await prisma.auditLog.deleteMany({ where: { accountId: authzAccountId } });
+    await prisma.transaction.deleteMany({ where: { accountId: authzAccountId } });
+    await prisma.account.delete({ where: { id: authzAccountId } });
+    delete process.env.SUPABASE_JWT_SECRET;
+    resetAuthServiceCache();
+    await authzApp.close();
+  });
+
+  async function tokenFor(sub: string, email: string): Promise<string> {
+    return new SignJWT({ email, aud: 'authenticated' })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setSubject(sub)
+      .setIssuedAt()
+      .setExpirationTime('1h')
+      .sign(new TextEncoder().encode(TEST_SECRET));
+  }
+
+  const jobPayload = () => ({
+    date: new Date().toISOString(),
+    amountCents: 42_000,
+    description: 'Cleared the downspouts',
+    propertyId,
+    confirmDuplicate: true,
+  });
+
+  it("403s a member holding only 'properties' — the ledger write it could reach before", async () => {
+    const headers = {
+      authorization: `Bearer ${await tokenFor('logjob-authz-properties', 'properties-only@contractortest.example')}`,
+    };
+    const res = await authzApp.inject({
+      method: 'POST',
+      url: `${API}/contractors/${contractorId}/jobs`,
+      headers,
+      payload: jobPayload() as never,
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('forbidden');
+    // The guard has to run before the service does — no ledger row, no audit row.
+    expect(await prisma.transaction.count({ where: { accountId: authzAccountId } })).toBe(0);
+  });
+
+  it("allows a member holding only 'money', and the row lands linked and audited", async () => {
+    const headers = {
+      authorization: `Bearer ${await tokenFor('logjob-authz-money', 'money-only@contractortest.example')}`,
+    };
+    const res = await authzApp.inject({
+      method: 'POST',
+      url: `${API}/contractors/${contractorId}/jobs`,
+      headers,
+      payload: jobPayload() as never,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = LogContractorJobResponseSchema.parse(res.json());
+    expect(body.status).toBe('created');
+
+    const rows = await prisma.transaction.findMany({ where: { accountId: authzAccountId } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.contractorId).toBe(contractorId);
+    expect(rows[0]!.status).toBe('confirmed');
+    expect(rows[0]!.amountCents).toBe(42_000);
+  });
+
+  it("still gates directory edits on 'properties' — the split the re-gate depends on", async () => {
+    const propsHeaders = {
+      authorization: `Bearer ${await tokenFor('logjob-authz-properties', 'properties-only@contractortest.example')}`,
+    };
+    const moneyHeaders = {
+      authorization: `Bearer ${await tokenFor('logjob-authz-money', 'money-only@contractortest.example')}`,
+    };
+    // 'money' alone must NOT be able to edit the directory…
+    const deniedEdit = await authzApp.inject({
+      method: 'PATCH',
+      url: `${API}/contractors/${contractorId}`,
+      headers: moneyHeaders,
+      payload: { trade: 'Roofing' } as never,
+    });
+    expect(deniedEdit.statusCode).toBe(403);
+    // …while 'properties' still can.
+    const allowedEdit = await authzApp.inject({
+      method: 'PATCH',
+      url: `${API}/contractors/${contractorId}`,
+      headers: propsHeaders,
+      payload: { trade: 'Roofing' } as never,
+    });
+    expect(allowedEdit.statusCode).toBe(200);
+    expect(ContractorSchema.parse(allowedEdit.json()).trade).toBe('Roofing');
+
+    // Reads stay open to any member regardless of grant.
+    const read = await authzApp.inject({
+      method: 'GET',
+      url: `${API}/contractors/${contractorId}`,
+      headers: moneyHeaders,
+    });
+    expect(read.statusCode).toBe(200);
   });
 });
