@@ -187,6 +187,34 @@ export function startOfDayInTz(d: Date, tz: string): Date {
   return localMidnightUtc(p.year, p.month, p.day, tz);
 }
 
+/**
+ * UTC instant of local midnight of the calendar day a client-supplied date
+ * *names*, read in `tz` — the write-boundary normalizer for stored
+ * calendar-date fields (lease start/end).
+ *
+ * A lease date is a calendar day, not an instant: "the lease starts Aug 1"
+ * means Aug 1 on the landlord's wall calendar, whatever offset the client
+ * happened to serialize with. So the day is taken from the leading YYYY-MM-DD
+ * of the ISO string — the date as the writer wrote it, in the writer's own
+ * offset frame — and re-anchored to local midnight in `tz`. All three accepted
+ * shapes therefore agree: "2026-08-01", "2026-08-01T00:00:00Z" and
+ * "2026-08-01T00:00:00-04:00" all store Aug 1 local (04:00Z under EDT,
+ * 05:00Z under EST — localMidnightUtc resolves the offset per date, so DST is
+ * handled rather than assumed).
+ *
+ * Deliberately NOT "the local day the instant falls on in `tz`": every lease
+ * entered in production carries UTC midnight, which falls on the *previous*
+ * local day in New York, and that reading would keep storing it shifted —
+ * which is the bug this exists to close. Non-ISO input (no YYYY-MM-DD prefix)
+ * falls back to the local day the instant lands on, since there is no written
+ * date to read.
+ */
+export function localMidnightFromInput(value: string, tz: string): Date {
+  const named = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  if (named) return localMidnightUtc(Number(named[1]), Number(named[2]), Number(named[3]), tz);
+  return startOfDayInTz(new Date(value), tz);
+}
+
 /** Whole calendar days between the local days of `from` and `to` in `tz`;
  *  positive when to > from. Compares local day ordinals, so it's exact across
  *  DST (no 23/25-hour-day drift that plain ms subtraction would suffer). */

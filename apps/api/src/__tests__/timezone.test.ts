@@ -10,6 +10,7 @@ import {
   calendarDaysBetweenInTz,
   currentPeriodInTz,
   dayOfMonthInTz,
+  localMidnightFromInput,
   monthEndExclusiveInTz,
   monthStartInTz,
   periodOfInTz,
@@ -111,6 +112,34 @@ describe('lib/dates tz helpers — New York (DST)', () => {
     const { from, to } = yearRangeInTz(2026, NY);
     expect(from.toISOString()).toBe('2026-01-01T05:00:00.000Z');
     expect(to.toISOString()).toBe('2027-01-01T05:00:00.000Z');
+  });
+
+  it('localMidnightFromInput reads the written calendar day, whatever offset it carries', () => {
+    // The three shapes a client can send for "Aug 1" all agree.
+    const expected = '2026-08-01T04:00:00.000Z'; // EDT (UTC−4)
+    expect(localMidnightFromInput('2026-08-01', NY).toISOString()).toBe(expected);
+    expect(localMidnightFromInput('2026-08-01T00:00:00Z', NY).toISOString()).toBe(expected);
+    expect(localMidnightFromInput('2026-08-01T00:00:00.000-04:00', NY).toISOString()).toBe(expected);
+    expect(localMidnightFromInput('2026-08-01T13:45:12Z', NY).toISOString()).toBe(expected);
+    // Winter is EST (UTC−5) — the offset is resolved per date, not assumed.
+    expect(localMidnightFromInput('2026-01-15T00:00:00Z', NY).toISOString()).toBe(
+      '2026-01-15T05:00:00.000Z',
+    );
+  });
+
+  it('localMidnightFromInput normalizes the DST-transition days themselves', () => {
+    // Spring forward (Mar 8 2026): local midnight precedes the 02:00 jump → EST.
+    expect(localMidnightFromInput('2026-03-08T00:00:00Z', NY).toISOString()).toBe(
+      '2026-03-08T05:00:00.000Z',
+    );
+    // Fall back (Nov 1 2026): local midnight precedes the jump back → still EDT.
+    expect(localMidnightFromInput('2026-11-01T00:00:00Z', NY).toISOString()).toBe(
+      '2026-11-01T04:00:00.000Z',
+    );
+    // Positive-offset zone: Aug 1 in Tokyo is Jul 31 15:00 UTC.
+    expect(localMidnightFromInput('2026-08-01T00:00:00Z', TOKYO).toISOString()).toBe(
+      '2026-07-31T15:00:00.000Z',
+    );
   });
 });
 

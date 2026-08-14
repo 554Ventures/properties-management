@@ -14,6 +14,7 @@ import {
   TenantSchema,
 } from '@hearth/shared';
 import {
+  DEMO_TIMEZONE,
   NET_CASHFLOW_MTD_CENTS,
   PAID_UNITS,
   TAX_SET_ASIDE_CURRENT_CENTS,
@@ -21,7 +22,7 @@ import {
   TOTAL_UNITS,
 } from '../../prisma/seed-constants';
 import { buildApp } from '../app';
-import { currentPeriod, iso } from '../lib/dates';
+import { currentPeriod, iso, localMidnightFromInput } from '../lib/dates';
 import { prisma } from '../lib/prisma';
 import { getDemoAccountId } from '../plugins/auth';
 
@@ -362,10 +363,15 @@ describe('lease lifecycle', () => {
     expect(newLease.rentCents).toBe(105000);
     expect(newLease.id).not.toBe(leaseId);
 
-    // Source lease ended at the new lease's start boundary.
+    // Source lease ended at the new lease's start boundary — one instant, and
+    // that instant is local midnight of the day the client named (the request
+    // sent UTC midnight, which in the account tz is the previous local day).
     const source = await prisma.lease.findUniqueOrThrow({ where: { id: leaseId } });
     expect(source.status).toBe('ended');
-    expect(iso(source.endDate)).toBe(iso(start));
+    expect(iso(source.endDate)).toBe(newLease.startDate);
+    expect(source.endDate.getTime()).toBe(
+      localMidnightFromInput(iso(start), DEMO_TIMEZONE).getTime(),
+    );
 
     // Tenants copied to the new lease.
     const newTenants = await prisma.leaseTenant.findMany({ where: { leaseId: newLease.id } });

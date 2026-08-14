@@ -20,7 +20,7 @@ import type {
   Tenant as DbTenant,
   Unit as DbUnit,
 } from '@prisma/client';
-import { addDays, iso, isoOrNull, startOfDayInTz } from '../lib/dates';
+import { addDays, iso, isoOrNull, localMidnightFromInput, startOfDayInTz } from '../lib/dates';
 import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors';
 import { prisma } from '../lib/prisma';
 import { mockDocusign } from '../integrations/mock/mock-docusign';
@@ -168,8 +168,16 @@ export async function create(
   // transaction via tx.lease.create and never reaches this guard, so abutting
   // renewals stay unaffected.
   const tz = await accountTimezone(accountId);
-  const newStart = startOfDayInTz(new Date(input.startDate), tz).getTime();
-  const newEnd = startOfDayInTz(new Date(input.endDate), tz).getTime();
+  // A lease date is a calendar day on the landlord's wall calendar, so it is
+  // normalized to local midnight in the account tz before anything — this
+  // guard, the row itself, every derivation downstream — reads it. Without
+  // that, a client's UTC midnight ("2026-08-01T00:00:00Z") resolves through
+  // startOfDayInTz to the *previous* local day and silently mis-prorates the
+  // month either side of a switchover.
+  const startDate = localMidnightFromInput(input.startDate, tz);
+  const endDate = localMidnightFromInput(input.endDate, tz);
+  const newStart = startDate.getTime();
+  const newEnd = endDate.getTime();
   const unitLeases = await prisma.lease.findMany({
     where: { unitId: input.unitId },
     select: { startDate: true, endDate: true },
@@ -191,8 +199,8 @@ export async function create(
         dueDay: input.dueDay,
         // Optional per-lease late-fee override (WS7); omitted → null → account default.
         ...(input.lateFeeCents !== undefined ? { lateFeeCents: input.lateFeeCents } : {}),
-        startDate: new Date(input.startDate),
-        endDate: new Date(input.endDate),
+        startDate,
+        endDate,
         status: 'active',
         leaseTenants: {
           create: input.tenantIds.map((tenantId, i) => ({ tenantId, isPrimary: i === 0 })),
@@ -242,6 +250,21 @@ export async function update(
     input.endDate !== undefined ||
     input.status !== undefined;
   const tz = affectsCharges ? await accountTimezone(accountId) : null;
+  // Same calendar-day normalization create applies. A date edit always implies
+  // affectsCharges, so tz is loaded whenever one of these is present — and
+  // since normalizing can move which local days the lease covers, the
+  // reconcile below recomputes the unit's open charges off the normalized
+  // value, in the same transaction as the write.
+  const dates = tz
+    ? {
+        ...(input.startDate !== undefined
+          ? { startDate: localMidnightFromInput(input.startDate, tz) }
+          : {}),
+        ...(input.endDate !== undefined
+          ? { endDate: localMidnightFromInput(input.endDate, tz) }
+          : {}),
+      }
+    : {};
 
   const { row, adjustments } = await prisma.$transaction(async (tx) => {
     const updated = await tx.lease.update({
@@ -251,8 +274,7 @@ export async function update(
         ...(input.dueDay !== undefined ? { dueDay: input.dueDay } : {}),
         // omitted → unchanged; null → clear to account default; number → set (WS7).
         ...(input.lateFeeCents !== undefined ? { lateFeeCents: input.lateFeeCents } : {}),
-        ...(input.startDate !== undefined ? { startDate: new Date(input.startDate) } : {}),
-        ...(input.endDate !== undefined ? { endDate: new Date(input.endDate) } : {}),
+        ...dates,
         ...(input.status !== undefined ? { status: input.status } : {}),
       },
     });
@@ -375,7 +397,12 @@ export async function terminate(
   // "Today" is the landlord's local day (WS4) so a late-evening termination
   // ends the lease on the intended local date, not tomorrow in UTC.
   const today = startOfDayInTz(new Date(), tz);
-  const endDate = existing.endDate < today ? existing.endDate : today;
+  // A lease stored before dates were normalized can sit off local midnight, so
+  // the kept branch writes back the local day that value already resolves to
+  // rather than the raw instant — same day, normalized storage. (The derivation
+  // buckets with startOfDayInTz either way, so this changes no figure.)
+  const existingEnd = startOfDayInTz(existing.endDate, tz);
+  const endDate = existingEnd < today ? existingEnd : today;
   const { row, adjustments } = await prisma.$transaction(async (tx) => {
     const updated = await tx.lease.update({
       where: { id },
@@ -511,8 +538,12 @@ export async function createRenewal(
     }));
   }
 
-  const startDate = new Date(input.startDate);
   const tz = await accountTimezone(accountId);
+  // Normalized like create's: the switchover day is a calendar day, and it is
+  // written twice — the successor's start and the source's (inclusive) end —
+  // so a shifted value would move both sides of the blend at once.
+  const startDate = localMidnightFromInput(input.startDate, tz);
+  const endDate = localMidnightFromInput(input.endDate, tz);
   const { created, adjustments } = await prisma.$transaction(async (tx) => {
     const newLease = await tx.lease.create({
       data: {
@@ -520,7 +551,7 @@ export async function createRenewal(
         rentCents: input.rentCents,
         dueDay: input.dueDay,
         startDate,
-        endDate: new Date(input.endDate),
+        endDate,
         status: 'active',
         // Carry the per-lease late-fee policy across the renewal — an explicit
         // override (incl. 0 = "no late fee for this tenant") must not silently
