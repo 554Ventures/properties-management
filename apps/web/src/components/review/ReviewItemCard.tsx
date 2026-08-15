@@ -44,6 +44,7 @@ import { RentChargePickerModal } from './RentChargePickerModal';
 import { ReviewRowAmount, ReviewRowIdentity } from './ReviewRowIdentity';
 import { ReviewStrip } from './ReviewStrip';
 import type { SettledOutcome } from './ReviewSettledCard';
+import { WorkOrderPickerModal } from './WorkOrderPickerModal';
 
 /** Mirrors the API's BULK_CONFIRM_MIN_CONFIDENCE: below this a suggestion is
  *  never accepted in one click (and bulk confirm skips it server-side). */
@@ -106,11 +107,21 @@ export function ReviewItemCard({ item, categoryOptions, canMoney, onSettled }: R
   // mutually exclusive since this is a single piece of state.
   const [linkedRent, setLinkedRent] = useState<LinkedRent | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Expense-side mirror of linkedRent (PLAN-MAINTENANCE §6) — armed by the
+  // "Link to work order…" picker, mutually irrelevant to linkedRent since one
+  // is income-only and the other expense-only. Pure attribution: unlike a
+  // rent link it flips no state on the other side, so it's just an extra key
+  // in the plain confirm payload, never its own confirm path.
+  const [linkedWorkOrder, setLinkedWorkOrder] = useState<{ workOrderId: string; title: string } | null>(
+    null,
+  );
+  const [workOrderPickerOpen, setWorkOrderPickerOpen] = useState(false);
   // Mortgage payment breakdown (PLAN-REAL-EQUITY §3/D4): the backend detects
   // a mortgage payment by matching the vendor to a mortgage's lender and
   // stamps `mortgageId` — never an amount. A `mortgageId` here is the signal
   // to offer the breakdown; it's never inferred from anything else.
   const isMortgagePayment = item.type === 'expense' && Boolean(item.mortgageId);
+  const canLinkWorkOrder = item.type === 'expense' && !isMortgagePayment;
   const [breakdown, setBreakdown] = useState<MortgageBreakdownValue>(emptyMortgageBreakdown);
   const breakdownComplete =
     !isMortgagePayment || isMortgageBreakdownValid(item.amountCents, breakdown);
@@ -195,6 +206,7 @@ export function ReviewItemCard({ item, categoryOptions, canMoney, onSettled }: R
             propertyId: propertyId || undefined,
             unitId: unitId || undefined,
             classification: classification || undefined,
+            workOrderId: linkedWorkOrder?.workOrderId,
           };
     // A rent-linked confirm always attributes to the lease's property; only
     // the plain-confirm path can leave the row unassigned.
@@ -362,6 +374,19 @@ export function ReviewItemCard({ item, categoryOptions, canMoney, onSettled }: R
                 </Select>
               </div>
             )}
+          </ReviewStrip>
+        )}
+        {linkedWorkOrder && (
+          <ReviewStrip tone="positive">
+            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+              <p>
+                Confirming will link this expense to{' '}
+                <span className="font-medium">{linkedWorkOrder.title}</span>.
+              </p>
+              <Button variant="ghost" size="sm" onClick={() => setLinkedWorkOrder(null)}>
+                Don't link to work order
+              </Button>
+            </div>
           </ReviewStrip>
         )}
         {isMortgagePayment && !linkedRent && (
@@ -613,6 +638,16 @@ export function ReviewItemCard({ item, categoryOptions, canMoney, onSettled }: R
                     </Button>
                   </div>
                 )}
+                {/* Expense-side mirror: every open work order, for the job this
+                    expense paid for. Stays reachable after a pick so it can be
+                    changed (mutually exclusive — one workOrderId). */}
+                {canLinkWorkOrder && (
+                  <div>
+                    <Button variant="secondary" size="sm" onClick={() => setWorkOrderPickerOpen(true)}>
+                      {linkedWorkOrder ? 'Change linked work order…' : 'Link to work order…'}
+                    </Button>
+                  </div>
+                )}
               </>
             )}
             {/* The breakdown is a block in this region now — no longer a special
@@ -649,6 +684,16 @@ export function ReviewItemCard({ item, categoryOptions, canMoney, onSettled }: R
               tenantId,
             });
             setPickerOpen(false);
+          }}
+        />
+      )}
+      {canLinkWorkOrder && (
+        <WorkOrderPickerModal
+          open={workOrderPickerOpen}
+          onClose={() => setWorkOrderPickerOpen(false)}
+          onChoose={(workOrder) => {
+            setLinkedWorkOrder({ workOrderId: workOrder.id, title: workOrder.title });
+            setWorkOrderPickerOpen(false);
           }}
         />
       )}

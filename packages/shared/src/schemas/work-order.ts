@@ -62,7 +62,11 @@ export const WorkOrderDerivedSchema = z.object({
   linkedTransactionCount: z.number().int(),
   /** `costCents - quotedCents`; null unless both exist. Positive = over quote. */
   quoteVarianceCents: z.number().int().nullable(),
-  /** Whole days since `reportedOn`. */
+  /**
+   * Whole days from `reportedOn` to `completedOn`, or to today while the job is
+   * still unfinished — i.e. how long it was open, not how long ago it started.
+   * A completed job must not keep counting.
+   */
   daysOpen: z.number().int(),
   /** `dueBy` is past and the status is not terminal. Rendered as text, never colour alone. */
   overdue: z.boolean(),

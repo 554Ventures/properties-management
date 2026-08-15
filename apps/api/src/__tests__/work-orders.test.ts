@@ -383,6 +383,28 @@ describe('daysOpen and overdue', () => {
     expect(wo.daysOpen).toBe(10);
   });
 
+  it('daysOpen stops at completedOn — a finished job does not keep aging', async () => {
+    // Regression: every other fixture here asserts an *open* row, where "to
+    // today" and "to completion" agree, so this went unnoticed until the page
+    // was opened in a browser and a job completed 3 days after it was reported
+    // read "246 days open".
+    const reportedOn = addDaysToYmd(todayYmd(SVC_TZ), -200);
+    const completedOn = addDaysToYmd(reportedOn, 3);
+    const wo = await workOrderService.create(svcAccountId, {
+      propertyId: svcPropertyId,
+      title: 'Long-finished ticket',
+      reportedOn,
+      status: 'completed',
+      completedOn,
+    });
+    expect(wo.daysOpen).toBe(3);
+
+    // Reopening resumes the running count from reportedOn.
+    const reopened = await workOrderService.update(svcAccountId, wo.id, { status: 'open' });
+    expect(reopened.completedOn).toBeNull();
+    expect(reopened.daysOpen).toBe(200);
+  });
+
   it('overdue is true only when dueBy is past AND status is not terminal', async () => {
     const pastDue = addDaysToYmd(todayYmd(SVC_TZ), -3);
     const wo = await workOrderService.create(svcAccountId, { propertyId: svcPropertyId, title: 'Overdue job', dueBy: pastDue });

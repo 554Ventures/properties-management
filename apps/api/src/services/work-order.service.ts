@@ -248,7 +248,11 @@ function buildListRow(
     costCents: cost.costCents,
     linkedTransactionCount: cost.linkedTransactionCount,
     quoteVarianceCents: row.quotedCents != null ? cost.costCents - row.quotedCents : null,
-    daysOpen: daysBetweenCalendarDates(row.reportedOn, today),
+    // Counts to completion, not to today, once the job is finished — a work
+    // order completed three days after it was reported must not read "246 days
+    // open" eight months later. Found in the browser, not by a test: every
+    // fixture asserted an open row, where the two agree.
+    daysOpen: daysBetweenCalendarDates(row.reportedOn, row.completedOn ?? today),
     overdue: row.dueBy != null && row.dueBy < today && !TERMINAL_WORK_ORDER_STATUSES.includes(status),
     propertyLabel: labels.propertyLabelById.get(row.propertyId) ?? '',
     unitLabel: row.unitId ? (labels.unitLabelById.get(row.unitId) ?? null) : null,
