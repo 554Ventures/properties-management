@@ -147,10 +147,44 @@ export const DocumentEntityTypeSchema = z.enum([
   'tenant',
   'lease',
   'transaction',
+  // Photos of the problem, the contractor's quote, the signed invoice.
+  'work_order',
 ]);
 export type DocumentEntityType = z.infer<typeof DocumentEntityTypeSchema>;
 
 // iOS-only for now (Phase 2 mobile shell); android joins here when it ships.
+// Maintenance work orders (PRD §5.10, PLAN-MAINTENANCE §3).
+//
+// Status is *stored*, not derived — `in_progress` and `cancelled` have no date
+// proxy, and "I've done it" is a statement only the user can make. Lateness is
+// derived from `dueBy` instead, exactly the RentPayment split (stored status,
+// derived late/partial). Transitions are validated in work-order.service, not
+// in a route refine, so chat/MCP and REST share one rule and tool schemas stay
+// flat objects.
+export const WorkOrderStatusSchema = z.enum([
+  'open',
+  'scheduled',
+  'in_progress',
+  'completed',
+  'cancelled',
+]);
+export type WorkOrderStatus = z.infer<typeof WorkOrderStatusSchema>;
+
+/** Terminal states — no cost accrues to a cancelled order, and both are excluded from "open work". */
+export const TERMINAL_WORK_ORDER_STATUSES: readonly WorkOrderStatus[] = ['completed', 'cancelled'];
+
+// Three levels, not the conventional four. For a single-digit-property
+// portfolio the only distinction that changes behaviour is "drop everything";
+// a high-vs-normal choice with no behavioural consequence is a field that gets
+// filled in at random. `emergency` is the one carrying habitability weight.
+export const WorkOrderPrioritySchema = z.enum(['emergency', 'normal', 'low']);
+export type WorkOrderPriority = z.infer<typeof WorkOrderPrioritySchema>;
+
+// Where the report came from. v1 only ever writes 'landlord'; the value exists
+// so a phase-2 tenant portal adds a case rather than a subsystem (PRD §11).
+export const WorkOrderSourceSchema = z.enum(['landlord', 'tenant']);
+export type WorkOrderSource = z.infer<typeof WorkOrderSourceSchema>;
+
 export const PushPlatformSchema = z.enum(['ios']);
 export type PushPlatform = z.infer<typeof PushPlatformSchema>;
 

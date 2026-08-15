@@ -29,6 +29,7 @@ import { transactionsRoutes } from './routes/transactions';
 import { unitsRoutes } from './routes/units';
 import { valuationsRoutes } from './routes/valuations';
 import { wellKnownRoutes } from './routes/well-known';
+import { workOrdersRoutes } from './routes/work-orders';
 
 export async function buildApp(opts: { logger?: boolean } = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: opts.logger ?? false });
@@ -89,6 +90,7 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
       await api.register(recurringRoutes);
       await api.register(categoriesRoutes);
       await api.register(contractorsRoutes);
+      await api.register(workOrdersRoutes);
       await api.register(rentRoutes);
       await api.register(documentsRoutes);
       await api.register(reportsRoutes);

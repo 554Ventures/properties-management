@@ -62,6 +62,12 @@ const ALLOWED_API_CALLS: ReadonlyArray<{ method: string; pathPattern: RegExp }> 
   { method: 'PATCH', pathPattern: new RegExp(`^/leases/${ID}$`) },
   { method: 'POST', pathPattern: new RegExp(`^/leases/${ID}/renewal$`) },
   { method: 'POST', pathPattern: new RegExp(`^/leases/${ID}/tenants$`) },
+  // Work orders (PLAN-MAINTENANCE §5): same click-gated record-edit rationale
+  // as properties/units above — the assistant fills in the body, the user
+  // clicks to save. No DELETE and no archive/restore, matching the standing
+  // exclusion for every other record.
+  { method: 'POST', pathPattern: /^\/work-orders$/ },
+  { method: 'PATCH', pathPattern: new RegExp(`^/work-orders/${ID}$`) },
 ];
 
 /** True when an api_call action may execute. Patterns match the path without

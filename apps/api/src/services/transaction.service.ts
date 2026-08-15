@@ -98,6 +98,8 @@ export function toApiTransaction(t: DbTransactionWithSplits): Transaction {
     // it has to survive the mapping — the field is optional in the schema, so
     // omitting it parses fine and simply makes the badge never appear.
     recurringTemplateId: t.recurringTemplateId,
+    // The maintenance seam (PRD §5.10) — what job this expense paid for.
+    workOrderId: t.workOrderId,
     createdAt: iso(t.createdAt),
     updatedAt: iso(t.updatedAt),
     splits: t.splits.map((s) => ({
@@ -514,6 +516,59 @@ async function mortgageInterestCategoryId(accountId: string): Promise<string | n
   return category?.id ?? null;
 }
 
+// ── work-order attribution seam (PLAN-MAINTENANCE §4) ────────────────────────
+// `workOrderId` is the money seam a work order derives its cost from — this
+// file never computes cost (that's work-order.service, keyed off this column);
+// it only validates the link is owned and inherits property/unit onto rows
+// that don't have them. Any transaction type may link (a refund nets the cost
+// down through `lib/pnl.ts`), and — unlike a rent link — nothing here guards
+// edits/deletes: linking is pure attribution, it flips no other state.
+
+/** The linked work order's own property/unit, scoped to `accountId` like every
+ *  other FK validated in this file (`assertMortgageBreakdownValid`'s pattern). */
+async function getOwnedWorkOrderRef(
+  accountId: string,
+  workOrderId: string,
+): Promise<{ propertyId: string; unitId: string | null }> {
+  const row = await prisma.workOrder.findFirst({
+    where: { id: workOrderId, accountId },
+    select: { propertyId: true, unitId: true },
+  });
+  if (!row) throw new NotFoundError('work order', workOrderId);
+  return row;
+}
+
+/**
+ * Attribution inheritance on link: fills propertyId/unitId from the work
+ * order only where this row's OWN value — this request's explicit input, or
+ * (on an update) what's already stored — is blank. A value the caller set,
+ * now or earlier, always wins; a unit is only inherited when the effective
+ * property agrees with the work order's own property, so an explicit
+ * cross-property attribution can't pull in a mismatched unit.
+ */
+async function workOrderAttributionFill(
+  accountId: string,
+  workOrderId: string,
+  input: { propertyId?: string; unitId?: string | null },
+  effective: { propertyId: string | null; unitId: string | null },
+): Promise<{ propertyId?: string; unitId?: string }> {
+  const workOrder = await getOwnedWorkOrderRef(accountId, workOrderId);
+  const fill: { propertyId?: string; unitId?: string } = {};
+  if (input.propertyId === undefined && effective.propertyId == null) {
+    fill.propertyId = workOrder.propertyId;
+  }
+  const finalPropertyId = fill.propertyId ?? effective.propertyId;
+  if (
+    input.unitId === undefined &&
+    effective.unitId == null &&
+    workOrder.unitId != null &&
+    finalPropertyId === workOrder.propertyId
+  ) {
+    fill.unitId = workOrder.unitId;
+  }
+  return fill;
+}
+
 export async function create(
   accountId: string,
   input: CreateTransactionInput,
@@ -540,6 +595,18 @@ export async function create(
   const mortgageId =
     input.mortgageId ??
     (input.type === 'expense' ? await matchMortgageId(accountId, input.vendor) : null);
+  // Linking at create time inherits the work order's property/unit onto this
+  // row — blanks only, an explicit propertyId/unitId here always wins.
+  const workOrderFill = input.workOrderId
+    ? await workOrderAttributionFill(
+        accountId,
+        input.workOrderId,
+        { propertyId: input.propertyId, unitId: input.unitId },
+        { propertyId: input.propertyId ?? null, unitId: input.unitId ?? null },
+      )
+    : {};
+  const propertyId = workOrderFill.propertyId ?? input.propertyId ?? null;
+  const unitId = workOrderFill.unitId ?? input.unitId ?? null;
   let aiSuggestedCategoryId: string | null = null;
   let aiConfidence: number | null = null;
   if (!input.categoryId) {
@@ -556,8 +623,8 @@ export async function create(
   const row = await prisma.transaction.create({
     data: {
       accountId,
-      propertyId: input.propertyId ?? null,
-      unitId: input.unitId ?? null,
+      propertyId,
+      unitId,
       categoryId: input.categoryId ?? null,
       date: new Date(input.date),
       amountCents: input.amountCents,
@@ -573,6 +640,7 @@ export async function create(
       receiptUrl: input.receiptUrl ?? null,
       mortgageId,
       principalCents: input.principalCents ?? null,
+      workOrderId: input.workOrderId ?? null,
     },
     include: withSplits,
   });
@@ -696,6 +764,21 @@ export async function update(
     input.vendor !== undefined
       ? { contractorId: await matchContractorId(accountId, input.vendor) }
       : {};
+  // Work-order link/unlink (PLAN-MAINTENANCE §4): `null` unlinks, a string
+  // (re)links and inherits property/unit onto whatever's currently blank. No
+  // edit/delete guard rides this the way a rent link does — linking is pure
+  // attribution and flips no other state.
+  const workOrderFill = input.workOrderId
+    ? await workOrderAttributionFill(
+        accountId,
+        input.workOrderId,
+        { propertyId: input.propertyId, unitId: input.unitId },
+        {
+          propertyId: input.propertyId !== undefined ? input.propertyId : prior.propertyId,
+          unitId: input.unitId !== undefined ? input.unitId : prior.unitId,
+        },
+      )
+    : {};
   const row = await prisma.$transaction(async (tx) => {
     const updated = await tx.transaction.update({
       where: { id },
@@ -706,6 +789,8 @@ export async function update(
         ...(input.description !== undefined ? { description: input.description } : {}),
         ...(input.propertyId !== undefined ? { propertyId: input.propertyId } : {}),
         ...(input.unitId !== undefined ? { unitId: input.unitId } : {}),
+        ...(workOrderFill.propertyId !== undefined ? { propertyId: workOrderFill.propertyId } : {}),
+        ...(workOrderFill.unitId !== undefined ? { unitId: workOrderFill.unitId } : {}),
         ...(input.categoryId !== undefined ? { categoryId: input.categoryId } : {}),
         ...(input.vendor !== undefined ? { vendor: input.vendor } : {}),
         ...relink,
@@ -715,6 +800,7 @@ export async function update(
         // modal reopens the same editor the confirm card uses).
         ...(input.mortgageId !== undefined ? { mortgageId: input.mortgageId } : {}),
         ...(input.principalCents !== undefined ? { principalCents: input.principalCents } : {}),
+        ...(input.workOrderId !== undefined ? { workOrderId: input.workOrderId } : {}),
         // Splits ARE the categorization: the parent's single category goes.
         ...(splitPlan.action === 'replace' ? { categoryId: null } : {}),
       },
@@ -1217,6 +1303,13 @@ export async function confirm(
         "a transaction backing a rent payment can't also carry a mortgage principal portion",
       );
     }
+    // Same reasoning: a rent deposit is money coming in, a work order link is
+    // an expense-side attribution — rejected rather than silently dropped.
+    if (input.workOrderId) {
+      throw new BadRequestError(
+        "a transaction backing a rent payment can't also be linked to a work order",
+      );
+    }
     // Attribution comes from the lease itself on this path; a rent deposit is
     // ordinary income by definition, so any classification input is ignored.
     return confirmWithRentLink(
@@ -1311,6 +1404,20 @@ export async function confirm(
       mortgageRemainderCategoryId ??
       existing.aiSuggestedCategoryId ??
       existing.categoryId);
+  // Confirming a bank expense is the natural moment to say what job it paid
+  // for — the expense-side mirror of the rent-link card above, filling
+  // property/unit only where this row is still blank (PLAN-MAINTENANCE §4).
+  const workOrderFill = input.workOrderId
+    ? await workOrderAttributionFill(
+        accountId,
+        input.workOrderId,
+        { propertyId: input.propertyId, unitId: input.unitId },
+        {
+          propertyId: input.propertyId !== undefined ? input.propertyId : existing.propertyId,
+          unitId: input.unitId !== undefined ? input.unitId : existing.unitId,
+        },
+      )
+    : {};
   const row = await prisma.$transaction(async (tx) => {
     const updated = await tx.transaction.update({
       where: { id },
@@ -1319,7 +1426,10 @@ export async function confirm(
         categoryId,
         ...(input.propertyId !== undefined ? { propertyId: input.propertyId } : {}),
         ...(input.unitId !== undefined ? { unitId: input.unitId } : {}),
+        ...(workOrderFill.propertyId !== undefined ? { propertyId: workOrderFill.propertyId } : {}),
+        ...(workOrderFill.unitId !== undefined ? { unitId: workOrderFill.unitId } : {}),
         ...(input.classification !== undefined ? { classification: input.classification } : {}),
+        ...(input.workOrderId !== undefined ? { workOrderId: input.workOrderId } : {}),
         mortgageId,
         principalCents,
       },

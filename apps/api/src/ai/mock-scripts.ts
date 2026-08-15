@@ -12,6 +12,7 @@ import {
   type Report,
   type ReportDetailResponse,
   type RentTrackerResponse,
+  type WorkOrderListRow,
 } from '@hearth/shared';
 import type { ProviderEvent } from './client';
 
@@ -344,7 +345,93 @@ const equityScript: MockScript = {
   ],
 };
 
-// ── script 5: fallback ────────────────────────────────────────────────────────
+// ── script 5: maintenance / work orders — real list_work_orders call ─────────
+
+const WORK_ORDER_STATUS_LABEL: Record<string, string> = {
+  open: 'Open',
+  scheduled: 'Scheduled',
+  in_progress: 'In progress',
+  completed: 'Completed',
+  cancelled: 'Cancelled',
+};
+
+const WORK_ORDER_PRIORITY_LABEL: Record<string, string> = {
+  emergency: 'Emergency',
+  normal: 'Normal',
+  low: 'Low',
+};
+
+const WORK_ORDER_PRIORITY_RANK: Record<string, number> = { emergency: 0, normal: 1, low: 2 };
+
+const maintenanceScript: MockScript = {
+  pattern: /maintenance|repair|work order/i,
+  steps: [
+    () => [
+      toolUse('toolu_mock_work_orders', 'list_work_orders', { openOnly: true }),
+      stopToolUse,
+    ],
+    (ctx) => {
+      const open = ctx.result('list_work_orders') as WorkOrderListRow[];
+      if (open.length === 0) {
+        return [
+          ...textDeltas(
+            'No open work orders right now — everything on the maintenance side is closed out.',
+          ),
+          stopEndTurn,
+        ];
+      }
+      const emergencyCount = open.filter((w) => w.priority === 'emergency').length;
+      const overdueCount = open.filter((w) => w.overdue).length;
+      // Most urgent first: overdue, then priority, then longest-open within a tier.
+      const sorted = [...open].sort((a, b) => {
+        if (a.overdue !== b.overdue) return a.overdue ? -1 : 1;
+        const byPriority =
+          (WORK_ORDER_PRIORITY_RANK[a.priority] ?? 1) - (WORK_ORDER_PRIORITY_RANK[b.priority] ?? 1);
+        if (byPriority !== 0) return byPriority;
+        return b.daysOpen - a.daysOpen;
+      });
+      const extra = [
+        emergencyCount > 0 ? `${emergencyCount} marked emergency` : null,
+        overdueCount > 0 ? `${overdueCount} past due` : null,
+      ].filter((s): s is string => s !== null);
+      return [
+        ...textDeltas(
+          `${open.length} open work order${open.length === 1 ? '' : 's'}${extra.length > 0 ? ` (${extra.join(', ')})` : ''}. Here is the list, most urgent first.`,
+        ),
+        toolUse('toolu_mock_work_orders_table', 'render_table', {
+          type: 'data_table',
+          title: 'Open work orders',
+          columns: [
+            { key: 'title', label: 'Work order' },
+            { key: 'property', label: 'Property / unit' },
+            { key: 'status', label: 'Status' },
+            { key: 'priority', label: 'Priority' },
+            { key: 'contractor', label: 'Assigned to' },
+            // reportedOn is a calendar date ("YYYY-MM-DD"), not an instant —
+            // format: 'date' would parse it as UTC midnight and render a day
+            // early west of UTC (the PLAN-REAL-EQUITY Phase 2b lesson), so this
+            // column stays 'text' and shows the raw calendar date as-is.
+            { key: 'reported', label: 'Reported' },
+            { key: 'cost', label: 'Cost so far', align: 'right', format: 'usd' },
+          ],
+          rows: sorted.map((w) => ({
+            title: w.title,
+            property: w.unitLabel ? `${w.propertyLabel} ${w.unitLabel}` : w.propertyLabel,
+            status: WORK_ORDER_STATUS_LABEL[w.status] ?? w.status,
+            priority: WORK_ORDER_PRIORITY_LABEL[w.priority] ?? w.priority,
+            contractor: w.contractorName ?? 'Unassigned',
+            reported: w.reportedOn,
+            cost: w.costCents,
+          })),
+        }),
+        stopToolUse,
+      ];
+    },
+    () => [stopEndTurn],
+  ],
+};
+
+// ── script 6: fallback ────────────────────────────────────────────────────────
 
 const fallbackScript: MockScript = {
   pattern: /.*/,
@@ -367,5 +454,6 @@ export const MOCK_SCRIPTS: MockScript[] = [
   taxScript,
   lateRentScript,
   equityScript,
+  maintenanceScript,
   fallbackScript,
 ];
