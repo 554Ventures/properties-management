@@ -14,6 +14,7 @@ const SUGGESTED_PROMPTS = [
   'Help me get ready for taxes',
   "Who's late on rent?",
   "What's my equity?",
+  'What needs maintenance?',
 ];
 
 export function ChatComposer() {

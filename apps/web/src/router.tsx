@@ -6,6 +6,7 @@ import { ContractorDetail } from './pages/ContractorDetail';
 import { ContractorsPage } from './pages/ContractorsPage';
 import { Dashboard } from './pages/Dashboard';
 import { DocumentsPage } from './pages/DocumentsPage';
+import { MaintenancePage } from './pages/MaintenancePage';
 import { Money } from './pages/Money';
 import { MoneyReview } from './pages/MoneyReview';
 import { NotFound } from './pages/NotFound';
@@ -20,6 +21,7 @@ import { Settings } from './pages/Settings';
 import { TenantDetail } from './pages/TenantDetail';
 import { TermsOfService } from './pages/TermsOfService';
 import { UnitDetail } from './pages/UnitDetail';
+import { WorkOrderDetail } from './pages/WorkOrderDetail';
 import { AuthGate } from './state/auth';
 
 // /insights/:reportId used to render the monthly review directly; report ids
@@ -76,11 +78,13 @@ export const router = createBrowserRouter([
       // /tenants/:id detail pages remain.
       { path: 'tenants', element: <Navigate to="/properties" replace /> },
       { path: 'tenants/:id', element: <TenantDetail /> },
-      // Maintenance has one screen today; the index redirect keeps the
-      // "Maintenance" breadcrumb from 404ing.
-      { path: 'maintenance', element: <Navigate to="/maintenance/contractors" replace /> },
+      // Maintenance: work orders (the index) and the contractor directory as
+      // a sibling tab (MaintenanceTabs). Static before parameterized so
+      // /maintenance/contractors doesn't fall into :id.
+      { path: 'maintenance', element: <MaintenancePage /> },
       { path: 'maintenance/contractors', element: <ContractorsPage /> },
       { path: 'maintenance/contractors/:id', element: <ContractorDetail /> },
+      { path: 'maintenance/:id', element: <WorkOrderDetail /> },
       { path: 'money', element: <Money /> },
       { path: 'money/new', element: <AddTransaction /> },
       { path: 'money/review', element: <MoneyReview /> },

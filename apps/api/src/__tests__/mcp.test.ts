@@ -68,6 +68,8 @@ const WRITE_TOOLS = [
   'generate_report',
   'email_report',
   'dismiss_insight',
+  'create_work_order',
+  'update_work_order',
 ];
 const RENDER_TOOLS = ['render_chart', 'render_table', 'propose_action', 'ask_user_question'];
 

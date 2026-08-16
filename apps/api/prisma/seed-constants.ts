@@ -351,6 +351,30 @@ export const CONTRACTOR_EXPECTED_STATS: Record<
   'GreenScape Co.': { jobsCount: 7, avgCostCents: 31000 }, // 6 trailing + 1 current month, all 31000
 };
 
+// ── work orders (PLAN-MAINTENANCE §7: link EXISTING expense rows only — ZERO
+// new Transaction rows, so every pinned money KPI above holds unchanged).
+// Two completed orders link to a Rivera Plumbing job and the current-month
+// GreenScape Co. grounds service already created above — costCents is derived
+// at read time from those linked rows (work-order.service.ts), so pinning it
+// here is just restating what's already on the ledger. quotedCents is set
+// slightly off the derived actual in both directions so quoteVarianceCents
+// demos as a real positive AND negative number. One open (unassigned, no
+// linked cost — a bare reported issue) and one scheduled (contractor +
+// scheduledFor) round out the four; neither touches the ledger at all.
+export const WORK_ORDER_COUNT = 4;
+export const WORK_ORDER_OPEN_COUNT = 1; // status === 'open' exactly (the scheduled one is a separate status)
+export const WORK_ORDER_RIVERA_TITLE = 'Kitchen faucet leak repair';
+export const WORK_ORDER_RIVERA_COST_CENTS = 21000; // the linked Rivera Plumbing job (SEED_CONTRACTORS history, 21000 each)
+export const WORK_ORDER_RIVERA_QUOTED_CENTS = 19800; // quoted low — actual came in OVER quote (+1200)
+export const WORK_ORDER_GREENSCAPE_TITLE = 'Spring grounds cleanup';
+export const WORK_ORDER_GREENSCAPE_COST_CENTS = 31000; // the linked current-month GreenScape Co. row (CURRENT_MONTH_EXPENSES)
+export const WORK_ORDER_GREENSCAPE_QUOTED_CENTS = 33000; // quoted high — actual came in UNDER quote (−2000)
+/** Both linked completed work orders sit on Maple — sum of the two costs above. */
+export const WORK_ORDER_MAPLE_COST_CENTS =
+  WORK_ORDER_RIVERA_COST_CENTS + WORK_ORDER_GREENSCAPE_COST_CENTS;
+export const WORK_ORDER_OPEN_TITLE = 'Garbage disposal jammed';
+export const WORK_ORDER_SCHEDULED_TITLE = 'Furnace annual tune-up';
+
 // ── seeded documents (names/types pinned; asserted by documents.test.ts) ─────
 export const SEED_DOCUMENTS = {
   /** Attached to the first seeded property (SEED_PROPERTIES[0], 'maple'). */

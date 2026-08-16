@@ -96,3 +96,6 @@ export * from './document';
 // Chat content blocks + sessions/messages + SSE protocol
 export * from './chat-blocks';
 export * from './chat';
+
+// Maintenance work orders (PRD §5.10)
+export * from './work-order';
