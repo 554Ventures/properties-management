@@ -6,11 +6,12 @@ import type { Insight } from '@hearth/shared';
 import { describe, expect, it } from 'vitest';
 import {
   deriveTasks,
+  deriveWorkOrderTasks,
   insightMatchesTask,
   mergeAttention,
   type DerivedTask,
 } from '../components/property/attention';
-import { isoIn, makeLease, makeTenant, makeUnit } from './propertyHubFixtures';
+import { isoIn, makeLease, makeTenant, makeUnit, makeWorkOrder } from './propertyHubFixtures';
 
 function makeInsight(overrides: Partial<Insight> = {}): Insight {
   return {
@@ -139,6 +140,141 @@ describe('deriveTasks', () => {
       status: 'vacant',
     });
     expect(deriveTasks([unit])).toEqual([]);
+  });
+});
+
+describe('deriveWorkOrderTasks', () => {
+  it('ranks an emergency work order with the danger tier, sentence naming days open', () => {
+    const wo = makeWorkOrder('w1', 'Burst pipe', {
+      priority: 'emergency',
+      unitId: 'u2',
+      unitLabel: 'Unit B',
+      daysOpen: 2,
+    });
+    expect(deriveWorkOrderTasks([wo])).toEqual([
+      {
+        kind: 'work_order',
+        unitId: 'w1',
+        leaseId: null,
+        tenantIds: [],
+        severity: 0,
+        tone: 'danger',
+        badge: 'Emergency',
+        sentence: 'Burst pipe · Unit B — emergency, open 2 days',
+        affordance: { type: 'work-order-link', workOrderId: 'w1' },
+      },
+    ]);
+  });
+
+  it('ranks a non-emergency overdue work order with the warning tier, sentence naming the due date', () => {
+    const wo = makeWorkOrder('w2', 'Gutter cleaning', {
+      priority: 'normal',
+      overdue: true,
+      dueBy: '2026-07-05',
+    });
+    const [task] = deriveWorkOrderTasks([wo]);
+    expect(task).toMatchObject({
+      kind: 'work_order',
+      severity: 1,
+      tone: 'warning',
+      badge: 'Overdue',
+      sentence: 'Gutter cleaning — overdue, due Jul 5, 2026',
+      affordance: { type: 'work-order-link', workOrderId: 'w2' },
+    });
+  });
+
+  it('ranks a scheduled, non-overdue work order with the neutral tier, sentence naming the scheduled date', () => {
+    const wo = makeWorkOrder('w3', 'Faucet repair', {
+      status: 'scheduled',
+      scheduledFor: '2026-07-20',
+    });
+    const [task] = deriveWorkOrderTasks([wo]);
+    expect(task).toMatchObject({
+      severity: 2,
+      tone: 'neutral',
+      badge: 'Scheduled',
+      sentence: 'Faucet repair — scheduled Jul 20, 2026',
+    });
+  });
+
+  it('falls back to "open N days" when a neutral-tier work order has no schedule yet', () => {
+    const wo = makeWorkOrder('w4', 'Paint touch-up', { daysOpen: 1 });
+    const [task] = deriveWorkOrderTasks([wo]);
+    expect(task).toMatchObject({
+      severity: 2,
+      tone: 'neutral',
+      badge: 'Open',
+      sentence: 'Paint touch-up — open 1 day',
+    });
+  });
+
+  it('keys on the work order id, not unitId, so two orders on the same unit never collide', () => {
+    const a = makeWorkOrder('w5', 'Leak A', { unitId: 'u1', priority: 'emergency' });
+    const b = makeWorkOrder('w6', 'Leak B', { unitId: 'u1', priority: 'emergency' });
+    const tasks = deriveWorkOrderTasks([a, b]);
+    expect(tasks.map((t) => t.unitId)).toEqual(['w5', 'w6']);
+  });
+
+  it('never matches an AI insight (insightMatchesTask only recognizes rent/renewal kinds)', () => {
+    const [task] = deriveWorkOrderTasks([makeWorkOrder('w7', 'Emergency job', { priority: 'emergency' })]);
+    const insight: Insight = {
+      id: 'i1',
+      accountId: 'acc1',
+      scope: 'property',
+      type: 'expense_spike',
+      severity: 'warning',
+      title: 'x',
+      body: 'y',
+      actionLabel: null,
+      actionTarget: null,
+      action: null,
+      propertyId: 'p1',
+      tenantId: null,
+      leaseId: null,
+      dedupeKey: 'k',
+      status: 'active',
+      createdAt: '2026-07-01T00:00:00.000Z',
+    };
+    expect(insightMatchesTask(insight, task!)).toBe(false);
+  });
+
+  it('interleaves with unit-derived tasks by severity: emergency joins danger, overdue joins warning, the rest joins neutral', () => {
+    const rentTask: DerivedTask = {
+      kind: 'rent',
+      unitId: 'u1',
+      leaseId: 'l1',
+      tenantIds: [],
+      severity: 0,
+      tone: 'danger',
+      badge: 'Late',
+      sentence: 'rent task',
+      affordance: null,
+    };
+    const vacancyTask: DerivedTask = {
+      kind: 'vacancy',
+      unitId: 'u3',
+      leaseId: null,
+      tenantIds: [],
+      severity: 1,
+      tone: 'warning',
+      badge: 'Vacant',
+      sentence: 'vacancy task',
+      affordance: null,
+    };
+    const workOrderTasks = deriveWorkOrderTasks([
+      makeWorkOrder('w-emergency', 'Emergency job', { priority: 'emergency' }),
+      makeWorkOrder('w-overdue', 'Overdue job', { overdue: true, dueBy: '2026-07-01' }),
+      makeWorkOrder('w-rest', 'Ordinary job'),
+    ]);
+
+    const rows = mergeAttention([rentTask, vacancyTask, ...workOrderTasks], []);
+    expect(rows.map((r) => r.key)).toEqual([
+      'task:rent:u1',
+      'task:work_order:w-emergency',
+      'task:vacancy:u3',
+      'task:work_order:w-overdue',
+      'task:work_order:w-rest',
+    ]);
   });
 });
 

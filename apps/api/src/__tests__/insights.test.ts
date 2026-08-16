@@ -5,7 +5,7 @@ import type { FastifyInstance } from 'fastify';
 import { InsightSchema, RENEW_SOON_DAYS } from '@hearth/shared';
 import { expectedInsightDedupeKeys } from '../../prisma/seed-constants';
 import { buildApp } from '../app';
-import { addDays, currentPeriod } from '../lib/dates';
+import { addDays, currentPeriod, wallClockParts } from '../lib/dates';
 import { prisma } from '../lib/prisma';
 import { slugify } from '../lib/strings';
 import { getDemoAccountId } from '../plugins/auth';
@@ -15,6 +15,7 @@ import * as leaseService from '../services/lease.service';
 import * as propertyService from '../services/property.service';
 import * as rentService from '../services/rent.service';
 import * as tenantService from '../services/tenant.service';
+import * as workOrderService from '../services/work-order.service';
 
 let app: FastifyInstance;
 
@@ -68,6 +69,39 @@ async function makeRentLate(leaseId: string): Promise<void> {
       status: 'due',
     },
   });
+}
+
+// The default account timezone (Account.timezone default) — work-order
+// reportedOn/scheduledFor fixtures below are calendar-date strings, not
+// instants, so they're computed in this tz to land on the same calendar day
+// the rules read them in (PLAN-MAINTENANCE §3).
+const WO_TZ = 'America/New_York';
+
+function todayYmd(now = new Date()): string {
+  const p = wallClockParts(WO_TZ, now);
+  return `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')}`;
+}
+
+function addDaysToYmd(ymd: string, days: number): string {
+  const [y, m, d] = ymd.split('-').map(Number) as [number, number, number];
+  const dt = new Date(Date.UTC(y, m - 1, d + days));
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
+}
+
+/** Fresh account + single-unit property — the shared fixture for the
+ *  work-order insight-rule tests below. No tenant/lease needed. */
+async function createWorkOrderInsightFixture(emailSuffix: string) {
+  const account = await prisma.account.create({
+    data: { name: `WO Insight ${emailSuffix}`, email: `wo-insight-${emailSuffix}@integrationtest.example` },
+  });
+  const property = await propertyService.create(account.id, {
+    addressLine1: `1 WO Insight Way ${emailSuffix}`,
+    city: 'Springfield',
+    state: 'IL',
+    zip: '62701',
+    units: [{ label: 'Unit A' }],
+  });
+  return { accountId: account.id, propertyId: property.id };
 }
 
 describe('insight generation rules', () => {
@@ -807,5 +841,185 @@ describe('misfiled_income', () => {
 
     const created = await insightService.generateInsights(account.id);
     expect(created.find((c) => c.type === 'misfiled_income')).toBeUndefined();
+  });
+});
+
+describe('work_order_emergency_open rule', () => {
+  it('fires one card per qualifying emergency work order, and stays quiet on near-misses', async () => {
+    const { accountId, propertyId } = await createWorkOrderInsightFixture('emergency');
+    const reportedYesterday = addDaysToYmd(todayYmd(), -1);
+
+    const qualifying = await workOrderService.create(accountId, {
+      propertyId,
+      title: 'Burst pipe',
+      priority: 'emergency',
+      reportedOn: reportedYesterday,
+    });
+
+    // Near miss: emergency, still "open" in duration, but terminal status.
+    await workOrderService.create(accountId, {
+      propertyId,
+      title: 'Fixed fast',
+      priority: 'emergency',
+      reportedOn: reportedYesterday,
+      status: 'completed',
+      completedOn: todayYmd(),
+    });
+
+    // Near miss: emergency reported today — daysOpen is 0, not >= 1 yet.
+    await workOrderService.create(accountId, {
+      propertyId,
+      title: 'Just called',
+      priority: 'emergency',
+      reportedOn: todayYmd(),
+    });
+
+    const active = await insightService.listActive(accountId);
+    const cards = active.filter((i) => i.type === 'work_order_emergency_open');
+    expect(cards).toHaveLength(1);
+    expect(cards[0]?.severity).toBe('warning');
+    // Portfolio-scoped with a null propertyId ON PURPOSE, though it concerns
+    // one property: property.service selects the hub's insights by propertyId,
+    // and the hub's "Needs attention" triage already lists this work order —
+    // a property-scoped card would restate the deterministic row right below
+    // it. The title still names the property; the action deep-links to the
+    // work order. Changing these two lines back re-introduces that duplicate.
+    expect(cards[0]?.scope).toBe('portfolio');
+    expect(cards[0]?.propertyId).toBeNull();
+    expect(cards[0]?.title).toContain('1 WO Insight Way');
+    expect(cards[0]?.dedupeKey).toBe(`work_order_emergency_open:${qualifying.id}`);
+    expect(cards[0]?.actionTarget).toBe(`/maintenance/${qualifying.id}`);
+    expect(cards[0]?.action?.action).toEqual({
+      kind: 'navigate',
+      to: `/maintenance/${qualifying.id}`,
+    });
+    expect(cards[0]?.body).toContain('1 day');
+  });
+
+  it('auto-resolves to actioned once the emergency is completed', async () => {
+    const { accountId, propertyId } = await createWorkOrderInsightFixture('emergency-resolve');
+    const wo = await workOrderService.create(accountId, {
+      propertyId,
+      title: 'Gas leak',
+      priority: 'emergency',
+      reportedOn: addDaysToYmd(todayYmd(), -2),
+    });
+
+    const before = await insightService.listActive(accountId);
+    expect(before.find((i) => i.type === 'work_order_emergency_open')).toBeDefined();
+
+    await workOrderService.update(accountId, wo.id, { status: 'completed' });
+
+    const after = await insightService.listActive(accountId);
+    expect(after.find((i) => i.type === 'work_order_emergency_open')).toBeUndefined();
+    const row = await prisma.insight.findFirst({
+      where: {
+        accountId,
+        type: 'work_order_emergency_open',
+        dedupeKey: `work_order_emergency_open:${wo.id}`,
+      },
+    });
+    expect(row?.status).toBe('actioned');
+  });
+});
+
+describe('work_order_stale rule lifecycle', () => {
+  it('fires exactly one count card, stays quiet on near-misses, refreshes in place, and auto-resolves when cleared', async () => {
+    const { accountId, propertyId } = await createWorkOrderInsightFixture('stale');
+    const reportedOld = addDaysToYmd(todayYmd(), -20);
+
+    const older = await workOrderService.create(accountId, {
+      propertyId,
+      title: 'Stale A',
+      reportedOn: reportedOld,
+    });
+    const newer = await workOrderService.create(accountId, {
+      propertyId,
+      title: 'Stale B',
+      reportedOn: reportedOld,
+    });
+
+    // Near miss: only 13 days open — under the 14-day floor.
+    await workOrderService.create(accountId, {
+      propertyId,
+      title: 'Not stale yet',
+      reportedOn: addDaysToYmd(todayYmd(), -13),
+    });
+
+    // Near miss: stale by duration, but scheduled — a booked visit isn't stale.
+    await workOrderService.create(accountId, {
+      propertyId,
+      title: 'Scheduled',
+      reportedOn: reportedOld,
+      scheduledFor: addDaysToYmd(todayYmd(), 3),
+    });
+
+    const created = await insightService.generateInsights(accountId);
+    const card = created.find((c) => c.type === 'work_order_stale');
+    expect(card).toBeDefined();
+    expect(card?.severity).toBe('info');
+    expect(card?.scope).toBe('portfolio');
+    expect(card?.dedupeKey).toBe(`work_order_stale:${newer.id}`);
+    expect(card?.title).toBe('2 work orders are stuck open with no schedule');
+    expect(card?.actionTarget).toBe('/maintenance');
+    expect(card?.action?.action).toEqual({ kind: 'navigate', to: '/maintenance' });
+
+    // Completing one qualifying order keeps the key (newest is unchanged) but
+    // the live card's count must refresh in place — no new row.
+    await workOrderService.update(accountId, older.id, { status: 'completed' });
+    expect(
+      (await insightService.generateInsights(accountId)).filter(
+        (i) => i.type === 'work_order_stale',
+      ),
+    ).toEqual([]);
+    const refreshed = await prisma.insight.findFirst({
+      where: { accountId, type: 'work_order_stale', status: 'active' },
+    });
+    expect(refreshed?.title).toBe('1 work order is stuck open with no schedule');
+    expect(refreshed?.dedupeKey).toBe(`work_order_stale:${newer.id}`);
+
+    // Clearing the rest resolves the card instead of leaving it stale.
+    await workOrderService.update(accountId, newer.id, { status: 'completed' });
+    expect(
+      (await insightService.generateInsights(accountId)).filter(
+        (i) => i.type === 'work_order_stale',
+      ),
+    ).toEqual([]);
+    const resolved = await prisma.insight.findFirst({
+      where: { accountId, type: 'work_order_stale' },
+    });
+    expect(resolved?.status).toBe('actioned');
+  });
+
+  it('a dismissal holds until a materially different qualifying set supersedes it', async () => {
+    const { accountId, propertyId } = await createWorkOrderInsightFixture('stale-dismiss');
+    const first = await workOrderService.create(accountId, {
+      propertyId,
+      title: 'Stale first',
+      reportedOn: addDaysToYmd(todayYmd(), -20),
+    });
+
+    const [created] = await insightService.generateInsights(accountId);
+    expect(created?.dedupeKey).toBe(`work_order_stale:${first.id}`);
+    await insightService.dismiss(accountId, created!.id);
+
+    // Same qualifying set: the dismissed key is never recreated.
+    expect(await insightService.generateInsights(accountId)).toEqual([]);
+
+    // A materially new qualifying order supersedes with a fresh key.
+    const newer = await workOrderService.create(accountId, {
+      propertyId,
+      title: 'Stale second',
+      reportedOn: addDaysToYmd(todayYmd(), -15),
+    });
+    const recreated = await insightService.generateInsights(accountId);
+    const staleCard = recreated.find((c) => c.type === 'work_order_stale');
+    expect(staleCard?.dedupeKey).toBe(`work_order_stale:${newer.id}`);
+    expect(staleCard?.title).toBe('2 work orders are stuck open with no schedule');
+
+    const old = await prisma.insight.findFirst({
+      where: { accountId, dedupeKey: `work_order_stale:${first.id}` },
+    });
+    expect(old?.status).toBe('dismissed');
   });
 });

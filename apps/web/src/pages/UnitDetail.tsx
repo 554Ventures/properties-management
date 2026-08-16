@@ -15,6 +15,7 @@ import {
   useRestoreUnit,
   useTerminateLease,
   useUnitDetail,
+  useWorkOrders,
 } from '../api/queries';
 import { DocumentsCard } from '../components/documents/DocumentsCard';
 import { LeaseFormModal, type LeasePrefill } from '../components/forms/LeaseFormModal';
@@ -33,10 +34,16 @@ import { Skeleton } from '../components/ui/Skeleton';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { Table, Td, Th, Tr } from '../components/ui/Table';
 import { useToast } from '../components/ui/Toast';
-import { formatDate, formatMonth } from '../lib/format';
+import { cx } from '../lib/cx';
+import { formatCalendarDate, formatDate, formatMonth } from '../lib/format';
 import { rentStatusBadge } from '../lib/statusBadges';
 import { usePageTitle } from '../lib/usePageTitle';
 import { usePermissions } from '../lib/usePermissions';
+import {
+  WORK_ORDER_PRIORITY_LABEL,
+  WORK_ORDER_STATUS_LABEL,
+  WORK_ORDER_STATUS_TONE,
+} from '../lib/workOrderLabels';
 
 type UnitModal =
   | { kind: 'edit-unit' }
@@ -59,6 +66,9 @@ export function UnitDetail() {
   const restoreUnit = useRestoreUnit();
   const terminateLease = useTerminateLease();
   const draftRenewal = useDraftRenewal();
+  // Full history (not openOnly) — the records room finally recording repairs
+  // (PLAN-MAINTENANCE §6 item 4).
+  const unitWorkOrders = useWorkOrders({ unitId: id }, Boolean(id));
 
   const [modal, setModal] = useState<UnitModal>(null);
   const [confirmArchive, setConfirmArchive] = useState(false);
@@ -367,6 +377,73 @@ export function UnitDetail() {
           </div>
         </section>
       </div>
+
+      <section aria-label="Work order history" className="flex flex-col gap-3">
+        <h2 className="text-base font-semibold text-ink">Work order history</h2>
+        <Card flush>
+          {unitWorkOrders.isPending ? (
+            <div className="p-5">
+              <Skeleton className="h-24 w-full" />
+            </div>
+          ) : unitWorkOrders.isError ? (
+            <div className="p-5">
+              <ErrorNotice error={unitWorkOrders.error} onRetry={() => void unitWorkOrders.refetch()} />
+            </div>
+          ) : unitWorkOrders.data.length === 0 ? (
+            <p className="p-5 text-sm text-ink-muted">No work orders recorded for this unit yet.</p>
+          ) : (
+            <Table caption={`${unit.label} — work order history`}>
+              <thead>
+                <tr>
+                  <Th>Work order</Th>
+                  <Th>Status</Th>
+                  <Th>Priority</Th>
+                  <Th>Contractor</Th>
+                  <Th>Scheduled / due</Th>
+                  <Th align="right">Cost</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {unitWorkOrders.data.map((wo) => (
+                  <Tr key={wo.id}>
+                    <Td className="font-medium">
+                      <Link
+                        to={`/maintenance/${wo.id}`}
+                        className="text-ink transition-colors duration-fast hover:text-brand"
+                      >
+                        {wo.title}
+                      </Link>
+                    </Td>
+                    <Td>
+                      <div className="flex flex-col items-start gap-1">
+                        <StatusBadge tone={WORK_ORDER_STATUS_TONE[wo.status]}>
+                          {WORK_ORDER_STATUS_LABEL[wo.status]}
+                        </StatusBadge>
+                        {/* Overdue is never colour alone — visible text alongside the badge. */}
+                        {wo.overdue && <span className="text-xs font-medium text-danger">Overdue</span>}
+                      </div>
+                    </Td>
+                    <Td className={cx(wo.priority === 'emergency' && 'font-semibold text-danger')}>
+                      {WORK_ORDER_PRIORITY_LABEL[wo.priority]}
+                    </Td>
+                    <Td>{wo.contractorName ?? <span className="text-ink-muted">Unassigned</span>}</Td>
+                    <Td>
+                      {wo.scheduledFor ? (
+                        formatCalendarDate(wo.scheduledFor)
+                      ) : wo.dueBy ? (
+                        <span>Due {formatCalendarDate(wo.dueBy)}</span>
+                      ) : (
+                        <span className="text-ink-muted">—</span>
+                      )}
+                    </Td>
+                    <Td align="right">{formatUsdWhole(wo.costCents)}</Td>
+                  </Tr>
+                ))}
+              </tbody>
+            </Table>
+          )}
+        </Card>
+      </section>
 
       <section aria-label="Lease history" className="flex flex-col gap-3">
         <h2 className="text-base font-semibold text-ink">Lease history</h2>
