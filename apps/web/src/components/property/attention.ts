@@ -7,18 +7,23 @@
 // affordance is always emitted as data; the rendering component decides
 // whether to show it.
 import { RENEW_SOON_DAYS, formatUsd } from '@hearth/shared';
-import type { Insight, LeaseWithTenants, PropertyDetailUnit } from '@hearth/shared';
-import { daysUntil } from '../../lib/format';
+import type { Insight, LeaseWithTenants, PropertyDetailUnit, WorkOrderListRow } from '@hearth/shared';
+import { daysUntil, formatCalendarDate } from '../../lib/format';
+import { WORK_ORDER_STATUS_LABEL } from '../../lib/workOrderLabels';
 import { severityBadge } from '../ai/InsightCard';
 import type { BadgeTone } from '../ui/StatusBadge';
 
 export type TaskAffordance =
   | { type: 'tracker-link'; period: string }
   | { type: 'draft-renewal'; lease: LeaseWithTenants }
-  | { type: 'create-lease'; unit: PropertyDetailUnit };
+  | { type: 'create-lease'; unit: PropertyDetailUnit }
+  | { type: 'work-order-link'; workOrderId: string };
 
 export interface DerivedTask {
-  kind: 'rent' | 'renewal' | 'vacancy';
+  kind: 'rent' | 'renewal' | 'vacancy' | 'work_order';
+  // For a work_order task, this carries the work order's own id — it's used
+  // only for the row key (`task:${kind}:${unitId}`), and a unit can carry more
+  // than one open work order, so the unit id alone wouldn't be unique there.
   unitId: string;
   leaseId: string | null; // currentLease.id when present
   tenantIds: string[]; // currentLease tenant ids ([] when none)
@@ -184,6 +189,54 @@ export function deriveTasks(units: PropertyDetailUnit[]): DerivedTask[] {
   }
 
   return tasks;
+}
+
+/**
+ * Derives one task per open work order (the caller passes an already
+ * `openOnly`-filtered list — this never re-filters by status). Three tiers,
+ * matching the brief's ordering exactly onto the existing 0/1/2 severity
+ * scale used by every other task: emergency priority ranks with the danger
+ * tier (late rent, a lapsed lease); a non-emergency order past its `dueBy`
+ * ranks with the warning tier (partial rent, a lease ending soon); everything
+ * else ranks with the neutral tier (vacancy, a renewal awaiting signature).
+ * `insightMatchesTask` never claims a 'work_order' task (it only recognizes
+ * 'rent'/'renewal'), so these rows always render standalone, never merged
+ * with an AI insight.
+ */
+export function deriveWorkOrderTasks(workOrders: WorkOrderListRow[]): DerivedTask[] {
+  return workOrders.map((wo) => {
+    const subject = wo.unitLabel ? `${wo.title} · ${wo.unitLabel}` : wo.title;
+    const affordance: TaskAffordance = { type: 'work-order-link', workOrderId: wo.id };
+    const base = { kind: 'work_order' as const, unitId: wo.id, leaseId: null, tenantIds: [], affordance };
+
+    if (wo.priority === 'emergency') {
+      return {
+        ...base,
+        severity: 0,
+        tone: 'danger',
+        badge: 'Emergency',
+        sentence: `${subject} — emergency, open ${daysLabel(wo.daysOpen)}`,
+      };
+    }
+    if (wo.overdue) {
+      return {
+        ...base,
+        severity: 1,
+        tone: 'warning',
+        badge: 'Overdue',
+        sentence: `${subject} — overdue${wo.dueBy ? `, due ${formatCalendarDate(wo.dueBy)}` : ''}`,
+      };
+    }
+    return {
+      ...base,
+      severity: 2,
+      tone: 'neutral',
+      badge: WORK_ORDER_STATUS_LABEL[wo.status],
+      sentence: `${subject} — ${
+        wo.scheduledFor ? `scheduled ${formatCalendarDate(wo.scheduledFor)}` : `open ${daysLabel(wo.daysOpen)}`
+      }`,
+    };
+  });
 }
 
 /**

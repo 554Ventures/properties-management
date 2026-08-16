@@ -10,7 +10,7 @@
 // it navigates, a Button when it acts in place.
 import type { ReactNode } from 'react';
 import { RENEW_SOON_DAYS } from '@hearth/shared';
-import type { Insight, LeaseWithTenants, PropertyDetailUnit } from '@hearth/shared';
+import type { Insight, LeaseWithTenants, PropertyDetailUnit, WorkOrderListRow } from '@hearth/shared';
 import { Link } from 'react-router';
 import { AiSurface } from '../ai/AiSurface';
 import { useInsightActions } from '../ai/useInsightActions';
@@ -18,7 +18,7 @@ import { Button, buttonClasses } from '../ui/Button';
 import { Card } from '../ui/Card';
 import { LiveRegion } from '../ui/LiveRegion';
 import { StatusBadge } from '../ui/StatusBadge';
-import { deriveTasks, mergeAttention, type TaskAffordance } from './attention';
+import { deriveTasks, deriveWorkOrderTasks, mergeAttention, type TaskAffordance } from './attention';
 
 export interface NeedsAttentionProps {
   /** Property (or unit) display name, for the all-clear line. */
@@ -27,6 +27,13 @@ export interface NeedsAttentionProps {
   /** Property-scoped AI insights to merge in (deduped against tasks in
    *  attention.ts). */
   insights?: Insight[];
+  /** Open work orders (`?propertyId=&openOnly=true`) to join the triage list,
+   *  emergency first, then overdue, then the rest — see
+   *  `deriveWorkOrderTasks`. `undefined` (not yet loaded, or the caller
+   *  doesn't track work orders at all — e.g. UnitDetail's own instance) omits
+   *  work orders from both the list and the all-clear line, rather than
+   *  claiming "no open work orders" before that's actually known. */
+  workOrders?: WorkOrderListRow[];
   /** Archived subject: derive no tasks and never read as "all clear" — only
    *  pre-existing insight rows may render, and if there are none the card is
    *  hidden entirely. */
@@ -75,6 +82,15 @@ function renderTaskAffordance(
       >
         Draft renewal
       </Button>
+    );
+  }
+  if (affordance.type === 'work-order-link') {
+    // Navigation, not a write — always shows, same rule as the rent tracker
+    // link above.
+    return (
+      <Link to={`/maintenance/${affordance.workOrderId}`} className={buttonClasses('ghost', 'sm')}>
+        Open work order →
+      </Link>
     );
   }
   // create-lease
@@ -142,6 +158,7 @@ export function NeedsAttention({
   title,
   units,
   insights = [],
+  workOrders,
   archived = false,
   canTenants,
   draftBusy,
@@ -150,7 +167,9 @@ export function NeedsAttention({
 }: NeedsAttentionProps) {
   // An archived subject derives no tasks (so it never reads as "all clear");
   // only insight rows survive the merge.
-  const tasks = archived ? [] : deriveTasks(units);
+  const tasks = archived
+    ? []
+    : [...deriveTasks(units), ...deriveWorkOrderTasks(workOrders ?? [])];
   const rows = mergeAttention(tasks, insights);
 
   if (archived && rows.length === 0) return null;
@@ -196,7 +215,7 @@ export function NeedsAttention({
             <StatusBadge tone="positive">All clear</StatusBadge>
             <span>
               All clear at {title} — rent on track, no leases ending in the next {RENEW_SOON_DAYS}{' '}
-              days.
+              days{workOrders !== undefined ? ', and no open work orders' : ''}.
             </span>
           </p>
         )}

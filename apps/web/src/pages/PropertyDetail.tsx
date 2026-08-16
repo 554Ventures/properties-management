@@ -23,6 +23,7 @@ import {
   useRestoreUnit,
   useTerminateLease,
   useUnitDetail,
+  useWorkOrders,
 } from '../api/queries';
 import { DocumentsCard } from '../components/documents/DocumentsCard';
 import { LeaseFormModal, type LeasePrefill } from '../components/forms/LeaseFormModal';
@@ -97,6 +98,9 @@ export function PropertyDetail() {
   const restoreUnit = useRestoreUnit();
   const terminateLease = useTerminateLease();
   const draftRenewal = useDraftRenewal();
+  // Open work orders join the "Needs attention" triage rows (PLAN-MAINTENANCE
+  // §6 item 3) — no contract change, filtered server-side.
+  const openWorkOrders = useWorkOrders({ propertyId: id, openOnly: true }, Boolean(id));
 
   const [modal, setModal] = useState<PropertyModal>(null);
   const [renewalDraft, setRenewalDraft] = useState<RenewalDraftResponse | null>(null);
@@ -346,6 +350,7 @@ export function PropertyDetail() {
             title={title}
             units={units}
             insights={insights}
+            workOrders={openWorkOrders.data}
             archived={Boolean(property.archivedAt)}
             canTenants={canTenants}
             draftBusy={draftRenewal.isPending}

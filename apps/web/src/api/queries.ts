@@ -484,13 +484,17 @@ export function useArchiveContractor() {
 // rent charge is to a deposit. `costCents`/`quoteVarianceCents`/`daysOpen`/
 // `overdue` are server-derived on every read, never cached separately.
 
-export function useWorkOrders(filter: WorkOrderFilter = {}) {
+/** `enabled` defaults true (the /maintenance index's unfiltered call); the
+ *  ambient surfaces (property/unit/contractor pages) pass `Boolean(id)` so a
+ *  transiently-undefined route param never fires an unscoped fetch. */
+export function useWorkOrders(filter: WorkOrderFilter = {}, enabled = true) {
   return useQuery({
     queryKey: ['work-orders', 'list', filter],
     queryFn: () =>
       api.get<WorkOrderListRow[]>(
         `/work-orders${toQuery(filter as Record<string, string | number | undefined>)}`,
       ),
+    enabled,
     staleTime: STALE_SHORT,
   });
 }

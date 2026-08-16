@@ -2,6 +2,7 @@ import {
   formatUsdWhole,
   InsightActionSchema,
   RENEW_SOON_DAYS,
+  TERMINAL_WORK_ORDER_STATUSES,
   type Insight,
   type InsightAction,
   type InsightScope,
@@ -19,6 +20,7 @@ import {
   monthEndExclusiveInTz,
   monthStartInTz,
   periodLabel,
+  wallClockParts,
   yearRangeInTz,
 } from '../lib/dates';
 import { NotFoundError } from '../lib/errors';
@@ -33,8 +35,27 @@ import { slugify } from '../lib/strings';
 import { accountTimezone } from './account.service';
 import { writeAudit, type AuditActor } from './audit.service';
 import * as contractorService from './contractor.service';
+import { propertyLabel } from './property.service';
 import * as rentService from './rent.service';
 import { expenseTotalsByCategory, generateMonthlyReviewReport } from './report.service';
+
+/** "YYYY-MM-DD" of `now` in `tz` — mirrors work-order.service's private
+ *  helper of the same name (not exported there, and Phase 1 files are frozen
+ *  for this change), because `WorkOrder.reportedOn`/`scheduledFor` are
+ *  account-local calendar-date strings, never instants (PLAN-MAINTENANCE §3). */
+function todayCalendarDate(tz: string, now: Date = new Date()): string {
+  const p = wallClockParts(tz, now);
+  return `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')}`;
+}
+
+/** Whole days between two "YYYY-MM-DD" calendar-date strings (positive when
+ *  `to` is later) — same ordinal-difference technique as work-order.service's
+ *  private `daysBetweenCalendarDates`, duplicated here for the same reason. */
+function daysBetweenCalendarDates(from: string, to: string): number {
+  const [fy, fm, fd] = from.split('-').map(Number) as [number, number, number];
+  const [ty, tm, td] = to.split('-').map(Number) as [number, number, number];
+  return Math.round((Date.UTC(ty, tm - 1, td) - Date.UTC(fy, fm - 1, fd)) / 86_400_000);
+}
 
 /** actionJson is written by generateInsights below, but rows predating the
  *  column (or a future shape change) must degrade to the legacy
@@ -180,6 +201,7 @@ const SPIKE_RATIO = 1.25;
 const UNDERPERFORM_RATIO = 0.8;
 const CONTRACTOR_COST_RATIO = 1.5; // latest job > 150% of the contractor's prior average
 const CONTRACTOR_MIN_PRIOR_JOBS = 3; // no baseline, no spike — mirrors expense_spike's guard
+const WORK_ORDER_STALE_MIN_DAYS = 14; // PLAN-MAINTENANCE §7
 
 /**
  * Mock insight generation rules (ARCHITECTURE §4, binding). Deduped on
@@ -723,6 +745,126 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
     });
   }
 
+  // Rule 11 — work_order_emergency_open: an emergency work order still open
+  // the day after it was reported (PLAN-MAINTENANCE §7). One card PER
+  // qualifying work order — unlike the stale rule below, an emergency is
+  // exactly the case where the landlord wants each one named, not folded into
+  // a count. Scoped to the work order's property so it also surfaces on the
+  // property hub. Runs its own lifecycle (dedupeKey per work order id): any
+  // active row whose key isn't among this cycle's qualifying set resolves,
+  // which is what clears the card the moment the order is completed,
+  // cancelled, or de-escalated off emergency priority.
+  const todayCalendar = todayCalendarDate(tz);
+  const openEmergencies = await prisma.workOrder.findMany({
+    where: {
+      accountId,
+      priority: 'emergency',
+      archivedAt: null,
+      status: { notIn: [...TERMINAL_WORK_ORDER_STATUSES] },
+    },
+    include: { property: true, unit: true },
+  });
+  const qualifyingEmergencyKeys: string[] = [];
+  for (const wo of openEmergencies) {
+    const daysOpen = daysBetweenCalendarDates(wo.reportedOn, todayCalendar);
+    if (daysOpen < 1) continue; // reported today — give it until tomorrow
+    const dedupeKey = `work_order_emergency_open:${wo.id}`;
+    qualifyingEmergencyKeys.push(dedupeKey);
+    const label = propertyLabel(wo.property);
+    const whereLabel = wo.unit ? `${label} ${wo.unit.label}` : label;
+    candidates.push({
+      scope: 'portfolio',
+      type: 'work_order_emergency_open',
+      severity: 'warning',
+      title: `Emergency work order still open at ${whereLabel}`,
+      body: `"${wo.title}" at ${whereLabel} was reported ${daysOpen} day${daysOpen === 1 ? '' : 's'} ago and is still open. Emergency-priority work should be resolved right away.`,
+      actionLabel: 'View work order',
+      actionTarget: `/maintenance/${wo.id}`,
+      action: { label: 'View work order', action: { kind: 'navigate', to: `/maintenance/${wo.id}` } },
+      // Portfolio-scoped, with propertyId deliberately null, even though this
+      // is about one property. property.service selects the hub's insights by
+      // `propertyId`, and the hub already lists this very work order in its
+      // derived "Needs attention" triage — a property-scoped card renders an
+      // AI restatement of the deterministic row directly beneath it. Found by
+      // looking at the rendered page, not by a test. The division that keeps:
+      // triage answers "what needs doing at this property" where you're
+      // already looking; the insight deck raises it on the Dashboard, where
+      // you are not. The title names the property and the action deep-links to
+      // the work order, so nothing is lost by staying off the hub.
+      propertyId: null,
+      tenantId: null,
+      leaseId: null,
+      dedupeKey,
+    });
+  }
+  await prisma.insight.updateMany({
+    where: {
+      accountId,
+      type: 'work_order_emergency_open',
+      status: 'active',
+      dedupeKey: { notIn: qualifyingEmergencyKeys },
+    },
+    data: { status: 'actioned' },
+  });
+
+  // Rule 12 — work_order_stale: non-emergency work orders open >= 14 days
+  // with no scheduledFor (PLAN-MAINTENANCE §7). Exactly ONE card naming a
+  // COUNT — never one per order, which would flood the deck — so this copies
+  // Rule 6's (transactions_pending_review) living-count lifecycle verbatim:
+  // the dedupeKey carries the newest qualifying work order's id (a dismissal
+  // holds only until a materially different set qualifies), an active card's
+  // title/body refresh in place as the count changes, and the card
+  // auto-resolves to actioned once nothing qualifies. A monthly-keyed dedupe
+  // would let a dismissal outlive the problem it named.
+  const staleEligible = await prisma.workOrder.findMany({
+    where: {
+      accountId,
+      archivedAt: null,
+      priority: { not: 'emergency' },
+      status: { notIn: [...TERMINAL_WORK_ORDER_STATUSES] },
+      scheduledFor: null,
+    },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+  });
+  const staleWorkOrders = staleEligible.filter(
+    (wo) => daysBetweenCalendarDates(wo.reportedOn, todayCalendar) >= WORK_ORDER_STALE_MIN_DAYS,
+  );
+  const newestStale = staleWorkOrders[0] ?? null;
+  const staleKey = newestStale ? `work_order_stale:${newestStale.id}` : null;
+  await prisma.insight.updateMany({
+    where: {
+      accountId,
+      type: 'work_order_stale',
+      status: 'active',
+      ...(staleKey ? { dedupeKey: { not: staleKey } } : {}),
+    },
+    data: { status: 'actioned' },
+  });
+  if (staleKey) {
+    const staleCount = staleWorkOrders.length;
+    const one = staleCount === 1;
+    const title = `${staleCount} work order${one ? ' is' : 's are'} stuck open with no schedule`;
+    const body = `${staleCount} open work order${one ? ' has' : 's have'} sat for ${WORK_ORDER_STALE_MIN_DAYS}+ days with no contractor visit scheduled. Review the list and either schedule or close ${one ? 'it' : 'them'} out.`;
+    await prisma.insight.updateMany({
+      where: { accountId, dedupeKey: staleKey, status: 'active', NOT: { title } },
+      data: { title, body },
+    });
+    candidates.push({
+      scope: 'portfolio',
+      type: 'work_order_stale',
+      severity: 'info',
+      title,
+      body,
+      actionLabel: 'View work orders',
+      actionTarget: '/maintenance',
+      action: { label: 'View work orders', action: { kind: 'navigate', to: '/maintenance' } },
+      propertyId: null,
+      tenantId: null,
+      leaseId: null,
+      dedupeKey: staleKey,
+    });
+  }
+
   // Supersede stale period-keyed rows. The rules below re-derive from scratch
   // every cycle and emit a candidate only while their condition is currently
   // true, with the period baked into the dedupeKey — so next month is always a
@@ -733,8 +875,9 @@ export async function generateInsights(accountId: string): Promise<Insight[]> {
   // superseded or resolved; both stop being active. An empty candidate list
   // means the notIn is empty, which correctly resolves every one of them — the
   // same shape the late_rent sweep above relies on. Types that run their own
-  // lifecycle (late_rent, transactions_pending_review, bank_discrepancies) are
-  // deliberately excluded; they've already swept themselves by this point.
+  // lifecycle (late_rent, transactions_pending_review, bank_discrepancies,
+  // work_order_emergency_open, work_order_stale) are deliberately excluded;
+  // they've already swept themselves by this point.
   const PERIOD_KEYED_TYPES = [
     'expense_spike',
     'renewal_window',
