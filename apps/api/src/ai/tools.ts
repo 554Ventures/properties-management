@@ -19,6 +19,7 @@ import {
   CreateTenantInputSchema,
   CreateTransactionInputSchema,
   CreateUnitInputSchema,
+  CreateWorkOrderInputSchema,
   DataTableBlockSchema,
   DocumentEntityTypeSchema,
   DocumentTypeSchema,
@@ -37,6 +38,8 @@ import {
   UpdateTenantInputSchema,
   UpdateTransactionInputSchema,
   UpdateUnitInputSchema,
+  UpdateWorkOrderInputSchema,
+  WorkOrderFilterSchema,
 } from '@hearth/shared';
 import type {
   ContentBlock,
@@ -65,6 +68,7 @@ import * as tenantService from '../services/tenant.service';
 import * as transactionService from '../services/transaction.service';
 import * as unitService from '../services/unit.service';
 import * as valuationService from '../services/valuation.service';
+import * as workOrderService from '../services/work-order.service';
 import type { AuditActor } from '../services/audit.service';
 
 export interface ServiceToolDef {
@@ -269,7 +273,7 @@ export const serviceTools: ServiceToolDef[] = [
   {
     name: 'get_contractor',
     description:
-      'One contractor in full detail, including the confirmed expense transactions matched to them (their job history) and the derived usage stats.',
+      'One contractor in full detail, including the confirmed expense transactions matched to them (their job history) and the derived usage stats. This answers "who did I pay and how much" — for what is currently outstanding with them, or what a given job was for, use list_work_orders with contractorId.',
     inputSchema: z.object({ contractorId: z.string() }),
     write: false,
     execute: (accountId, input) =>
@@ -390,6 +394,24 @@ export const serviceTools: ServiceToolDef[] = [
     write: false,
     execute: (accountId, input) =>
       recurringService.list(accountId, input as { includeArchived?: boolean }),
+  },
+  {
+    name: 'list_work_orders',
+    description:
+      'Maintenance work orders (a work order is to an expense what a rent charge is to a deposit — the obligation before the money moves). Optional filters: status, priority, propertyId, unitId, contractorId, openOnly (excludes completed/cancelled), includeArchived. Each row carries derived costCents (summed from linked confirmed expense transactions, never stored), quoteVarianceCents, daysOpen and overdue.',
+    inputSchema: WorkOrderFilterSchema,
+    write: false,
+    execute: (accountId, input) =>
+      workOrderService.list(accountId, input as z.infer<typeof WorkOrderFilterSchema>),
+  },
+  {
+    name: 'get_work_order',
+    description:
+      'Full detail for one work order: property/unit, title/description, status, priority, assignment, schedule (reportedOn/scheduledFor/dueBy/completedOn), quotedCents, the tenant who reported it, notes, derived costCents/quoteVarianceCents/daysOpen/overdue, and the linked ledger rows that make up its cost.',
+    inputSchema: z.object({ workOrderId: z.string() }),
+    write: false,
+    execute: (accountId, input) =>
+      workOrderService.getDetail(accountId, (input as { workOrderId: string }).workOrderId),
   },
   // ── write tools — side effects stated plainly ───────────────────────────────
   {
@@ -780,6 +802,28 @@ export const serviceTools: ServiceToolDef[] = [
     execute: (accountId, input, actor) =>
       insightService.dismiss(accountId, (input as { insightId: string }).insightId, actor),
   },
+  {
+    name: 'create_work_order',
+    description:
+      'WRITES: opens a new work order for a property (propertyId required; unitId for a specific unit, omit for property-level work like the roof or grounds; title required, description, priority, contractorId to assign now, reportedOn "YYYY-MM-DD" — omit for today, scheduledFor/dueBy/completedOn as calendar dates, quotedCents — the figure the contractor quoted, tenantId — who reported it, notes, status — omit for "open"; a work order can start life already scheduled). Cost is never entered here: it accrues automatically once expense transactions are linked to this work order via confirm_transaction/create_transaction/update_transaction\'s workOrderId.',
+    inputSchema: CreateWorkOrderInputSchema,
+    write: true,
+    execute: (accountId, input, actor) =>
+      workOrderService.create(accountId, input as z.infer<typeof CreateWorkOrderInputSchema>, actor),
+  },
+  {
+    name: 'update_work_order',
+    description:
+      "WRITES: edits an existing work order — the only tool for moving its status (in either direction, e.g. back from \"completed\" to \"in_progress\"), reassigning it, rescheduling it, or changing its priority. Only the provided fields change. contractorId, scheduledFor, dueBy, unitId and quotedCents each accept null to CLEAR that field — omitting a field leaves it untouched, but an explicit null removes it (e.g. contractorId: null unassigns the contractor). Archiving is not available from chat.",
+    inputSchema: UpdateWorkOrderInputSchema.extend({ workOrderId: z.string() }),
+    write: true,
+    execute: (accountId, input, actor) => {
+      const { workOrderId, ...patch } = input as z.infer<typeof UpdateWorkOrderInputSchema> & {
+        workOrderId: string;
+      };
+      return workOrderService.update(accountId, workOrderId, patch, actor);
+    },
+  },
 ];
 
 // ── render tools (loop-handled; input IS the shared block schema) ─────────────
@@ -855,6 +899,11 @@ export const WRITE_TOOL_PERMISSIONS: Partial<Record<string, MemberPermission>> =
   create_mortgage: 'properties',
   update_mortgage: 'properties',
   record_property_valuation: 'properties',
+  // Same 'properties' grant as the /contractors directory (routes/contractors.ts:
+  // "the maintenance directory is part of property operations") — the write
+  // route these two tools front (PLAN-MAINTENANCE §5).
+  create_work_order: 'properties',
+  update_work_order: 'properties',
   // Leases are part of tenant management → same 'tenants' grant the
   // /leases and /tenants write routes use (routes/leases.ts).
   create_tenant: 'tenants',

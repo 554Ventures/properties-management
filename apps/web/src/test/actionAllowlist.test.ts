@@ -109,6 +109,17 @@ describe('isAllowedApiCall', () => {
     expect(isAllowedApiCall('POST', '/contractors/c1/restore')).toBe(false);
   });
 
+  it('allows creating and editing work orders but never archiving/restoring one', () => {
+    expect(isAllowedApiCall('POST', '/work-orders')).toBe(true);
+    expect(isAllowedApiCall('PATCH', '/work-orders/cm4ktz8yq000108l5f1a2b3c4')).toBe(true);
+    expect(isAllowedApiCall('DELETE', '/work-orders/wo1')).toBe(false);
+    expect(isAllowedApiCall('POST', '/work-orders/wo1/restore')).toBe(false);
+    expect(isAllowedApiCall('POST', '/work-orders/wo1')).toBe(false);
+    expect(isAllowedApiCall('GET', '/work-orders')).toBe(false);
+    expect(isAllowedApiCall('PATCH', '/work-orders')).toBe(false);
+    expect(isAllowedApiCall('PATCH', '/work-orders/wo1/expense')).toBe(false);
+  });
+
   it('refuses lookalike paths that only prefix or extend an allowed route', () => {
     expect(isAllowedApiCall('POST', '/rent/reminders/extra')).toBe(false);
     expect(isAllowedApiCall('POST', '/transactions/../settings/account')).toBe(false);

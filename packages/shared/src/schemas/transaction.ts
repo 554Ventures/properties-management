@@ -47,6 +47,12 @@ export const TransactionSchema = z.object({
   // drives the "Auto-drafted" badge and lets the duplicate check know one side
   // of a pair is an expectation rather than something the bank observed.
   recurringTemplateId: z.string().nullable().optional(),
+  // The maintenance seam (PRD §5.10). Many rows may point at one work order — a
+  // real job is a deposit, a final invoice, and a hardware-store run. Purely
+  // attribution: unlike a rent link it flips no state on the other side, so
+  // this row carries **no** extra edit/delete guards. The work order's cost
+  // just recomputes.
+  workOrderId: z.string().nullable().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   // True when this row backs a rent deposit (or legacy RentPayment link) —
@@ -85,6 +91,11 @@ export const CreateTransactionInputSchema = z.object({
   // transaction.service so no adapter can bypass it.
   mortgageId: z.string().optional(),
   principalCents: z.number().int().nonnegative().optional(),
+  // Linking at create time inherits the work order's property/unit onto this
+  // row (blanks only — a value the caller set always wins), the same stamp
+  // `confirmWithRentLink` applies from a lease. That inheritance is what makes
+  // per-unit maintenance cost arrive as a by-product rather than a nag.
+  workOrderId: z.string().optional(),
 });
 
 // PATCH /transactions/:id — `classification: null` clears back to ordinary.
@@ -99,6 +110,8 @@ export const UpdateTransactionInputSchema = CreateTransactionInputSchema.partial
   // principal/interest breakdown it doesn't have.
   mortgageId: z.string().nullable().optional(),
   principalCents: z.number().int().nonnegative().nullable().optional(),
+  /** Nullable so a row can be unlinked from a work order it was attached to by mistake. */
+  workOrderId: z.string().nullable().optional(),
   splits: z
     .array(
       z.object({
@@ -137,6 +150,10 @@ export const ConfirmTransactionInputSchema = z.object({
   // across `splits` (which must sum to `amountCents - principalCents`).
   mortgageId: z.string().optional(),
   principalCents: z.number().int().nonnegative().optional(),
+  // Confirming a bank expense is the natural moment to say what job it paid
+  // for — the expense-side mirror of this card's rent link, and where the
+  // unit attribution the ledger otherwise never gets comes from.
+  workOrderId: z.string().optional(),
   splits: z
     .array(z.object({ categoryId: z.string(), amountCents: z.number().int().positive() }))
     .min(2)

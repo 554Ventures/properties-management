@@ -15,9 +15,11 @@ import {
   useProperties,
   usePropertyDetail,
   useUpdateTransaction,
+  useWorkOrderDetail,
 } from '../../api/queries';
 import { cx } from '../../lib/cx';
 import { DocumentsCard } from '../documents/DocumentsCard';
+import { WorkOrderPickerModal } from '../review/WorkOrderPickerModal';
 import { Button, buttonClasses } from '../ui/Button';
 import { FormField, Input } from '../ui/FormField';
 import { Modal } from '../ui/Modal';
@@ -114,6 +116,9 @@ export function TransactionEditModal({
   // row back to ordinary editing for the rest of the session without waiting
   // on the parent's stale `transaction` prop to refetch.
   const [mortgageCleared, setMortgageCleared] = useState(false);
+  // The expense-side mirror of a rent link (PLAN-MAINTENANCE §6) — '' = none.
+  const [workOrderId, setWorkOrderId] = useState('');
+  const [workOrderPickerOpen, setWorkOrderPickerOpen] = useState(false);
 
   const rentLinked = transaction?.rentLinked ?? false;
   // Defect 2: only a CONFIRMED mortgage-flagged row gets the breakdown editor
@@ -143,6 +148,7 @@ export function TransactionEditModal({
       setNewCategoryName('');
       setErrors({});
       setMortgageCleared(false);
+      setWorkOrderId(transaction.workOrderId ?? '');
       const existingSplits = transaction.splits ?? [];
       if (transaction.mortgageId) {
         // The row's own splits ARE its remainder allocation — never the
@@ -181,6 +187,11 @@ export function TransactionEditModal({
 
   const propertyDetail = usePropertyDetail(propertyId || undefined);
   const units = propertyDetail.data?.units ?? [];
+  // Resolves the linked work order's title for display — fetched by id
+  // (rather than riding the open-only picker list) so an already-completed
+  // work order still shows its name here.
+  const linkedWorkOrder = useWorkOrderDetail(workOrderId || undefined);
+  const canLinkWorkOrder = transaction?.type === 'expense' && !isMortgagePayment;
   // Surfaced only when already loaded (the units fetch above) — never a new
   // request just for this hint.
   const mortgageEscrowNote = propertyDetail.data?.mortgages.find(
@@ -363,6 +374,11 @@ export function TransactionEditModal({
         // disabled, so this stays a no-op for them.
         ...(classification !== (transaction.classification ?? '')
           ? { classification: classification || null }
+          : {}),
+        // workOrderId also supports explicit clearing — only send it when it
+        // actually changed, same convention as classification above.
+        ...(workOrderId !== (transaction.workOrderId ?? '')
+          ? { workOrderId: workOrderId || null }
           : {}),
       },
       {
@@ -641,6 +657,33 @@ export function TransactionEditModal({
             {transaction?.type === 'income' && <option value="refund">Refund</option>}
           </Select>
         </FormField>
+        {/* Expense-side mirror of a rent link (PLAN-MAINTENANCE §6): which job
+            this expense paid for. Purely attribution — no edit/delete guard,
+            unlike rentLinked above. */}
+        {canLinkWorkOrder && (
+          <div className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium text-ink">Work order</span>
+            {workOrderId && (
+              <p className="text-sm text-ink-muted">
+                Linked to{' '}
+                <span className="font-medium text-ink">
+                  {linkedWorkOrder.isPending ? 'Loading…' : (linkedWorkOrder.data?.title ?? 'a work order')}
+                </span>
+                {' '}— the ledger marks this row "part of work order".
+              </p>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <Button variant="secondary" size="sm" onClick={() => setWorkOrderPickerOpen(true)}>
+                {workOrderId ? 'Change linked work order…' : 'Link to work order…'}
+              </Button>
+              {workOrderId && (
+                <Button variant="ghost" size="sm" onClick={() => setWorkOrderId('')}>
+                  Unlink
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
         {/* Attachments (receipts, invoices) — same card as the detail pages,
             embedded without Card chrome; a receipt-typed upload here also sets
             the row's receiptUrl server-side. */}
@@ -673,6 +716,16 @@ export function TransactionEditModal({
           )}
         </div>
       </div>
+      {canLinkWorkOrder && (
+        <WorkOrderPickerModal
+          open={workOrderPickerOpen}
+          onClose={() => setWorkOrderPickerOpen(false)}
+          onChoose={(workOrder) => {
+            setWorkOrderId(workOrder.id);
+            setWorkOrderPickerOpen(false);
+          }}
+        />
+      )}
     </Modal>
   );
 }

@@ -256,6 +256,9 @@ export function Money() {
           {txn.rentLinked && (
             <span className="ml-2 text-xs text-ink-muted">· applied to rent</span>
           )}
+          {txn.workOrderId && (
+            <span className="ml-2 text-xs text-ink-muted">· part of work order</span>
+          )}
           {txn.documentCount !== undefined && (
             <span className="ml-2 whitespace-nowrap text-xs text-ink-muted">
               · <IconPaperclip size={12} className="inline align-[-1px]" /> {txn.documentCount}

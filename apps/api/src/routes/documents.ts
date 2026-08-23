@@ -34,6 +34,10 @@ const DOCUMENT_WRITE_AREA: Record<DocumentEntityType, MemberPermission> = {
   lease: 'properties',
   tenant: 'tenants',
   transaction: 'money',
+  // A work order is a property-operations record, matching the contractor
+  // directory it shares a section with. Attaching the *invoice* is a document
+  // write, not a ledger write — linking the expense is what needs 'money'.
+  work_order: 'properties',
 };
 
 /** The entityType of a PATCH move target, or null when absent/not a valid type

@@ -108,6 +108,11 @@ import type {
   UpdateTenantInput,
   UpdateTransactionInput,
   UpdateUnitInput,
+  CreateWorkOrderInput,
+  UpdateWorkOrderInput,
+  WorkOrderDetailResponse,
+  WorkOrderFilter,
+  WorkOrderListRow,
 } from '@hearth/shared';
 import { OnboardingStepIdSchema } from '@hearth/shared';
 import { api, toQuery } from './client';
@@ -474,6 +479,82 @@ export function useArchiveContractor() {
 // but no UI surface exposes archived contractors yet — add a restore hook
 // alongside that surface when it lands.
 
+// ----------------------------------------------------------------- work orders
+// Maintenance work orders (PRD §5.10) — a work order is to an expense what a
+// rent charge is to a deposit. `costCents`/`quoteVarianceCents`/`daysOpen`/
+// `overdue` are server-derived on every read, never cached separately.
+
+export function useWorkOrders(filter: WorkOrderFilter = {}) {
+  return useQuery({
+    queryKey: ['work-orders', 'list', filter],
+    queryFn: () =>
+      api.get<WorkOrderListRow[]>(
+        `/work-orders${toQuery(filter as Record<string, string | number | undefined>)}`,
+      ),
+    staleTime: STALE_SHORT,
+  });
+}
+
+/** Every open (non-terminal) work order, newest first — the "Link to work
+ *  order…" picker's option list. `enabled` only while the picker is open, the
+ *  same lazy-fetch convention as useOpenRentCharges. */
+export function useOpenWorkOrders(enabled: boolean) {
+  return useQuery({
+    queryKey: ['work-orders', 'list', { openOnly: true }],
+    queryFn: () => api.get<WorkOrderListRow[]>('/work-orders?openOnly=true'),
+    enabled,
+    staleTime: STALE_SHORT,
+  });
+}
+
+export function useWorkOrderDetail(id: string | undefined) {
+  return useQuery({
+    queryKey: ['work-orders', id],
+    queryFn: () => api.get<WorkOrderDetailResponse>(`/work-orders/${id}`),
+    enabled: Boolean(id),
+    staleTime: STALE_SHORT,
+  });
+}
+
+function invalidateWorkOrders(qc: ReturnType<typeof useQueryClient>, id?: string) {
+  void qc.invalidateQueries({ queryKey: ['work-orders'] });
+  if (id) void qc.invalidateQueries({ queryKey: ['work-orders', id] });
+}
+
+export function useCreateWorkOrder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateWorkOrderInput) => api.post<WorkOrderListRow>('/work-orders', input),
+    onSuccess: () => invalidateWorkOrders(qc),
+  });
+}
+
+export function useUpdateWorkOrder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...input }: UpdateWorkOrderInput & { id: string }) =>
+      api.patch<WorkOrderListRow>(`/work-orders/${id}`, input),
+    onSuccess: (_data, { id }) => invalidateWorkOrders(qc, id),
+  });
+}
+
+/** DELETE /work-orders/:id — soft-archive. */
+export function useArchiveWorkOrder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete(`/work-orders/${id}`),
+    onSuccess: (_data, id) => invalidateWorkOrders(qc, id),
+  });
+}
+
+export function useRestoreWorkOrder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post<WorkOrderListRow>(`/work-orders/${id}/restore`),
+    onSuccess: (_data, id) => invalidateWorkOrders(qc, id),
+  });
+}
+
 // POST /contractors/:id/jobs — logs a manual job as a real confirmed expense
 // transaction. A `possible_duplicate` response created nothing server-side
 // (it's an advisory candidate list, mirroring the review queue's rent-match
@@ -644,6 +725,8 @@ function invalidateFinancials(qc: ReturnType<typeof useQueryClient>) {
   void qc.invalidateQueries({ queryKey: ['tenants'] });
   void qc.invalidateQueries({ queryKey: ['insights'] });
   void qc.invalidateQueries({ queryKey: ['units'] }); // unit detail carries its own P&L
+  // Confirming/editing/unlinking an expense's workOrderId moves derived cost.
+  void qc.invalidateQueries({ queryKey: ['work-orders'] });
 }
 
 export function useCreateTransaction() {

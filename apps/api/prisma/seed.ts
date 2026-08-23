@@ -26,6 +26,7 @@ import { sanitizeFilename } from '../src/services/document.service';
 import * as insightService from '../src/services/insight.service';
 import * as mortgageService from '../src/services/mortgage.service';
 import * as valuationService from '../src/services/valuation.service';
+import * as workOrderService from '../src/services/work-order.service';
 import {
   AVG_TRAILING_NET_CENTS,
   BALANCE_SHEET_PROPERTY_ASSETS_CENTS,
@@ -63,6 +64,16 @@ import {
   TRAILING_EXPENSE_TOTALS_CENTS,
   TRAILING_EXTRA_EXPENSES,
   TRAILING_FIXED_EXPENSES,
+  WORK_ORDER_COUNT,
+  WORK_ORDER_GREENSCAPE_COST_CENTS,
+  WORK_ORDER_GREENSCAPE_QUOTED_CENTS,
+  WORK_ORDER_GREENSCAPE_TITLE,
+  WORK_ORDER_OPEN_COUNT,
+  WORK_ORDER_OPEN_TITLE,
+  WORK_ORDER_RIVERA_COST_CENTS,
+  WORK_ORDER_RIVERA_QUOTED_CENTS,
+  WORK_ORDER_RIVERA_TITLE,
+  WORK_ORDER_SCHEDULED_TITLE,
   expectedInsightDedupeKeys,
   type SeedExpenseSpec,
 } from './seed-constants';
@@ -123,6 +134,7 @@ async function main(): Promise<void> {
     leaseId: string;
     unitId: string;
     propertyId: string;
+    tenantId: string;
     tenantName: string;
     rentCents: number;
     payment: 'online' | 'manual' | number;
@@ -175,6 +187,7 @@ async function main(): Promise<void> {
         leaseId: lease.id,
         unitId: unit.id,
         propertyId: property.id,
+        tenantId: tenant.id,
         tenantName: u.tenantName,
         rentCents: u.rentCents,
         payment: u.payment,
@@ -523,6 +536,121 @@ async function main(): Promise<void> {
     await contractorService.adoptMatchingTransactions(account.id, c.id);
   }
 
+  // ── work orders (PLAN-MAINTENANCE §7 seed): link to EXISTING expense rows
+  // only — ZERO new Transaction rows, so every pinned money KPI above holds
+  // unchanged. `costCents` is derived at read time from `Transaction.workOrderId`
+  // (work-order.service.ts), so setting that column on a row already in the
+  // ledger is the entire seam. Contractor jobsCount/avgCostCents/lastUsedAt
+  // derive from `Transaction.contractorId`, never `workOrderId` (ARCHITECTURE
+  // §4) — this never touches contractorId, so the CONTRACTOR_EXPECTED_STATS
+  // check above (which reruns after this block, at the bottom) still holds.
+  const calendarDate = (d: Date): string => {
+    const p = wallClockParts(DEMO_TIMEZONE, d);
+    return `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')}`;
+  };
+  const mapleUnitLease = leases.find((l) => l.propertyId === maplePropertyId);
+  if (!mapleUnitLease) throw new Error('seed: Maple unit missing for the work-order fixture');
+  const oakUnitLease = leases.find((l) => l.tenantName === 'K. Whitfield');
+  if (!oakUnitLease) throw new Error('seed: Oak Unit A lease missing for the work-order fixture');
+  const pinePropertyId = propertyIdByKey.get('pine');
+  if (!pinePropertyId) throw new Error('seed: Pine property missing for the work-order fixture');
+  const riveraContractor = seededContractors.find((c) => c.name === 'Rivera Plumbing');
+  const greenscapeContractor = seededContractors.find((c) => c.name === 'GreenScape Co.');
+  const quickfixContractor = seededContractors.find((c) => c.name === 'QuickFix Home');
+  if (!riveraContractor || !greenscapeContractor || !quickfixContractor) {
+    throw new Error('seed: expected contractors missing for the work-order fixture');
+  }
+
+  // Completed #1: linked to Rivera Plumbing's most recent job (unit-level —
+  // the unitId coverage this fixture calls for). Quoted low, so the derived
+  // actual lands OVER quote (a positive quoteVarianceCents).
+  const riveraJob = await prisma.transaction.findFirst({
+    where: { accountId: account.id, vendor: 'Rivera Plumbing' },
+    orderBy: { date: 'desc' },
+  });
+  if (!riveraJob) throw new Error('seed: Rivera Plumbing job missing for the work-order fixture');
+  const woRivera = await prisma.workOrder.create({
+    data: {
+      accountId: account.id,
+      propertyId: mapleUnitLease.propertyId,
+      unitId: mapleUnitLease.unitId,
+      title: WORK_ORDER_RIVERA_TITLE,
+      description: 'Slow drip under the kitchen sink; tenant reported pooling water.',
+      status: 'completed',
+      priority: 'normal',
+      contractorId: riveraContractor.id,
+      reportedOn: calendarDate(addDays(riveraJob.date, -3)),
+      completedOn: calendarDate(riveraJob.date),
+      quotedCents: WORK_ORDER_RIVERA_QUOTED_CENTS,
+      source: 'landlord',
+    },
+  });
+  await prisma.transaction.update({ where: { id: riveraJob.id }, data: { workOrderId: woRivera.id } });
+
+  // Completed #2: linked to the current month's GreenScape Co. grounds
+  // service (property-level — unitId null, the other shape this fixture
+  // calls for). Quoted high, so the derived actual lands UNDER quote.
+  const greenscapeJob = await prisma.transaction.findFirst({
+    where: { accountId: account.id, vendor: 'GreenScape Co.', propertyId: maplePropertyId },
+  });
+  if (!greenscapeJob) {
+    throw new Error('seed: GreenScape Co. current-month job missing for the work-order fixture');
+  }
+  const woGreenscape = await prisma.workOrder.create({
+    data: {
+      accountId: account.id,
+      propertyId: maplePropertyId,
+      unitId: null,
+      title: WORK_ORDER_GREENSCAPE_TITLE,
+      description: 'Bed edging, mulch refresh, and irrigation check ahead of the season.',
+      status: 'completed',
+      priority: 'low',
+      contractorId: greenscapeContractor.id,
+      reportedOn: calendarDate(addDays(greenscapeJob.date, -2)),
+      completedOn: calendarDate(greenscapeJob.date),
+      quotedCents: WORK_ORDER_GREENSCAPE_QUOTED_CENTS,
+      source: 'landlord',
+    },
+  });
+  await prisma.transaction.update({ where: { id: greenscapeJob.id }, data: { workOrderId: woGreenscape.id } });
+
+  // Open, unassigned, no linked cost: a tenant-reported issue, recent and
+  // non-emergency so it can't trip any future staleness/emergency insight
+  // rule on demo data (PLAN-MAINTENANCE §7 trap).
+  const woOpen = await prisma.workOrder.create({
+    data: {
+      accountId: account.id,
+      propertyId: oakUnitLease.propertyId,
+      unitId: oakUnitLease.unitId,
+      title: WORK_ORDER_OPEN_TITLE,
+      description: 'Tenant reports the disposal hums but does not spin; sink is backing up.',
+      status: 'open',
+      priority: 'normal',
+      contractorId: null,
+      reportedOn: calendarDate(addDays(now, -2)),
+      source: 'landlord',
+      tenantId: oakUnitLease.tenantId,
+    },
+  });
+
+  // Scheduled, with a contractor + scheduledFor: exercises the assignment +
+  // scheduling path (property-level).
+  const woScheduled = await prisma.workOrder.create({
+    data: {
+      accountId: account.id,
+      propertyId: pinePropertyId,
+      unitId: null,
+      title: WORK_ORDER_SCHEDULED_TITLE,
+      description: 'Seasonal inspection and filter service ahead of heating season.',
+      status: 'scheduled',
+      priority: 'low',
+      contractorId: quickfixContractor.id,
+      reportedOn: calendarDate(addDays(now, -4)),
+      scheduledFor: calendarDate(addDays(now, 9)),
+      source: 'landlord',
+    },
+  });
+
   // ── insights (via the real rules) + last month's monthly review
   const created = await insightService.generateInsights(account.id);
   await insightService.generateMonthlyReview(account.id, addMonthsToPeriod(period, -1));
@@ -591,6 +719,40 @@ async function main(): Promise<void> {
     if (!expected) throw new Error(`Seed self-check failed: unexpected contractor ${row.name}`);
     assertEq(row.jobsCount, expected.jobsCount, `${row.name} jobsCount`);
     assertEq(row.avgCostCents ?? -1, expected.avgCostCents ?? -1, `${row.name} avgCostCents`);
+  }
+  // Work orders: costCents/quoteVarianceCents must equal what's actually on
+  // the linked ledger rows (never a stored figure — work-order.service.ts
+  // derives it fresh), and linking must not have moved a single contractor
+  // stat asserted just above.
+  const workOrders = await workOrderService.list(account.id, { includeArchived: true });
+  assertEq(workOrders.length, WORK_ORDER_COUNT, 'work order count');
+  assertEq(
+    workOrders.filter((w) => w.status === 'open').length,
+    WORK_ORDER_OPEN_COUNT,
+    'open work order count',
+  );
+  const riveraRow = workOrders.find((w) => w.id === woRivera.id);
+  if (!riveraRow) throw new Error('Seed self-check failed: Rivera work order missing from list()');
+  assertEq(riveraRow.costCents, WORK_ORDER_RIVERA_COST_CENTS, 'Rivera work order costCents');
+  assertEq(
+    riveraRow.quoteVarianceCents ?? -999999,
+    WORK_ORDER_RIVERA_COST_CENTS - WORK_ORDER_RIVERA_QUOTED_CENTS,
+    'Rivera work order quoteVarianceCents',
+  );
+  const greenscapeRow = workOrders.find((w) => w.id === woGreenscape.id);
+  if (!greenscapeRow) throw new Error('Seed self-check failed: GreenScape work order missing from list()');
+  assertEq(greenscapeRow.costCents, WORK_ORDER_GREENSCAPE_COST_CENTS, 'GreenScape work order costCents');
+  assertEq(
+    greenscapeRow.quoteVarianceCents ?? -999999,
+    WORK_ORDER_GREENSCAPE_COST_CENTS - WORK_ORDER_GREENSCAPE_QUOTED_CENTS,
+    'GreenScape work order quoteVarianceCents',
+  );
+  const openRow = workOrders.find((w) => w.id === woOpen.id);
+  if (!openRow) throw new Error('Seed self-check failed: open work order missing from list()');
+  assertEq(openRow.costCents, 0, 'open work order costCents');
+  const scheduledRow = workOrders.find((w) => w.id === woScheduled.id);
+  if (!scheduledRow || scheduledRow.status !== 'scheduled' || !scheduledRow.scheduledFor) {
+    throw new Error('Seed self-check failed: scheduled work order missing scheduledFor');
   }
   const keys = expectedInsightDedupeKeys(period);
   for (const key of Object.values(keys)) {

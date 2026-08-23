@@ -10,6 +10,8 @@ import type {
   PropertyWithStats,
   ReviewQueueResponse,
   Transaction,
+  WorkOrderDetailResponse,
+  WorkOrderListRow,
 } from '@hearth/shared';
 import type { LeaseDetailResponse } from '@hearth/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -34,9 +36,11 @@ import { ToastProvider } from '../components/ui/Toast';
 import { ContractorDetail } from '../pages/ContractorDetail';
 import { ContractorsPage } from '../pages/ContractorsPage';
 import { Dashboard } from '../pages/Dashboard';
+import { MaintenancePage } from '../pages/MaintenancePage';
 import { MoneyReview } from '../pages/MoneyReview';
 import { PropertyDetail } from '../pages/PropertyDetail';
 import { UnitDetail } from '../pages/UnitDetail';
+import { WorkOrderDetail } from '../pages/WorkOrderDetail';
 import {
   hubDetailResponse,
   hubRoutes,
@@ -510,6 +514,48 @@ describe('CRUD modal accessibility', () => {
     await expectNoModalViolations();
   });
 
+  // Expense-side mirror of a rent link (PLAN-MAINTENANCE §6) — the ledger's
+  // edit modal offers the same picker as the review queue's expense row.
+  it('TransactionEditModal "Link to work order…" picker (an ordinary confirmed expense) has no axe violations', async () => {
+    vi.stubGlobal('fetch', vi.fn(txnModalFetch));
+    const expenseTransaction: Transaction = {
+      ...importedTransaction,
+      id: 'tx-expense-edit',
+      type: 'expense',
+      status: 'confirmed',
+      description: 'Gutter Co. invoice',
+      vendor: 'Gutter Co.',
+      aiSuggestedCategoryId: null,
+      aiConfidence: null,
+    };
+    render(
+      <Providers>
+        <TransactionEditModal open onClose={() => {}} transaction={expenseTransaction} />
+      </Providers>,
+    );
+    const dialog = await screen.findByRole('dialog');
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Link to work order…' }));
+    const pickerDialog = await screen.findByRole('dialog', { name: 'Link to a work order' });
+    await within(pickerDialog).findByText(/Gutter cleaning/);
+    fireEvent.click(within(pickerDialog).getByRole('radio', { name: /Gutter cleaning/ }));
+
+    const results = await axe.run(pickerDialog, {
+      rules: { 'color-contrast': { enabled: false } },
+    });
+    expect(
+      results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`),
+    ).toEqual([]);
+
+    // Linking closes the picker and shows the linked title plus an Unlink
+    // control back on the modal.
+    fireEvent.click(within(pickerDialog).getByRole('button', { name: 'Link' }));
+    expect(await within(dialog).findByText(/Gutter cleaning/)).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Unlink' })).toBeInTheDocument();
+
+    await expectNoModalViolations();
+  }, 20_000);
+
   it('MultiSelect (open dropdown) has no axe violations', async () => {
     render(
       <Providers>
@@ -604,10 +650,51 @@ const txnDocuments: DocumentListResponse = {
   total: 1,
 };
 
+// One open work order — the "Link to work order…" picker's option list, both
+// in the review-queue expense row and the ledger's edit modal.
+const openWorkOrderFixture: WorkOrderListRow = {
+  id: 'w1',
+  accountId: 'acc1',
+  propertyId: 'p1',
+  unitId: null,
+  title: 'Gutter cleaning',
+  description: null,
+  status: 'open',
+  priority: 'normal',
+  contractorId: null,
+  reportedOn: '2026-07-01',
+  scheduledFor: null,
+  dueBy: null,
+  completedOn: null,
+  quotedCents: null,
+  source: 'landlord',
+  tenantId: null,
+  notes: null,
+  createdAt: '2026-07-01T00:00:00.000Z',
+  updatedAt: '2026-07-01T00:00:00.000Z',
+  archivedAt: null,
+  costCents: 0,
+  linkedTransactionCount: 0,
+  quoteVarianceCents: null,
+  daysOpen: 5,
+  overdue: false,
+  propertyLabel: '21 Cedar Ct',
+  unitLabel: null,
+  contractorName: null,
+  tenantName: null,
+};
+
 function txnModalFetch(input: RequestInfo | URL): Promise<Response> {
   const path = String(input).replace(/^https?:\/\/[^/]+/, '').split('?')[0] ?? '';
   if (path === '/api/v1/properties') return fixtureFetch(input);
-  const body = path === '/api/v1/documents' ? txnDocuments : [];
+  const body =
+    path === '/api/v1/documents'
+      ? txnDocuments
+      : path === '/api/v1/work-orders'
+        ? [openWorkOrderFixture]
+        : path === '/api/v1/work-orders/w1'
+          ? { ...openWorkOrderFixture, costs: [] }
+          : [];
   return Promise.resolve(
     new Response(JSON.stringify(body), {
       status: 200,
@@ -907,6 +994,68 @@ describe('review queue accessibility', () => {
     expect(
       results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`),
     ).toEqual([]);
+  }, 20_000);
+
+  // Expense-side mirror of the rent picker above (PLAN-MAINTENANCE §6): the
+  // low-confidence expense row in `reviewQueue` auto-expands, so its "Link to
+  // work order…" button is on screen without an extra toggle click.
+  it('the "Link to work order…" picker on an expense row has no axe violations', async () => {
+    const reviewFixtures: Record<string, unknown> = {
+      '/api/v1/transactions/review': reviewQueue,
+      '/api/v1/transactions/bank-discrepancies': { items: [] },
+      '/api/v1/categories': [
+        { id: 'c-rent', name: 'Rent', type: 'income' },
+        { id: 'c-supplies', name: 'Supplies', type: 'expense' },
+      ],
+      '/api/v1/properties': properties,
+      '/api/v1/work-orders': [openWorkOrderFixture],
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const path = String(input).replace(/^https?:\/\/[^/]+/, '').split('?')[0] ?? '';
+        const body = reviewFixtures[path];
+        return Promise.resolve(
+          new Response(JSON.stringify(body ?? { error: { code: 'not_found', message: path } }), {
+            status: body === undefined ? 404 : 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }),
+    );
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { container } = render(
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <MemoryRouter initialEntries={['/money/review']}>
+            <Routes>
+              <Route path="/money/review" element={<MoneyReview />} />
+            </Routes>
+          </MemoryRouter>
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByText('LOWES #00907');
+    fireEvent.click(screen.getByRole('button', { name: 'Link to work order…' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Link to a work order' });
+    await within(dialog).findByText(/Gutter cleaning/);
+    fireEvent.click(within(dialog).getByRole('radio', { name: /Gutter cleaning/ }));
+
+    const results = await axe.run(container, {
+      rules: { 'color-contrast': { enabled: false } },
+    });
+    expect(
+      results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`),
+    ).toEqual([]);
+
+    // Linking closes the picker and renders the confirmation strip.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Link' }));
+    expect(screen.getByText(/Confirming will link this expense to/)).toHaveTextContent(
+      'Gutter cleaning',
+    );
   }, 20_000);
 });
 
@@ -1365,5 +1514,216 @@ describe('contractor directory accessibility', () => {
 
     await screen.findByText(/looks similar to 1 existing expense/);
     await expectNoModalViolations();
+  }, 20_000);
+});
+
+// --- Maintenance work orders --------------------------------------------
+
+const workOrderRows: WorkOrderListRow[] = [
+  {
+    id: 'w1',
+    accountId: 'acc1',
+    propertyId: 'p1',
+    unitId: null,
+    title: 'Roof leak by chimney',
+    description: null,
+    status: 'open',
+    priority: 'emergency',
+    contractorId: null,
+    reportedOn: '2026-07-01',
+    scheduledFor: null,
+    dueBy: '2026-07-05',
+    completedOn: null,
+    quotedCents: null,
+    source: 'landlord',
+    tenantId: null,
+    notes: null,
+    createdAt: '2026-07-01T00:00:00.000Z',
+    updatedAt: '2026-07-01T00:00:00.000Z',
+    archivedAt: null,
+    costCents: 0,
+    linkedTransactionCount: 0,
+    quoteVarianceCents: null,
+    daysOpen: 44,
+    // Overdue row, so the axe run also covers the visible (never color-only)
+    // "Overdue" marker beside the status badge.
+    overdue: true,
+    propertyLabel: 'Maple Duplex',
+    unitLabel: null,
+    contractorName: null,
+    tenantName: null,
+  },
+  {
+    id: 'w2',
+    accountId: 'acc1',
+    propertyId: 'p1',
+    unitId: 'u1',
+    title: 'Faucet replacement',
+    description: 'Kitchen faucet leaking at the base.',
+    status: 'completed',
+    priority: 'normal',
+    contractorId: 'c1',
+    reportedOn: '2026-06-01',
+    scheduledFor: '2026-06-10',
+    dueBy: null,
+    completedOn: '2026-06-12',
+    quotedCents: 20000,
+    source: 'landlord',
+    tenantId: null,
+    notes: null,
+    createdAt: '2026-06-01T00:00:00.000Z',
+    updatedAt: '2026-06-12T00:00:00.000Z',
+    archivedAt: null,
+    costCents: 24500,
+    linkedTransactionCount: 2,
+    quoteVarianceCents: 4500,
+    daysOpen: 11,
+    overdue: false,
+    propertyLabel: 'Maple Duplex',
+    unitLabel: 'Unit A',
+    contractorName: 'Rivera Plumbing',
+    tenantName: null,
+  },
+];
+
+const workOrderDetail: WorkOrderDetailResponse = {
+  ...workOrderRows[1]!,
+  costs: [
+    {
+      transactionId: 't1',
+      date: '2026-06-10T00:00:00.000Z',
+      description: 'Faucet hardware',
+      vendor: 'Rivera Plumbing',
+      amountCents: 18500,
+      countedInCost: true,
+    },
+    {
+      transactionId: 't2',
+      date: '2026-06-11T00:00:00.000Z',
+      description: 'Owner reimbursement',
+      vendor: null,
+      amountCents: 5000,
+      countedInCost: false,
+    },
+  ],
+};
+
+describe('maintenance accessibility', () => {
+  it('MaintenancePage (open, overdue, and completed rows, plus the create modal) has no axe violations', async () => {
+    const maintenanceFixtures: Record<string, unknown> = {
+      '/api/v1/work-orders': workOrderRows,
+      '/api/v1/properties': properties,
+      '/api/v1/contractors': [],
+      '/api/v1/tenants': [],
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const path = String(input).replace(/^https?:\/\/[^/]+/, '').split('?')[0] ?? '';
+        const body = maintenanceFixtures[path];
+        return Promise.resolve(
+          new Response(JSON.stringify(body ?? { error: { code: 'not_found', message: path } }), {
+            status: body === undefined ? 404 : 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }),
+    );
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { container } = render(
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <MemoryRouter initialEntries={['/maintenance']}>
+            <Routes>
+              <Route
+                path="/maintenance"
+                element={
+                  <main>
+                    <MaintenancePage />
+                  </main>
+                }
+              />
+            </Routes>
+          </MemoryRouter>
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByText('Roof leak by chimney');
+    await screen.findByText('Overdue');
+
+    const results = await axe.run(container, {
+      rules: { 'color-contrast': { enabled: false } },
+    });
+    expect(
+      results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`),
+    ).toEqual([]);
+
+    // …and the create modal on top of it.
+    fireEvent.click(screen.getByRole('button', { name: 'New work order' }));
+    await expectNoModalViolations();
+  }, 20_000);
+
+  it('WorkOrderDetail (mixed counted/not-counted linked expenses, quote variance, documents) has no axe violations', async () => {
+    const detailFixtures: Record<string, unknown> = {
+      '/api/v1/work-orders/w2': workOrderDetail,
+      '/api/v1/contractors': [
+        {
+          id: 'c1',
+          name: 'Rivera Plumbing',
+          trade: 'Plumbing',
+          rating: null,
+          jobsCount: 3,
+          avgCostCents: 20000,
+          lastUsedAt: null,
+        },
+      ],
+      '/api/v1/documents': { documents: [], total: 0 },
+      '/api/v1/settings/me': ownerUser,
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const path = String(input).replace(/^https?:\/\/[^/]+/, '').split('?')[0] ?? '';
+        const body = detailFixtures[path];
+        return Promise.resolve(
+          new Response(JSON.stringify(body ?? { error: { code: 'not_found', message: path } }), {
+            status: body === undefined ? 404 : 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }),
+    );
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { container } = render(
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <MemoryRouter initialEntries={['/maintenance/w2']}>
+            <Routes>
+              <Route
+                path="/maintenance/:id"
+                element={
+                  <main>
+                    <WorkOrderDetail />
+                  </main>
+                }
+              />
+            </Routes>
+          </MemoryRouter>
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByRole('heading', { name: 'Faucet replacement' });
+    await screen.findByText('No documents on file.');
+
+    const results = await axe.run(container, {
+      rules: { 'color-contrast': { enabled: false } },
+    });
+    expect(
+      results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`),
+    ).toEqual([]);
   }, 20_000);
 });

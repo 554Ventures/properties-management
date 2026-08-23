@@ -13,6 +13,7 @@ import {
 } from '../api/queries';
 import { InsightCard } from '../components/ai/InsightCard';
 import { ContractorFormModal } from '../components/forms/ContractorFormModal';
+import { MaintenanceTabs } from '../components/shell/MaintenanceTabs';
 import { PageHeader } from '../components/shell/PageHeader';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
@@ -174,6 +175,8 @@ export function ContractorsPage() {
           </Button>
         }
       />
+
+      <MaintenanceTabs />
 
       <LiveRegion>
         {costSpikeInsight && <InsightCard insight={costSpikeInsight} headingLevel={2} />}

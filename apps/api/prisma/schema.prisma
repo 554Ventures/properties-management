@@ -16,7 +16,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
   // native = the dev machine; the two linux targets cover the Docker image
   // (arm64 for Apple-Silicon local builds, x64 for CI/Cloudflare).
   binaryTargets = ["native", "linux-arm64-openssl-3.0.x", "debian-openssl-3.0.x"]
@@ -28,49 +28,50 @@ datasource db {
 }
 
 model Account {
-  id                  String    @id @default(cuid())
-  name                String
-  email               String    @unique
-  timezone            String    @default("America/New_York")
-  taxRatePct          Int       @default(20)
-  taxYearStartMonth   Int       @default(1)
-  graceDays           Int       @default(0)
+  id                    String    @id @default(cuid())
+  name                  String
+  email                 String    @unique
+  timezone              String    @default("America/New_York")
+  taxRatePct            Int       @default(20)
+  taxYearStartMonth     Int       @default(1)
+  graceDays             Int       @default(0)
   // How graceDays is measured (GraceDaysBasis @hearth/shared): 'calendar'
   // (default) counts every day; 'business' counts only Mon–Fri. Threaded
   // alongside timezone everywhere deriveRentStatus is called.
-  graceDaysBasis      String    @default("calendar")
+  graceDaysBasis        String    @default("calendar")
   // Account-wide default late fee (integer cents) applied when a landlord marks
   // a late charge (WS7). 0 = late fees disabled account-wide. A Lease may
   // override this (Lease.lateFeeCents). Policy only — never auto-applied.
-  defaultLateFeeCents Int       @default(0)
+  defaultLateFeeCents   Int       @default(0)
   // Set when the account owner requests deletion (data erasure); the daily
   // scheduler hard-deletes the account once ACCOUNT_DELETION_GRACE_DAYS have
   // elapsed. Clearing this field (a "cancel deletion" action) recovers the
   // account with no data loss during the grace window.
-  deletionRequestedAt DateTime?
+  deletionRequestedAt   DateTime?
   // NotificationPrefs (@hearth/shared) — sparse overrides merged over
   // DEFAULT_NOTIFICATION_PREFS. Used only in demo mode (no User rows);
   // Supabase-mode prefs live per User.
-  notificationPrefsJson String  @default("{}")
-  createdAt           DateTime  @default(now())
+  notificationPrefsJson String    @default("{}")
+  createdAt             DateTime  @default(now())
 
-  properties   Property[]
-  tenants      Tenant[]
-  categories   Category[]
-  transactions Transaction[]
-  reports      Report[]
-  insights     Insight[]
-  chatSessions ChatSession[]
-  integrations Integration[]
-  auditLogs    AuditLog[]
-  users        User[]
-  invites      Invite[]
-  documents    Document[]
-  contractors  Contractor[]
-  pushDevices  PushDevice[]
-  recurringTemplates RecurringTemplate[]
-  feedback     Feedback[]
-  onboarding   OnboardingState?
+  properties             Property[]
+  tenants                Tenant[]
+  categories             Category[]
+  transactions           Transaction[]
+  workOrders             WorkOrder[]
+  reports                Report[]
+  insights               Insight[]
+  chatSessions           ChatSession[]
+  integrations           Integration[]
+  auditLogs              AuditLog[]
+  users                  User[]
+  invites                Invite[]
+  documents              Document[]
+  contractors            Contractor[]
+  pushDevices            PushDevice[]
+  recurringTemplates     RecurringTemplate[]
+  feedback               Feedback[]
+  onboarding             OnboardingState?
   vendorCategoryMemories VendorCategoryMemory[]
   bankSyncDiscrepancies  BankSyncDiscrepancy[]
 }
@@ -93,20 +94,20 @@ model OnboardingState {
 // external identity; many-users-per-account is supported by design even
 // though v1 provisions 1:1. Absent in demo mode (no Supabase configured).
 model User {
-  id             String   @id @default(cuid())
-  accountId      String
-  supabaseUserId String   @unique // Supabase Auth `sub` claim
-  email          String
-  role           String   @default("owner") // UserRole (@hearth/shared): owner | member
+  id                      String    @id @default(cuid())
+  accountId               String
+  supabaseUserId          String    @unique // Supabase Auth `sub` claim
+  email                   String
+  role                    String    @default("owner") // UserRole (@hearth/shared): owner | member
   // MemberPermission[] (@hearth/shared) granted to a member — string-array JSON
   // (same convention as Integration.scopesJson; owners hold all implicitly and
   // ignore this field). Read live on every request so a revoked grant applies
   // immediately.
-  permissionsJson String   @default("[]")
+  permissionsJson         String    @default("[]")
   // NotificationPrefs (@hearth/shared) — sparse overrides merged over
   // DEFAULT_NOTIFICATION_PREFS (notification.service).
-  notificationPrefsJson String @default("{}")
-  createdAt      DateTime @default(now())
+  notificationPrefsJson   String    @default("{}")
+  createdAt               DateTime  @default(now())
   // Consent capture (docs/SECURITY_PRIVACY_AUDIT.md §B5): recorded when this
   // identity accepts the Privacy Policy + Terms of Service at signup.
   // policyConsentVersion identifies *which* version was accepted, since the
@@ -156,6 +157,7 @@ model Property {
   account      Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
   units        Unit[]
   transactions Transaction[]
+  workOrders   WorkOrder[]
   insights     Insight[]
   mortgages    Mortgage[]
   valuations   PropertyValuation[]
@@ -218,7 +220,7 @@ model PropertyValuation {
 }
 
 model Unit {
-  id              String  @id @default(cuid())
+  id              String    @id @default(cuid())
   propertyId      String
   label           String
   bedrooms        Int?
@@ -229,24 +231,26 @@ model Unit {
   property     Property      @relation(fields: [propertyId], references: [id], onDelete: Cascade)
   leases       Lease[]
   transactions Transaction[]
+  workOrders   WorkOrder[]
 
   @@index([propertyId])
 }
 
 model Tenant {
-  id        String   @id @default(cuid())
-  accountId String
-  fullName  String
-  email     String?
-  phone     String?
-  notes     String?
-  createdAt DateTime @default(now())
+  id         String    @id @default(cuid())
+  accountId  String
+  fullName   String
+  email      String?
+  phone      String?
+  notes      String?
+  createdAt  DateTime  @default(now())
   archivedAt DateTime?
 
-  account      Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account      Account              @relation(fields: [accountId], references: [id], onDelete: Cascade)
   leaseTenants LeaseTenant[]
   insights     Insight[]
   rentDeposits RentPaymentDeposit[]
+  workOrders   WorkOrder[]
 
   @@index([accountId])
   @@index([accountId, archivedAt])
@@ -276,9 +280,9 @@ model Lease {
 }
 
 model LeaseTenant {
-  leaseId   String
-  tenantId  String
-  isPrimary Boolean @default(true)
+  leaseId    String
+  tenantId   String
+  isPrimary  Boolean @default(true)
   // This co-tenant's expected portion of lease.rentCents (plan §C). Null =
   // unspecified — display falls back to an even split. Shares that don't sum
   // to the rent are a soft warning in the UI, never a hard block.
@@ -298,9 +302,9 @@ model Category {
   irsScheduleELine String? // e.g. "Line 14 – Repairs"
   isSystem         Boolean @default(false)
 
-  account      Account?      @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  transactions Transaction[]
-  transactionSplits TransactionSplit[]
+  account                Account?               @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  transactions           Transaction[]
+  transactionSplits      TransactionSplit[]
   vendorCategoryMemories VendorCategoryMemory[]
 }
 
@@ -367,23 +371,31 @@ model Transaction {
   // the "Auto-drafted" badge, and tells the duplicate check that this side of
   // a pair is an expectation rather than something the bank observed.
   recurringTemplateId   String?
+  // What job this expense paid for (PRD §5.10). Many rows per work order — a
+  // job is a deposit, a final invoice, and a hardware-store run. Pure
+  // attribution: unlike a rent link it flips no state on the other side, so
+  // this carries no extra edit/delete guards; the work order's cost is derived
+  // and simply recomputes.
+  workOrderId           String?
   receiptUrl            String?
   externalId            String? // bank source only: Plaid transaction_id, dedups repeated syncs
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 
-  account     Account      @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  property    Property?    @relation(fields: [propertyId], references: [id], onDelete: SetNull)
-  unit        Unit?        @relation(fields: [unitId], references: [id], onDelete: SetNull)
-  category    Category?    @relation(fields: [categoryId], references: [id], onDelete: SetNull)
-  contractor  Contractor?  @relation(fields: [contractorId], references: [id], onDelete: SetNull)
-  mortgage    Mortgage?    @relation(fields: [mortgageId], references: [id], onDelete: SetNull)
-  recurringTemplate RecurringTemplate? @relation(fields: [recurringTemplateId], references: [id], onDelete: SetNull)
-  rentPayment RentPayment?
-  rentDeposit RentPaymentDeposit?
+  account               Account               @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  property              Property?             @relation(fields: [propertyId], references: [id], onDelete: SetNull)
+  unit                  Unit?                 @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  category              Category?             @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  contractor            Contractor?           @relation(fields: [contractorId], references: [id], onDelete: SetNull)
+  mortgage              Mortgage?             @relation(fields: [mortgageId], references: [id], onDelete: SetNull)
+  recurringTemplate     RecurringTemplate?    @relation(fields: [recurringTemplateId], references: [id], onDelete: SetNull)
+  workOrder             WorkOrder?            @relation(fields: [workOrderId], references: [id], onDelete: SetNull)
+  rentPayment           RentPayment?
+  rentDeposit           RentPaymentDeposit?
   bankSyncDiscrepancies BankSyncDiscrepancy[]
-  splits      TransactionSplit[]
+  splits                TransactionSplit[]
 
+  @@unique([accountId, externalId])
   @@index([accountId, date])
   @@index([accountId, status])
   @@index([contractorId])
@@ -391,7 +403,8 @@ model Transaction {
   // property-hub and balance-sheet load — same reason contractorId is indexed.
   @@index([mortgageId])
   @@index([recurringTemplateId])
-  @@unique([accountId, externalId])
+  // Cost derivation reads every linked row on each work-order list/detail load.
+  @@index([workOrderId])
 }
 
 // A standing instruction, never a ledger row (PLAN-REAL-EQUITY §2, Phase 2b).
@@ -406,26 +419,26 @@ model Transaction {
 // uniqueness). archivedAt = paused; restoring never backfills missed
 // occurrences — only the most recent due one ever drafts.
 model RecurringTemplate {
-  id                     String    @id @default(cuid())
-  accountId              String
-  description            String
-  vendor                 String?
-  propertyId             String?
-  unitId                 String?
-  categoryId             String?
-  type                   String
-  amountCents            Int
-  cadence                String
-  anchorDate             DateTime
+  id                    String    @id @default(cuid())
+  accountId             String
+  description           String
+  vendor                String?
+  propertyId            String?
+  unitId                String?
+  categoryId            String?
+  type                  String
+  amountCents           Int
+  cadence               String
+  anchorDate            DateTime
   // A mortgage template stamps this breakdown onto each row it drafts, so the
   // figures the user entered once are pre-filled rather than retyped monthly.
   // Still their numbers — nothing here is computed (decision D4).
-  mortgageId             String?
-  principalCents         Int?
-  lastDraftedOccurrence  String?
-  createdAt              DateTime  @default(now())
-  updatedAt              DateTime  @updatedAt
-  archivedAt             DateTime?
+  mortgageId            String?
+  principalCents        Int?
+  lastDraftedOccurrence String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  archivedAt            DateTime?
 
   account      Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
   transactions Transaction[]
@@ -469,10 +482,10 @@ model BankSyncDiscrepancy {
   // The local ledger row the change targets. SetNull if that row is later
   // deleted by other means — the discrepancy is then only dismissable.
   transactionId String?
-  externalId    String    // provider transaction id (matches Transaction.externalId)
-  provider      String    // BankSyncProvider (@hearth/shared): plaid | stripe_fc
-  kind          String    // BankDiscrepancyKind (@hearth/shared): modified | removed
-  bankDataJson  String?   // BankDiscrepancyData (@hearth/shared) for a 'modified' change; null for 'removed'
+  externalId    String // provider transaction id (matches Transaction.externalId)
+  provider      String // BankSyncProvider (@hearth/shared): plaid | stripe_fc
+  kind          String // BankDiscrepancyKind (@hearth/shared): modified | removed
+  bankDataJson  String? // BankDiscrepancyData (@hearth/shared) for a 'modified' change; null for 'removed'
   status        String    @default("pending") // BankDiscrepancyStatus (@hearth/shared): pending | accepted | dismissed
   createdAt     DateTime  @default(now())
   resolvedAt    DateTime?
@@ -507,12 +520,12 @@ model RentPayment {
   transactionId String?   @unique // legacy single-payment link; deposits are the source of truth
   remindedAt    DateTime?
 
-  lease       Lease        @relation(fields: [leaseId], references: [id], onDelete: Cascade)
+  lease       Lease                @relation(fields: [leaseId], references: [id], onDelete: Cascade)
   // Deleting a linked ledger Transaction is blocked in the service layer
   // (transaction.service.remove) — otherwise SetNull would leave this row
   // status 'paid' with no backing ledger entry. SetNull remains the DB-level
   // fallback for deletes that bypass the service.
-  transaction Transaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+  transaction Transaction?         @relation(fields: [transactionId], references: [id], onDelete: SetNull)
   deposits    RentPaymentDeposit[]
 
   @@unique([leaseId, period])
@@ -563,8 +576,54 @@ model Contractor {
 
   account      Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
   transactions Transaction[]
+  workOrders   WorkOrder[]
 
   @@index([accountId])
+}
+
+// A maintenance job as a record (PRD §5.10, PLAN-MAINTENANCE §3-§4).
+//
+// The obligation exists before any money moves and may legitimately never cost
+// anything — the landlord fixes the faucet themself. Cost is therefore NEVER
+// stored here: it derives from linked Transaction rows under lib/pnl.ts
+// semantics, the same rule contractor stats use. `quotedCents` is stored
+// because it is a figure the contractor *told* the landlord, not a derivation.
+//
+// Dates that are claims about the landlord's calendar (reported/scheduled/due/
+// completed) are `YYYY-MM-DD` strings, not DateTime — a UTC-midnight instant
+// renders as the previous day for every viewer west of UTC.
+model WorkOrder {
+  id           String    @id @default(cuid())
+  accountId    String
+  propertyId   String
+  unitId       String? // null = property-level work (roof, grounds, exterior)
+  title        String
+  description  String?
+  status       String // WorkOrderStatus — stored; lateness derives from dueBy
+  priority     String // WorkOrderPriority
+  contractorId String? // assignment; null = unassigned or self-performed
+  reportedOn   String // YYYY-MM-DD, account-local calendar dates throughout
+  scheduledFor String?
+  dueBy        String?
+  completedOn  String?
+  quotedCents  Int?
+  source       String // WorkOrderSource — v1 only ever writes 'landlord'
+  tenantId     String? // who reported it / who is affected
+  notes        String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  archivedAt   DateTime?
+
+  account      Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  property     Property      @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  unit         Unit?         @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  contractor   Contractor?   @relation(fields: [contractorId], references: [id], onDelete: SetNull)
+  tenant       Tenant?       @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  transactions Transaction[]
+
+  @@index([accountId, status])
+  @@index([accountId, propertyId, archivedAt])
+  @@index([accountId, contractorId])
 }
 
 model Report {
@@ -644,15 +703,15 @@ model ChatMessage {
 }
 
 model Integration {
-  id          String   @id @default(cuid())
-  accountId   String
-  type        String // IntegrationType (@hearth/shared): plaid | stripe | docusign | email | mcp_client
-  name        String
-  status      String // IntegrationStatus (@hearth/shared): connected | disconnected | mock
-  externalRef String?
-  scopesJson  String    @default("[]")
-  configJson  String    @default("{}") // provider-specific config, e.g. Plaid { accessTokenEncrypted, itemId, cursor }
-  lastSyncedAt DateTime? // plaid: last transaction import (display + import cooldown)
+  id               String    @id @default(cuid())
+  accountId        String
+  type             String // IntegrationType (@hearth/shared): plaid | stripe | docusign | email | mcp_client
+  name             String
+  status           String // IntegrationStatus (@hearth/shared): connected | disconnected | mock
+  externalRef      String?
+  scopesJson       String    @default("[]")
+  configJson       String    @default("{}") // provider-specific config, e.g. Plaid { accessTokenEncrypted, itemId, cursor }
+  lastSyncedAt     DateTime? // plaid: last transaction import (display + import cooldown)
   // Nightly-sync health (jobs.service.ts): the scheduler bumps the failure
   // count + stamps the last error on a bank feed that throws, and a later
   // successful sync resets all three. Surfaces the bank_sync_failing insight
@@ -660,7 +719,7 @@ model Integration {
   lastSyncError    String?
   lastSyncErrorAt  DateTime?
   syncFailureCount Int       @default(0)
-  createdAt   DateTime  @default(now())
+  createdAt        DateTime  @default(now())
 
   account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
@@ -679,7 +738,7 @@ model PushDevice {
   // owner's device for per-user notification routing. Plain string, no FK
   // (matches the Document.entityId precedent).
   userId     String?
-  platform   String   // PushPlatform (@hearth/shared): ios
+  platform   String // PushPlatform (@hearth/shared): ios
   token      String   @unique // APNs device token
   createdAt  DateTime @default(now())
   lastSeenAt DateTime @default(now())
@@ -695,8 +754,8 @@ model PushDevice {
 model Feedback {
   id        String   @id @default(cuid())
   accountId String
-  userId    String?  // submitting User row (null in demo mode)
-  category  String   // FeedbackCategory (@hearth/shared): bug | idea | other
+  userId    String? // submitting User row (null in demo mode)
+  category  String // FeedbackCategory (@hearth/shared): bug | idea | other
   message   String
   pagePath  String?
   userAgent String?
@@ -749,11 +808,11 @@ model Document {
 // gone, so it cannot itself carry a foreign key to the thing it's attesting
 // was deleted.
 model DeletionLog {
-  id            String   @id @default(cuid())
-  accountId     String // the deleted account's id, kept as a plain string
-  accountEmail  String
-  requestedAt   DateTime // when the owner requested deletion (grace window start)
-  deletedAt     DateTime @default(now())
+  id           String   @id @default(cuid())
+  accountId    String // the deleted account's id, kept as a plain string
+  accountEmail String
+  requestedAt  DateTime // when the owner requested deletion (grace window start)
+  deletedAt    DateTime @default(now())
 
   @@index([accountId])
 }
