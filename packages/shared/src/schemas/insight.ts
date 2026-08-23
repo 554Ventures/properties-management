@@ -15,7 +15,7 @@ export const InsightSchema = z.object({
   id: z.string(),
   accountId: z.string(),
   scope: InsightScopeSchema,
-  type: z.string(), // rule id, e.g. "late_rent", "expense_spike", "renewal_window", "underperforming_property"
+  type: z.string(), // rule id, e.g. "late_rent", "expense_spike", "renewal_window", "underperforming_property", "work_order_emergency_open", "work_order_stale"
   severity: InsightSeveritySchema,
   title: z.string(),
   body: z.string(),

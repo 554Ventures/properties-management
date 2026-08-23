@@ -4,7 +4,7 @@
 // job rows format date/amount with an em-dash for a null property, archived
 // contractors show the visible marker instead of Delete, and the delete flow
 // archives then navigates back to the list.
-import type { ContractorDetailResponse } from '@hearth/shared';
+import type { ContractorDetailResponse, WorkOrderListRow } from '@hearth/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router';
@@ -13,6 +13,7 @@ import * as queries from '../api/queries';
 import { ToastProvider } from '../components/ui/Toast';
 import { formatDate } from '../lib/format';
 import { ContractorDetail } from '../pages/ContractorDetail';
+import { makeWorkOrder } from './propertyHubFixtures';
 
 vi.mock('../api/queries', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/queries')>();
@@ -22,6 +23,7 @@ vi.mock('../api/queries', async (importOriginal) => {
     useCreateContractor: vi.fn(),
     useUpdateContractor: vi.fn(),
     useArchiveContractor: vi.fn(),
+    useWorkOrders: vi.fn(),
   };
 });
 
@@ -75,6 +77,19 @@ function queryResult(
   } as unknown as ReturnType<typeof queries.useContractor>;
 }
 
+function workOrdersResult(
+  data: WorkOrderListRow[] | undefined,
+  opts: { isPending?: boolean; isError?: boolean } = {},
+) {
+  return {
+    data,
+    isPending: opts.isPending ?? false,
+    isError: opts.isError ?? false,
+    error: opts.isError ? new Error('boom') : null,
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof queries.useWorkOrders>;
+}
+
 /** Idle mutation stub, cast to the hook's own result type at the call site. */
 function mutationResult<T>(mutate = vi.fn()): T {
   return { mutate, isPending: false } as unknown as T;
@@ -88,6 +103,7 @@ const mockedContractor = vi.mocked(queries.useContractor);
 const mockedCreate = vi.mocked(queries.useCreateContractor);
 const mockedUpdate = vi.mocked(queries.useUpdateContractor);
 const mockedArchive = vi.mocked(queries.useArchiveContractor);
+const mockedWorkOrders = vi.mocked(queries.useWorkOrders);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -95,6 +111,8 @@ beforeEach(() => {
   mockedCreate.mockReturnValue(mutationResult<CreateResult>());
   mockedUpdate.mockReturnValue(mutationResult<UpdateResult>());
   mockedArchive.mockReturnValue(mutationResult<ArchiveResult>());
+  // Default: no open work orders, matching most seeded contractors.
+  mockedWorkOrders.mockReturnValue(workOrdersResult([]));
 });
 
 function renderPage() {
@@ -231,5 +249,47 @@ describe('ContractorDetail', () => {
     expect(modal.getByLabelText(/^Name/)).toHaveValue('Mario Rossi');
     expect(modal.getByLabelText(/^Website/)).toHaveValue('rossiplumbing.com');
     expect(modal.getByLabelText(/^Notes/)).toHaveValue('Fast and tidy.');
+  });
+
+  // --- Assigned work orders (PLAN-MAINTENANCE §6 item 5) -----------------
+
+  it('fetches open work orders scoped to this contractor', () => {
+    renderPage();
+    expect(mockedWorkOrders).toHaveBeenCalledWith({ contractorId: 'c1', openOnly: true }, true);
+  });
+
+  it('lists assigned open work orders above job history, with copy distinguishing outstanding work from paid history', () => {
+    mockedWorkOrders.mockReturnValue(
+      workOrdersResult([
+        makeWorkOrder('w1', 'Water heater noise', {
+          propertyLabel: 'Maple Duplex',
+          unitLabel: 'Unit A',
+          priority: 'emergency',
+        }),
+      ]),
+    );
+    renderPage();
+
+    const table = screen.getByRole('table', { name: 'Mario Rossi — open work orders' });
+    const link = within(table).getByRole('link', { name: 'Water heater noise' });
+    expect(link).toHaveAttribute('href', '/maintenance/w1');
+    expect(link.closest('tr')).toHaveTextContent('Maple Duplex · Unit A');
+    expect(within(table).getByText('Emergency')).toBeInTheDocument();
+
+    // The two sections' headings are distinguished in copy: outstanding vs.
+    // already paid.
+    expect(
+      screen.getByText(/What.s outstanding with Mario Rossi right now/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/What you.ve paid Mario Rossi/)).toBeInTheDocument();
+
+    // Assigned work orders renders before (above) job history in the DOM.
+    const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent);
+    expect(headings.indexOf('Assigned work orders')).toBeLessThan(headings.indexOf('Job history'));
+  });
+
+  it('shows a plain empty state when nothing is currently open with this contractor', () => {
+    renderPage();
+    expect(screen.getByText('Nothing open with Mario Rossi right now.')).toBeInTheDocument();
   });
 });

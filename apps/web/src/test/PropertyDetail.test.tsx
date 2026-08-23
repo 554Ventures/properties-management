@@ -20,6 +20,7 @@ import {
   makeProperty,
   makeTenant,
   makeUnit,
+  makeWorkOrder,
   moneyOnlyMember,
   PERIOD,
   pnl,
@@ -233,6 +234,85 @@ describe('needs attention triage', () => {
     );
     expect(screen.getAllByRole('listitem')).toHaveLength(1);
     expect(screen.getByRole('listitem')).toHaveTextContent('R. Chen · Unit E — 4 days late');
+  });
+});
+
+// --- Needs attention: open work orders (PLAN-MAINTENANCE §6 item 3) ------------
+
+describe('needs attention — open work orders', () => {
+  it('joins the triage list, each interleaved by severity — emergency with danger, overdue with warning, the rest with neutral — and each links to /maintenance/:id', async () => {
+    const workOrders = [
+      makeWorkOrder('w-rest', 'Paint touch-up', { unitLabel: null }),
+      makeWorkOrder('w-overdue', 'Gutter cleaning', { overdue: true, dueBy: '2026-07-01' }),
+      makeWorkOrder('w-emergency', 'Burst pipe', { priority: 'emergency', unitLabel: 'Unit B' }),
+    ];
+    renderHub(
+      hubRoutes([{ method: 'GET', path: '/api/v1/work-orders', body: workOrders }]),
+    );
+    const card = await findTriageCard();
+    const rows = within(card).getAllByRole('listitem');
+    // 5 unit-derived rows + 3 work-order rows.
+    expect(rows).toHaveLength(8);
+
+    // Emergency lands right after the existing danger-tier row (late rent),
+    // ahead of every warning-tier row.
+    expect(rows[1]).toHaveTextContent('Burst pipe · Unit B — emergency');
+    expect(within(rows[1]!).getByText('Emergency')).toBeInTheDocument();
+    expect(within(rows[1]!).getByRole('link', { name: 'Open work order →' })).toHaveAttribute(
+      'href',
+      '/maintenance/w-emergency',
+    );
+
+    // Overdue lands with the warning tier, after the other unit-derived
+    // warning rows (lease ending, vacancy, partial rent).
+    expect(rows[5]).toHaveTextContent('Gutter cleaning — overdue');
+    expect(within(rows[5]!).getByText('Overdue')).toBeInTheDocument();
+    expect(within(rows[5]!).getByRole('link', { name: 'Open work order →' })).toHaveAttribute(
+      'href',
+      '/maintenance/w-overdue',
+    );
+
+    // The rest lands with the neutral tier, after the awaiting-signature row.
+    expect(rows[7]).toHaveTextContent('Paint touch-up — open');
+    expect(within(rows[7]!).getByRole('link', { name: 'Open work order →' })).toHaveAttribute(
+      'href',
+      '/maintenance/w-rest',
+    );
+  });
+
+  it('mentions "no open work orders" in the all-clear line once the (empty) work-order query has settled', async () => {
+    const detail = {
+      property: makeProperty(),
+      units: [
+        makeUnit('u1', 'Unit A', {
+          status: 'occupied' as const,
+          currentLease: makeLease('l1', 'u1', 120000, [makeTenant('t1', 'A. Calm')]),
+          rent: {
+            period: PERIOD,
+            status: 'paid' as const,
+            daysLate: null,
+            paidCents: 120000,
+            amountCents: 120000,
+            dueDate: isoIn(-12),
+          },
+          leaseCount: 1,
+        }),
+      ],
+      pnl,
+      insights: [],
+    };
+    renderHub(
+      hubRoutes([
+        { method: 'GET', path: '/api/v1/properties/p1', body: detail },
+        { method: 'GET', path: '/api/v1/work-orders', body: [] },
+      ]),
+    );
+
+    expect(
+      await screen.findByText(
+        /All clear at 12 Maple St — rent on track, no leases ending in the next 60 days, and no open work orders\./,
+      ),
+    ).toBeInTheDocument();
   });
 });
 

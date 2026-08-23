@@ -13,6 +13,7 @@ import {
   archivedUnitDetailResponse,
   isoIn,
   makeFetch,
+  makeWorkOrder,
   moneyOnlyMember,
   ownerUser,
   PERIOD,
@@ -310,5 +311,43 @@ describe('financials', () => {
     renderUnit(unitRoutes());
     const link = await screen.findByRole('link', { name: 'View property transactions →' });
     expect(link).toHaveAttribute('href', '/money?propertyId=p1');
+  });
+});
+
+// --- Work order history (PLAN-MAINTENANCE §6 item 4) --------------------------
+
+describe('work order history', () => {
+  it('lists this unit\'s work orders, status/priority/schedule/cost, each linking to /maintenance/:id', async () => {
+    const workOrders = [
+      makeWorkOrder('w1', 'Faucet replacement', {
+        status: 'completed',
+        priority: 'normal',
+        contractorName: 'Rivera Plumbing',
+        scheduledFor: '2026-06-10',
+        costCents: 24500,
+      }),
+    ];
+    renderUnit(
+      unitRoutes([{ method: 'GET', path: '/api/v1/work-orders', body: workOrders }]),
+    );
+
+    const table = await screen.findByRole('table', { name: 'Unit A — work order history' });
+    const link = within(table).getByRole('link', { name: 'Faucet replacement' });
+    expect(link).toHaveAttribute('href', '/maintenance/w1');
+    const row = link.closest('tr') as HTMLElement;
+    expect(within(row).getByText('Completed')).toBeInTheDocument();
+    expect(within(row).getByText('Normal')).toBeInTheDocument();
+    expect(within(row).getByText('Rivera Plumbing')).toBeInTheDocument();
+    expect(within(row).getByText('Jun 10, 2026')).toBeInTheDocument();
+    expect(within(row).getByText('$245')).toBeInTheDocument();
+  });
+
+  it('shows the plain-text empty state when the unit has no work orders on file', async () => {
+    renderUnit(unitRoutes([{ method: 'GET', path: '/api/v1/work-orders', body: [] }]));
+
+    expect(
+      await screen.findByText('No work orders recorded for this unit yet.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('table', { name: /work order history/ })).not.toBeInTheDocument();
   });
 });

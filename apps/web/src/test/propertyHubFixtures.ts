@@ -18,6 +18,7 @@ import type {
   RenewalDraftResponse,
   TenantOnLease,
   UnitDetailResponse,
+  WorkOrderListRow,
 } from '@hearth/shared';
 import { InsightSchema } from '@hearth/shared';
 import { vi } from 'vitest';
@@ -93,6 +94,47 @@ export function makeUnit(
     rent: null,
     leaseCount: 0,
     pendingLease: null,
+    ...overrides,
+  };
+}
+
+/** A work-order list row (Phase 1's `WorkOrderListRow`) for the Phase-2
+ *  ambient surfaces — property triage, unit history, contractor assignment. */
+export function makeWorkOrder(
+  id: string,
+  title: string,
+  overrides: Partial<WorkOrderListRow> = {},
+): WorkOrderListRow {
+  return {
+    id,
+    accountId: 'acc1',
+    propertyId: 'p1',
+    unitId: null,
+    title,
+    description: null,
+    status: 'open',
+    priority: 'normal',
+    contractorId: null,
+    reportedOn: '2026-07-01',
+    scheduledFor: null,
+    dueBy: null,
+    completedOn: null,
+    quotedCents: null,
+    source: 'landlord',
+    tenantId: null,
+    notes: null,
+    createdAt: '2026-07-01T00:00:00.000Z',
+    updatedAt: '2026-07-01T00:00:00.000Z',
+    archivedAt: null,
+    costCents: 0,
+    linkedTransactionCount: 0,
+    quoteVarianceCents: null,
+    daysOpen: 3,
+    overdue: false,
+    propertyLabel: '12 Maple St',
+    unitLabel: null,
+    contractorName: null,
+    tenantName: null,
     ...overrides,
   };
 }

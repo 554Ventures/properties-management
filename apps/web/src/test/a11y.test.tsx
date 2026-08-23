@@ -48,6 +48,7 @@ import {
   makeFetch,
   makeInsight,
   makeProperty,
+  makeWorkOrder,
   ownerUser,
   PERIOD,
   pnl,
@@ -1112,7 +1113,20 @@ describe('property hub accessibility', () => {
     ];
     vi.stubGlobal(
       'fetch',
-      makeFetch(hubRoutes([{ method: 'GET', path: '/api/v1/properties/p1', body: detail }])),
+      makeFetch(
+        hubRoutes([
+          { method: 'GET', path: '/api/v1/properties/p1', body: detail },
+          // An emergency open work order joins the triage list (PLAN-MAINTENANCE
+          // §6 item 3) — covers the danger-tier badge + "Open work order →" link.
+          {
+            method: 'GET',
+            path: '/api/v1/work-orders',
+            body: [
+              makeWorkOrder('w1', 'Burst pipe', { priority: 'emergency', unitLabel: 'Unit A' }),
+            ],
+          },
+        ]),
+      ),
     );
     const { container } = renderPropertyHub();
 
@@ -1125,6 +1139,7 @@ describe('property hub accessibility', () => {
     // AI-sourced/-enriched rows carry the ✦ pill — two "suggestion" pills).
     await screen.findAllByText('suggestion');
     await screen.findByText('Utilities spending spiked at 12 Maple St');
+    await screen.findByRole('link', { name: 'Open work order →' });
 
     const results = await axe.run(container, {
       rules: { 'color-contrast': { enabled: false } },
@@ -1192,6 +1207,14 @@ describe('unit hub accessibility', () => {
         { method: 'GET', path: '/api/v1/units/u1', body: withPayments },
         { method: 'GET', path: '/api/v1/settings/me', body: ownerUser },
         { method: 'GET', path: '/api/v1/documents', body: { documents: [], total: 0 } },
+        // Work order history (PLAN-MAINTENANCE §6 item 4) — one completed row
+        // covers the populated table; the axe run also exercises its status/
+        // priority badges.
+        {
+          method: 'GET',
+          path: '/api/v1/work-orders',
+          body: [makeWorkOrder('w1', 'Faucet replacement', { status: 'completed' })],
+        },
       ]),
     );
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -1219,7 +1242,8 @@ describe('unit hub accessibility', () => {
   it('populated unit hub (triage, payment history, documents) has no axe violations', async () => {
     const { container } = renderUnitHub();
 
-    // Triage, payment history, and documents all settled.
+    // Triage, payment history, work order history, and documents all settled.
+    await screen.findByRole('table', { name: 'Unit A — work order history' });
     await screen.findByRole('heading', { name: 'Needs attention' });
     await screen.findByRole('table', { name: /rent payment history/ });
     await screen.findByText('No documents on file.');
@@ -1350,6 +1374,14 @@ describe('contractor directory accessibility', () => {
           },
         ],
       },
+      // Assigned open work orders (PLAN-MAINTENANCE §6 item 5), above job
+      // history — covers the priority/status badges and its distinct copy.
+      '/api/v1/work-orders': [
+        makeWorkOrder('w1', 'Water heater noise', {
+          propertyLabel: 'Maple Duplex',
+          priority: 'emergency',
+        }),
+      ],
     };
     vi.stubGlobal(
       'fetch',
@@ -1388,6 +1420,7 @@ describe('contractor directory accessibility', () => {
 
     await screen.findByRole('heading', { name: 'Mario Rossi' });
     await screen.findByText('Water heater replacement');
+    await screen.findByRole('table', { name: 'Mario Rossi — open work orders' });
 
     const results = await axe.run(container, {
       rules: { 'color-contrast': { enabled: false } },
