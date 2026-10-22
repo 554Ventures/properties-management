@@ -184,6 +184,8 @@ async function runLoop(params: LoopParams): Promise<void> {
                 model: ev.model,
                 inputTokens: ev.inputTokens,
                 outputTokens: ev.outputTokens,
+                cacheReadInputTokens: ev.cacheReadInputTokens,
+                cacheCreationInputTokens: ev.cacheCreationInputTokens,
               },
             },
             'ai token usage',

@@ -105,6 +105,8 @@ export class MockAiClient implements AiClient {
       model: 'mock',
       inputTokens: Math.ceil(JSON.stringify(params.messages).length / 4),
       outputTokens: Math.ceil(outputChars / 4),
+      cacheReadInputTokens: 0, // nothing is cached offline
+      cacheCreationInputTokens: 0,
     };
   }
 }

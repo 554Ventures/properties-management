@@ -8,6 +8,7 @@
 //
 // Runtime secrets (set once with `npx wrangler secret put <NAME>`):
 //   DATABASE_URL, SUPABASE_URL, PUBLIC_APP_URL, ANTHROPIC_API_KEY, CRON_SECRET,
+//   ANTHROPIC_MODEL (optional — overrides DEFAULT_MODEL in ai/anthropic.ts),
 //   PLAID_CLIENT_ID, PLAID_SECRET, PLAID_ENV, INTEGRATION_ENCRYPTION_KEY
 //   (Plaid is optional — the app falls back to a mock adapter until all
 //   four are set; account setup §6),

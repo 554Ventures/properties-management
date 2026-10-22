@@ -2,7 +2,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { AiClient, AiStreamParams, ProviderEvent } from './client';
 
-export const DEFAULT_MODEL = 'claude-sonnet-5';
+export const DEFAULT_MODEL = 'claude-sonnet-5-5';
 const MAX_TOKENS = 4096;
 
 export class AnthropicAiClient implements AiClient {
@@ -23,11 +23,15 @@ export class AnthropicAiClient implements AiClient {
     let stopReason: string | null = null;
     let inputTokens = 0;
     let outputTokens = 0;
+    let cacheReadInputTokens = 0;
+    let cacheCreationInputTokens = 0;
 
     for await (const ev of stream) {
       switch (ev.type) {
         case 'message_start':
           inputTokens = ev.message.usage.input_tokens;
+          cacheReadInputTokens = ev.message.usage.cache_read_input_tokens ?? 0;
+          cacheCreationInputTokens = ev.message.usage.cache_creation_input_tokens ?? 0;
           break;
         case 'content_block_start':
           if (ev.content_block.type === 'tool_use') {
@@ -78,7 +82,14 @@ export class AnthropicAiClient implements AiClient {
       }
     }
 
-    yield { type: 'usage', model, inputTokens, outputTokens };
+    yield {
+      type: 'usage',
+      model,
+      inputTokens,
+      outputTokens,
+      cacheReadInputTokens,
+      cacheCreationInputTokens,
+    };
     yield {
       type: 'stop',
       reason:
