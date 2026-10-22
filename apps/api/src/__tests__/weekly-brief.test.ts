@@ -23,6 +23,11 @@ import { runDailyJobs } from '../services/jobs.service';
 import * as pushService from '../services/push.service';
 import * as reportService from '../services/report.service';
 
+// Mock mode must not depend on the ambient environment.
+beforeAll(() => {
+  delete process.env.ANTHROPIC_API_KEY;
+});
+
 let app: FastifyInstance;
 let accountId: string;
 let tz: string;

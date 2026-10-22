@@ -18,7 +18,7 @@ import {
   buildReceiptRequest,
   createReceiptExtractor,
   mockReceiptExtractor,
-  parseReceiptToolUse,
+  parseReceiptResponse,
   type ReceiptExtractionInput,
 } from '../ai/receipt';
 import { resolveByLabel, resolveByName } from '../services/transaction.service';
@@ -35,8 +35,9 @@ function extractionInput(): ReceiptExtractionInput {
   };
 }
 
-function toolUseContent(input: Record<string, unknown>) {
-  return [{ type: 'tool_use', id: 'tu1', name: 'record_receipt', input }];
+/** Structured outputs come back as a text block carrying the JSON object. */
+function jsonContent(input: Record<string, unknown>) {
+  return [{ type: 'text', text: JSON.stringify(input) }];
 }
 
 beforeEach(() => {
@@ -49,7 +50,7 @@ afterEach(() => {
 });
 
 describe('buildReceiptRequest', () => {
-  it('puts the base64 image block before the text block and forces the tool', () => {
+  it('puts the base64 image block before the text block and asks for the json schema', () => {
     const req = buildReceiptRequest(extractionInput());
     const content = req.messages[0]!.content as unknown as Array<Record<string, unknown>>;
     expect(content[0]).toMatchObject({
@@ -57,7 +58,15 @@ describe('buildReceiptRequest', () => {
       source: { type: 'base64', media_type: 'image/png', data: PNG.toString('base64') },
     });
     expect(content[1]).toMatchObject({ type: 'text' });
-    expect(req.tool_choice).toEqual({ type: 'tool', name: 'record_receipt' });
+    // Forced tool_choice is a 400 on current models; a json_schema output
+    // format is the supported way to pin the response shape.
+    expect(req).not.toHaveProperty('tool_choice');
+    expect(req).not.toHaveProperty('tools');
+    expect(req.output_config?.format?.type).toBe('json_schema');
+    expect(req.output_config?.format?.schema).toMatchObject({
+      type: 'object',
+      properties: expect.objectContaining({ amount_cents: expect.anything() }),
+    });
   });
 
   it('lists the category and property candidates in the prompt text', () => {
@@ -82,10 +91,10 @@ describe('buildReceiptRequest', () => {
   });
 });
 
-describe('parseReceiptToolUse', () => {
+describe('parseReceiptResponse', () => {
   it('normalizes a happy-path extraction (date -> ISO UTC midnight)', () => {
-    const result = parseReceiptToolUse(
-      toolUseContent({
+    const result = parseReceiptResponse(
+      jsonContent({
         vendor: 'ACE Hardware #2214',
         amount_cents: 4327,
         date: '2026-07-01',
@@ -113,16 +122,16 @@ describe('parseReceiptToolUse', () => {
       confidence: 0.5,
     };
     expect(
-      parseReceiptToolUse(toolUseContent({ ...base, amount_cents: 43.27 }) as never).amountCents,
+      parseReceiptResponse(jsonContent({ ...base, amount_cents: 43.27 }) as never).amountCents,
     ).toBeNull();
     expect(
-      parseReceiptToolUse(toolUseContent({ ...base, amount_cents: -5 }) as never).amountCents,
+      parseReceiptResponse(jsonContent({ ...base, amount_cents: -5 }) as never).amountCents,
     ).toBeNull();
   });
 
   it('nulls an unparseable date and clamps confidence', () => {
-    const result = parseReceiptToolUse(
-      toolUseContent({
+    const result = parseReceiptResponse(
+      jsonContent({
         vendor: 'X',
         amount_cents: 100,
         date: 'July 1',
@@ -135,7 +144,7 @@ describe('parseReceiptToolUse', () => {
     expect(result.confidence).toBe(1);
   });
 
-  it('degrades to all-nulls + confidence 0 when the tool call is missing or malformed', () => {
+  it('degrades to all-nulls + confidence 0 when the response is missing or malformed', () => {
     const empty = {
       vendor: null,
       amountCents: null,
@@ -144,8 +153,9 @@ describe('parseReceiptToolUse', () => {
       propertyLabel: null,
       confidence: 0,
     };
-    expect(parseReceiptToolUse([{ type: 'text', text: 'no tool' }] as never)).toEqual(empty);
-    expect(parseReceiptToolUse(toolUseContent({ vendor: 42 }) as never)).toEqual(empty);
+    expect(parseReceiptResponse([] as never)).toEqual(empty); // no text block at all
+    expect(parseReceiptResponse([{ type: 'text', text: 'not json' }] as never)).toEqual(empty);
+    expect(parseReceiptResponse(jsonContent({ vendor: 42 }) as never)).toEqual(empty);
   });
 });
 
@@ -160,7 +170,7 @@ describe('createReceiptExtractor', () => {
     messagesCreate.mockResolvedValue({
       model: 'claude-sonnet-5',
       usage: { input_tokens: 1200, output_tokens: 80 },
-      content: toolUseContent({
+      content: jsonContent({
         vendor: 'Reyes Plumbing',
         amount_cents: 21500,
         date: '2026-07-02',
