@@ -37,6 +37,12 @@ export class HearthApi extends Container<Env> {
     // back to the request host (fine in dev, wrong behind the Worker).
     PUBLIC_APP_URL: secrets.PUBLIC_APP_URL,
     ANTHROPIC_API_KEY: secrets.ANTHROPIC_API_KEY,
+    // Optional model override. Unset is the normal case — the container falls
+    // back to DEFAULT_MODEL in ai/anthropic.ts. definedEnvVars drops it when
+    // empty; forwarded raw it would arrive as the literal string "undefined".
+    // Set it with `wrangler secret put ANTHROPIC_MODEL` to re-point production
+    // without a deploy.
+    ANTHROPIC_MODEL: secrets.ANTHROPIC_MODEL,
     CRON_SECRET: secrets.CRON_SECRET,
     PLAID_CLIENT_ID: secrets.PLAID_CLIENT_ID,
     PLAID_SECRET: secrets.PLAID_SECRET,
@@ -75,6 +81,7 @@ interface Env {
   SUPABASE_URL: string;
   PUBLIC_APP_URL: string;
   ANTHROPIC_API_KEY: string;
+  ANTHROPIC_MODEL: string;
   CRON_SECRET: string;
   PLAID_CLIENT_ID: string;
   PLAID_SECRET: string;

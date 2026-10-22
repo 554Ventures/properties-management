@@ -1,5 +1,14 @@
 // System prompt for the 554 Properties assistant (ARCHITECTURE §6); its
 // user-facing name comes from the shared ASSISTANT_NAME constant.
+//
+// Returned as two blocks, and the split is load-bearing: prompt caching is a
+// prefix match, so everything after the first byte that changes between
+// requests is uncacheable. Block 1 is the identity + rules — identical for
+// every account on every turn, and the cache breakpoint sits at its end.
+// Block 2 carries what actually varies (account figures, today's date, the
+// screen the user is on). Putting the volatile line first, as this prompt
+// used to, made the whole rules block uncacheable.
+import type { TextBlockParam } from '@anthropic-ai/sdk/resources/messages/messages';
 import { ASSISTANT_NAME, RentPaymentMethodSchema, ReportTypeSchema } from '@hearth/shared';
 
 export interface SystemPromptContext {
@@ -11,11 +20,16 @@ export interface SystemPromptContext {
   screen?: { screen: string; entityId?: string };
 }
 
-export function buildSystemPrompt(ctx: SystemPromptContext): string {
+/**
+ * The invariant half: identity and rules. Byte-identical across accounts and
+ * turns, which is what makes it cacheable. Nothing interpolated here may vary
+ * per request — the two schema enums below are static shared constants.
+ */
+function staticPrompt(): string {
   const lines = [
     `You are ${ASSISTANT_NAME}, the friendly financial assistant built into 554 Properties, a rental-property management app. You help a landlord understand and manage their portfolio: cash flow, rent collection, expenses, leases, insights, reports and taxes.`,
     '',
-    `Account context: you are assisting ${ctx.accountName}, who owns ${ctx.propertyCount} properties with ${ctx.unitCount} units. Today's date is ${ctx.todayIso}; the current rent period is ${ctx.period}. All money values in tool results are integer cents.`,
+    'All money values in tool results are integer cents.',
     '',
     'Rules:',
     '- Always ground every number in a tool result from this conversation. Never fabricate or estimate figures — if you have not fetched it, fetch it first.',
@@ -49,6 +63,14 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
     '- Use ask_user_question ONLY for genuine user-preference ambiguity (e.g. which tax year), with 2-4 mutually exclusive options. Never use it for facts a tool can answer.',
     '- Keep prose concise and concrete; plain language over jargon.',
   ];
+  return lines.join('\n');
+}
+
+/** The per-request half: account figures, the date, and the current screen. */
+function volatilePrompt(ctx: SystemPromptContext): string {
+  const lines = [
+    `Account context: you are assisting ${ctx.accountName}, who owns ${ctx.propertyCount} properties with ${ctx.unitCount} units. Today's date is ${ctx.todayIso}; the current rent period is ${ctx.period}.`,
+  ];
   if (ctx.screen) {
     lines.push(
       '',
@@ -56,4 +78,16 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
     );
   }
   return lines.join('\n');
+}
+
+/**
+ * Static block first with the cache breakpoint on it, volatile block after.
+ * Requests render as tools -> system -> messages, so this one breakpoint also
+ * covers the tool registry (static and identically ordered for every user).
+ */
+export function buildSystemPrompt(ctx: SystemPromptContext): TextBlockParam[] {
+  return [
+    { type: 'text', text: staticPrompt(), cache_control: { type: 'ephemeral' } },
+    { type: 'text', text: volatilePrompt(ctx) },
+  ];
 }
