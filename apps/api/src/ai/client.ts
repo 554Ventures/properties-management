@@ -4,6 +4,7 @@
 import type {
   MessageParam,
   RedactedThinkingBlockParam,
+  TextBlockParam,
   ThinkingBlockParam,
   Tool,
 } from '@anthropic-ai/sdk/resources/messages/messages';
@@ -22,11 +23,22 @@ export type ProviderEvent =
   // One per model call, before 'stop' — the agent loop logs it per account/
   // session for cost visibility (deployment plan §4.5). Mock mode reports
   // model 'mock' with character-estimate token counts.
-  | { type: 'usage'; model: string; inputTokens: number; outputTokens: number }
+  | {
+      type: 'usage';
+      model: string;
+      inputTokens: number;
+      outputTokens: number;
+      // Prompt-cache counters: a non-zero read is the only proof caching is
+      // actually working in a deployed environment.
+      cacheReadInputTokens: number;
+      cacheCreationInputTokens: number;
+    }
   | { type: 'stop'; reason: 'end_turn' | 'tool_use' | 'max_tokens' };
 
 export interface AiStreamParams {
-  system: string;
+  // Blocks rather than a string so a cache_control breakpoint can sit on the
+  // static half (see ai/prompts.ts). The mock ignores this field entirely.
+  system: TextBlockParam[];
   messages: MessageParam[];
   tools: Tool[];
 }

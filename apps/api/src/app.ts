@@ -30,6 +30,7 @@ import { unitsRoutes } from './routes/units';
 import { valuationsRoutes } from './routes/valuations';
 import { wellKnownRoutes } from './routes/well-known';
 import { workOrdersRoutes } from './routes/work-orders';
+import { DEFAULT_MODEL } from './ai/anthropic';
 
 export async function buildApp(opts: { logger?: boolean } = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: opts.logger ?? false });
@@ -72,7 +73,17 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
     // The 429 is shaped into the ApiError envelope by error-handler.ts.
   });
 
-  app.get('/api/v1/healthz', async () => ({ status: 'ok' }));
+  // `ai` is deliberately on the open health route: createAiClient() falls back
+  // to the mock *silently* when ANTHROPIC_API_KEY is missing, and a Worker
+  // secret that never reaches the container has bitten this deployment before.
+  // Reports configuration only — never the key itself.
+  app.get('/api/v1/healthz', async () => ({
+    status: 'ok',
+    ai: {
+      mode: process.env.ANTHROPIC_API_KEY ? 'anthropic' : 'mock',
+      model: process.env.ANTHROPIC_MODEL ?? DEFAULT_MODEL,
+    },
+  }));
 
   // Root-mounted (paths fixed by the MCP spec / RFC 9728, not ours to prefix).
   await app.register(wellKnownRoutes);

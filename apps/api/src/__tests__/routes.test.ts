@@ -38,6 +38,7 @@ import {
 } from '../../prisma/seed-constants';
 import { buildApp } from '../app';
 import { currentPeriod } from '../lib/dates';
+import { DEFAULT_MODEL } from '../ai/anthropic';
 
 let app: FastifyInstance;
 
@@ -57,7 +58,12 @@ async function getJson(url: string): Promise<unknown> {
 
 describe('GET endpoints satisfy the shared response schemas', () => {
   it('/healthz', async () => {
-    expect(await getJson('/api/v1/healthz')).toEqual({ status: 'ok' });
+    // `ai` reports which client is live, so a prod container that never
+    // received ANTHROPIC_API_KEY is visible instead of silently mock.
+    expect(await getJson('/api/v1/healthz')).toEqual({
+      status: 'ok',
+      ai: { mode: 'mock', model: DEFAULT_MODEL },
+    });
   });
 
   it('/properties — 9 rows with derived stats', async () => {
