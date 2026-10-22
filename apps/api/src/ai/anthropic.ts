@@ -19,6 +19,7 @@ export class AnthropicAiClient implements AiClient {
     });
 
     let pendingTool: { id: string; name: string; json: string } | null = null;
+    let pendingThinking: { thinking: string; signature: string } | null = null;
     let stopReason: string | null = null;
     let inputTokens = 0;
     let outputTokens = 0;
@@ -31,6 +32,11 @@ export class AnthropicAiClient implements AiClient {
         case 'content_block_start':
           if (ev.content_block.type === 'tool_use') {
             pendingTool = { id: ev.content_block.id, name: ev.content_block.name, json: '' };
+          } else if (ev.content_block.type === 'thinking') {
+            pendingThinking = { thinking: '', signature: '' };
+          } else if (ev.content_block.type === 'redacted_thinking') {
+            // Opaque and delivered whole — no deltas follow.
+            yield { type: 'thinking', block: { type: 'redacted_thinking', data: ev.content_block.data } };
           }
           break;
         case 'content_block_delta':
@@ -38,6 +44,10 @@ export class AnthropicAiClient implements AiClient {
             yield { type: 'text_delta', text: ev.delta.text };
           } else if (ev.delta.type === 'input_json_delta' && pendingTool) {
             pendingTool.json += ev.delta.partial_json;
+          } else if (ev.delta.type === 'thinking_delta' && pendingThinking) {
+            pendingThinking.thinking += ev.delta.thinking;
+          } else if (ev.delta.type === 'signature_delta' && pendingThinking) {
+            pendingThinking.signature += ev.delta.signature;
           }
           break;
         case 'content_block_stop':
@@ -49,6 +59,16 @@ export class AnthropicAiClient implements AiClient {
               input: pendingTool.json ? JSON.parse(pendingTool.json) : {},
             };
             pendingTool = null;
+          } else if (pendingThinking) {
+            yield {
+              type: 'thinking',
+              block: {
+                type: 'thinking',
+                thinking: pendingThinking.thinking,
+                signature: pendingThinking.signature,
+              },
+            };
+            pendingThinking = null;
           }
           break;
         case 'message_delta':

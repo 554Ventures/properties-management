@@ -7,7 +7,9 @@ import { type AskUserQuestionAnswer, type ContentBlock, type SseEventName } from
 import { ZodError } from 'zod';
 import type {
   MessageParam,
+  RedactedThinkingBlockParam,
   TextBlockParam,
+  ThinkingBlockParam,
   ToolResultBlockParam,
   ToolUseBlockParam,
 } from '@anthropic-ai/sdk/resources/messages/messages';
@@ -135,7 +137,9 @@ async function runLoop(params: LoopParams): Promise<void> {
   const ai = createAiClient();
 
   for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
-    const assistantContent: Array<TextBlockParam | ToolUseBlockParam> = [];
+    const assistantContent: Array<
+      TextBlockParam | ToolUseBlockParam | ThinkingBlockParam | RedactedThinkingBlockParam
+    > = [];
     const toolUses: Array<{ id: string; name: string; input: unknown }> = [];
     let text = '';
     let textIndex = -1;
@@ -157,6 +161,13 @@ async function runLoop(params: LoopParams): Promise<void> {
           }
           text += ev.text;
           emit('text_delta', { index: textIndex, delta: ev.text });
+        } else if (ev.type === 'thinking') {
+          // Replayed verbatim in the assistant turn below: current models bind
+          // thinking blocks to the conversation, so dropping one is a history
+          // edit that fails the next tool iteration. Never emitted to the SSE
+          // stream — this is provider bookkeeping, not user-facing content.
+          flushText();
+          assistantContent.push(ev.block);
         } else if (ev.type === 'tool_use') {
           flushText();
           assistantContent.push({ type: 'tool_use', id: ev.id, name: ev.name, input: ev.input });

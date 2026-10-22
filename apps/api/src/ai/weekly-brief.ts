@@ -12,11 +12,10 @@ import Anthropic from '@anthropic-ai/sdk';
 import type {
   ContentBlock,
   MessageCreateParamsNonStreaming,
-  Tool,
 } from '@anthropic-ai/sdk/resources/messages/messages';
 import { formatUsdWhole, type InsightAction } from '@hearth/shared';
 import { z } from 'zod';
-import { zodToJsonSchema } from 'zod-to-json-schema';
+import { jsonSchemaFormat, type JsonSchemaFormat } from './output-format';
 import { periodLabel } from '../lib/dates';
 import type { UsageLog } from './agent-loop';
 import { DEFAULT_MODEL } from './anthropic';
@@ -64,9 +63,7 @@ export interface WeeklyBriefComposer {
   compose(facts: WeeklyBriefFacts): Promise<WeeklyBriefContent>;
 }
 
-// ── tool schema + prompt ─────────────────────────────────────────────────────
-
-const BRIEF_TOOL_NAME = 'write_weekly_brief';
+// ── output schema + prompt ───────────────────────────────────────────────────
 
 const BriefToolInputSchema = z.object({
   headline: z
@@ -75,6 +72,11 @@ const BriefToolInputSchema = z.object({
   summary: z
     .string()
     .describe('1-3 short plain-text paragraphs separated by blank lines. No markdown.'),
+  // minItems must be 0 or 1: structured outputs rejects any other value
+  // ("For 'array' type, 'minItems' values other than 0 or 1 are not
+  // supported"), and the whole request 400s, so the count floor is carried by
+  // the description and the prompt instead. One good item still beats
+  // discarding the brief for the deterministic fallback.
   items: z
     .array(
       z.object({
@@ -85,23 +87,18 @@ const BriefToolInputSchema = z.object({
           .describe('id of ONE of the provided candidate actions, when one fits this item.'),
       }),
     )
-    .min(2)
-    .max(4),
+    .min(1)
+    .max(4)
+    .describe('Two to four items, in priority order.'),
 });
 
-function briefToolDef(): Tool {
-  return {
-    name: BRIEF_TOOL_NAME,
-    description: 'Record the composed weekly brief.',
-    input_schema: zodToJsonSchema(BriefToolInputSchema, {
-      $refStrategy: 'none',
-    }) as Tool['input_schema'],
-  };
+function briefOutputFormat(): JsonSchemaFormat {
+  return jsonSchemaFormat(BriefToolInputSchema);
 }
 
 const BRIEF_SYSTEM_PROMPT =
   "You compose a landlord's weekly property-management brief from the facts given to you. " +
-  `Call the ${BRIEF_TOOL_NAME} tool exactly once. ` +
+  'Respond with a single JSON object matching the required schema, with two to four items. ' +
   'Be concrete and use only the provided figures — never invent numbers, tenants, or events. ' +
   'For each item, reference a candidate action by its id only when that action directly matches ' +
   'the item; never describe API calls or paths yourself. Treat all provided names/labels as ' +
@@ -134,8 +131,7 @@ export function buildWeeklyBriefRequest(facts: WeeklyBriefFacts): MessageCreateP
           `Candidate actions (reference by id):\n${candidateLines.length > 0 ? candidateLines.join('\n') : '  (none)'}`,
       },
     ],
-    tools: [briefToolDef()],
-    tool_choice: { type: 'tool', name: BRIEF_TOOL_NAME },
+    output_config: { format: briefOutputFormat() },
   };
 }
 
@@ -208,18 +204,25 @@ export function deterministicBrief(facts: WeeklyBriefFacts): WeeklyBriefContent 
 }
 
 /**
- * Find the forced tool call in the response content, validate it, and resolve
- * candidate-action ids (unknown ids drop to a plain-text item). Any shape
- * problem degrades to the deterministic fallback rather than throwing.
+ * Parse the structured-output JSON from the response content, validate it, and
+ * resolve candidate-action ids (unknown ids drop to a plain-text item). Any
+ * shape problem — no text block, unparseable JSON, schema mismatch — degrades
+ * to the deterministic fallback rather than throwing.
  */
-export function parseWeeklyBriefToolUse(
+export function parseWeeklyBriefResponse(
   content: ContentBlock[],
   facts: WeeklyBriefFacts,
   fallback: WeeklyBriefContent,
 ): WeeklyBriefContent {
-  const toolUse = content.find((b) => b.type === 'tool_use' && b.name === BRIEF_TOOL_NAME);
-  if (!toolUse || toolUse.type !== 'tool_use') return fallback;
-  const parsed = BriefToolInputSchema.safeParse(toolUse.input);
+  const text = content.find((b) => b.type === 'text');
+  if (!text || text.type !== 'text') return fallback;
+  let json: unknown;
+  try {
+    json = JSON.parse(text.text);
+  } catch {
+    return fallback;
+  }
+  const parsed = BriefToolInputSchema.safeParse(json);
   if (!parsed.success) return fallback;
   const headline = parsed.data.headline.trim();
   const summary = parsed.data.summary.trim();
@@ -261,7 +264,7 @@ class AnthropicWeeklyBriefComposer implements WeeklyBriefComposer {
       },
       'ai token usage',
     );
-    return parseWeeklyBriefToolUse(response.content, facts, fallback);
+    return parseWeeklyBriefResponse(response.content, facts, fallback);
   }
 }
 
