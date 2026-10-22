@@ -45,7 +45,7 @@ async function collect(events: Array<Record<string, unknown>>): Promise<Provider
   messagesStream.mockReturnValue(sdkStream(events));
   const out: ProviderEvent[] = [];
   for await (const ev of new AnthropicAiClient().stream({
-    system: 'sys',
+    system: [{ type: 'text', text: 'sys' }],
     messages: [],
     tools: [],
   })) {
