@@ -11,7 +11,7 @@ import type {
 } from '@anthropic-ai/sdk/resources/messages/messages';
 import { formatUsd } from '@hearth/shared';
 import { z } from 'zod';
-import { zodToJsonSchema } from 'zod-to-json-schema';
+import { jsonSchemaFormat, type JsonSchemaFormat } from './output-format';
 import { periodLabel } from '../lib/dates';
 import type { UsageLog } from './agent-loop';
 import { DEFAULT_MODEL } from './anthropic';
@@ -49,14 +49,8 @@ const ReminderToolInputSchema = z.object({
     ),
 });
 
-function reminderOutputFormat(): NonNullable<NonNullable<MessageCreateParamsNonStreaming['output_config']>['format']> {
-  return {
-    type: 'json_schema',
-    schema: zodToJsonSchema(ReminderToolInputSchema, { $refStrategy: 'none' }) as Record<
-      string,
-      unknown
-    >,
-  };
+function reminderOutputFormat(): JsonSchemaFormat {
+  return jsonSchemaFormat(ReminderToolInputSchema);
 }
 
 const REMINDER_SYSTEM_PROMPT =

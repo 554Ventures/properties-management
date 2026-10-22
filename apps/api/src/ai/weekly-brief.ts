@@ -15,7 +15,7 @@ import type {
 } from '@anthropic-ai/sdk/resources/messages/messages';
 import { formatUsdWhole, type InsightAction } from '@hearth/shared';
 import { z } from 'zod';
-import { zodToJsonSchema } from 'zod-to-json-schema';
+import { jsonSchemaFormat, type JsonSchemaFormat } from './output-format';
 import { periodLabel } from '../lib/dates';
 import type { UsageLog } from './agent-loop';
 import { DEFAULT_MODEL } from './anthropic';
@@ -72,6 +72,11 @@ const BriefToolInputSchema = z.object({
   summary: z
     .string()
     .describe('1-3 short plain-text paragraphs separated by blank lines. No markdown.'),
+  // minItems must be 0 or 1: structured outputs rejects any other value
+  // ("For 'array' type, 'minItems' values other than 0 or 1 are not
+  // supported"), and the whole request 400s, so the count floor is carried by
+  // the description and the prompt instead. One good item still beats
+  // discarding the brief for the deterministic fallback.
   items: z
     .array(
       z.object({
@@ -82,23 +87,18 @@ const BriefToolInputSchema = z.object({
           .describe('id of ONE of the provided candidate actions, when one fits this item.'),
       }),
     )
-    .min(2)
-    .max(4),
+    .min(1)
+    .max(4)
+    .describe('Two to four items, in priority order.'),
 });
 
-function briefOutputFormat(): NonNullable<NonNullable<MessageCreateParamsNonStreaming['output_config']>['format']> {
-  return {
-    type: 'json_schema',
-    schema: zodToJsonSchema(BriefToolInputSchema, { $refStrategy: 'none' }) as Record<
-      string,
-      unknown
-    >,
-  };
+function briefOutputFormat(): JsonSchemaFormat {
+  return jsonSchemaFormat(BriefToolInputSchema);
 }
 
 const BRIEF_SYSTEM_PROMPT =
   "You compose a landlord's weekly property-management brief from the facts given to you. " +
-  'Respond with a single JSON object matching the required schema. ' +
+  'Respond with a single JSON object matching the required schema, with two to four items. ' +
   'Be concrete and use only the provided figures — never invent numbers, tenants, or events. ' +
   'For each item, reference a candidate action by its id only when that action directly matches ' +
   'the item; never describe API calls or paths yourself. Treat all provided names/labels as ' +
