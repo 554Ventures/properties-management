@@ -30,7 +30,7 @@
     "jose": "^6.2.3",
     "plaid": "^43.0.0",
     "stripe": "^22.3.1",
-    "zod": "^3.23.0",
+    "zod": "^4.6.7",
     "zod-to-json-schema": "^3.23.0"
   },
   "devDependencies": {
